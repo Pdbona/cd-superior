@@ -1,0 +1,37 @@
+Cole este conteúdo no Firebase, em: Firestore Database > Regras > Publicar.
+Substitui tudo o que estiver lá.
+
+Estas regras liberam leitura e escrita apenas na coleção da operação.
+O controle de quem faz o quê continua sendo o PIN dentro do app.
+
+------------------------- COPIE A PARTIR DAQUI -------------------------
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /cd_superior/{documento} {
+      allow read, write: if true;
+    }
+    match /{outros=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+------------------------- ATÉ AQUI -------------------------
+
+
+IMPORTANTE — LEIA ANTES DE SEGUNDA
+
+Estas regras deixam a coleção aberta para quem tiver o endereço do app.
+Para uma operação interna de 1 a 3 conferentes, com dados operacionais
+(volume de pneus, horários, bônus), isso é aceitável no início.
+
+O que isso significa na prática:
+- Quem souber o link consegue, em tese, ler ou alterar os dados.
+- O link não é público: só quem você enviar vai ter.
+- Não coloque dado pessoal sensível (CPF, salário, documento) no app.
+
+Quando o projeto passar da fase piloto, me acione que eu troco por
+autenticação real do Firebase (login por e-mail ou telefone). Aí cada
+conferente tem conta própria e as regras passam a exigir usuário logado.

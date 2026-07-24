@@ -1,0 +1,21 @@
+APP GESTAO CD SUPERIOR — SBS Solution
+=====================================
+
+COMECE POR AQUI: abra o arquivo INSTRUCOES.md
+
+Ele tem o passo a passo completo, do zero ate o app rodando
+no celular dos conferentes. Cerca de 40 a 60 minutos, sem
+custo e sem conhecimento tecnico.
+
+O QUE TEM NESTA PASTA
+---------------------
+INSTRUCOES.md         O guia principal. Comece por ele.
+REGRAS_FIREBASE.txt   Texto para colar no Firebase (Etapa 2.3)
+src/storage.js        ARQUIVO QUE VOCE PRECISA EDITAR (Etapa 2.5)
+src/App.jsx           O app em si. Nao precisa mexer.
+demais arquivos       Configuracao. Nao precisa mexer.
+
+O UNICO ARQUIVO QUE VOCE EDITA E O src/storage.js.
+Todo o resto e so enviar para o GitHub como esta.
+
+Duvida em qualquer ponto, me acione.
