@@ -1516,6 +1516,13 @@ function AjusteRegistros({ ops, params, persistOps }) {
     setEditId(op.id);
     setDraft({
       ref: op.ref || "",
+      cliente: op.cliente || "",
+      tipoId: op.tipoId || "",
+      direcao: op.direcao || "",
+      volume: op.volume ?? "",
+      qtdTerceirizada: op.qtdTerceirizada ?? "",
+      qtdPessoasSuperior: op.qtdPessoasSuperior ?? "",
+      qtdSuperior: op.qtdSuperior ?? "",
       dataPlanejada: dataParaInput(diaPlanejado(op)),
       inicio: paraInput(op.inicio),
       fim: paraInput(op.fim),
@@ -1538,6 +1545,10 @@ function AjusteRegistros({ ops, params, persistOps }) {
     if (draft.status === "cancelada" && !draft.motivoCancelamento) return setMsg("Selecione o motivo do cancelamento.");
     if (draft.status !== "cancelada" && !draft.motivo.trim()) return setMsg("Descreva o motivo do ajuste (fica registrado para auditoria).");
     if (!draft.ref.trim()) return setMsg("Informe a referência (NF/Pedido).");
+    if (!draft.cliente.trim()) return setMsg("Selecione o cliente.");
+    if (!draft.tipoId) return setMsg("Selecione o tipo de operação.");
+    if (!draft.direcao) return setMsg("Selecione a direção: recebimento ou expedição.");
+    if (draft.volume === "" || Number(draft.volume) <= 0) return setMsg("Informe o volume da operação.");
 
     const antes = { inicio: op.inicio, fim: op.fim, status: op.status };
     const novaData = inputParaData(draft.dataPlanejada);
@@ -1554,10 +1565,14 @@ function AjusteRegistros({ ops, params, persistOps }) {
     const registro = {
       quando: Date.now(),
       motivo: motivoRegistro,
-      de: `${op.ref} · ${op.status} · ${dataAntes} · ${fmtDT(op.inicio)} → ${fmtDT(op.fim)}`,
-      para: `${draft.ref.trim() || op.ref} · ${draft.status} · ${dataDepois} · ${fmtDT(ini)} → ${fmtDT(fim)}`
+      de: `${op.ref} · ${op.cliente} · ${op.status} · ${dataAntes} · ${fmtDT(op.inicio)} → ${fmtDT(op.fim)}`,
+      para: `${draft.ref.trim() || op.ref} · ${draft.cliente.trim() || op.cliente} · ${draft.status} · ${dataDepois} · ${fmtDT(ini)} → ${fmtDT(fim)}`
         + (dataMudou ? " (data replanejada)" : "")
         + (draft.ref.trim() && draft.ref.trim() !== op.ref ? " (referência alterada)" : "")
+        + (draft.cliente.trim() && draft.cliente.trim() !== op.cliente ? " (cliente alterado)" : "")
+        + (draft.tipoId && draft.tipoId !== op.tipoId ? " (tipo alterado)" : "")
+        + (draft.direcao && draft.direcao !== op.direcao ? " (direção alterada)" : "")
+        + (String(draft.volume) !== String(op.volume ?? "") ? " (volume alterado)" : "")
         + (draft.status === "cancelada" ? ` · cancelada (${draft.motivoCancelamento === "cliente" ? "Cliente" : "Superior"})` : "")
     };
     /* Se o gestor encerrou uma operação que o conferente deixou aberta,
@@ -1567,6 +1582,13 @@ function AjusteRegistros({ ops, params, persistOps }) {
     await persistOps(ops.map(o => o.id === op.id ? {
       ...o,
       ref: draft.ref.trim() || o.ref,
+      cliente: draft.cliente.trim() || o.cliente,
+      tipoId: draft.tipoId || o.tipoId,
+      direcao: draft.direcao || o.direcao,
+      volume: draft.volume !== "" ? parseInt(draft.volume, 10) : o.volume,
+      qtdTerceirizada: draft.qtdTerceirizada !== "" ? parseInt(draft.qtdTerceirizada, 10) : o.qtdTerceirizada,
+      qtdPessoasSuperior: draft.qtdPessoasSuperior !== "" ? parseInt(draft.qtdPessoasSuperior, 10) : o.qtdPessoasSuperior,
+      qtdSuperior: draft.qtdSuperior !== "" ? parseInt(draft.qtdSuperior, 10) : o.qtdSuperior,
       status: draft.status,
       dataPlanejada: novaData,
       inicio: (draft.status === "pendente" || draft.status === "cancelada") ? null : ini,
@@ -1683,6 +1705,52 @@ function AjusteRegistros({ ops, params, persistOps }) {
                         <input type="text" style={styles.input} value={draft.ref}
                           onChange={e => setDraft(d => ({ ...d, ref: e.target.value }))} />
                       </Field>
+                      <Field label="Cliente">
+                        {(params.clientes || []).length === 0 ? (
+                          <div style={{ color: C.vermelho, fontSize: 12.5 }}>Cadastre clientes em Parâmetros</div>
+                        ) : (
+                          <select style={styles.input} value={draft.cliente} onChange={e => setDraft(d => ({ ...d, cliente: e.target.value }))}>
+                            <option value="">Selecione o cliente…</option>
+                            {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                          </select>
+                        )}
+                      </Field>
+                      <Field label="Tipo de Operação">
+                        <select style={styles.input} value={draft.tipoId} onChange={e => setDraft(d => ({ ...d, tipoId: e.target.value }))}>
+                          <option value="">Selecione o tipo…</option>
+                          {params.tipos.map(tp => <option key={tp.id} value={tp.id}>{tp.label}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Direção">
+                        <div style={{ display: "flex", gap: 8 }}>
+                          {["recebimento", "expedicao"].map(d2 => (
+                            <button key={d2} onClick={() => setDraft(d => ({ ...d, direcao: d2 }))}
+                              style={{ ...styles.toggle, ...(draft.direcao === d2 ? styles.toggleOn : {}) }}>
+                              {d2 === "recebimento" ? "Recebimento" : "Expedição"}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                      <Field label="Volume (unidades)">
+                        <input type="number" min="0" style={styles.input} value={draft.volume}
+                          onChange={e => setDraft(d => ({ ...d, volume: e.target.value }))} />
+                      </Field>
+                      {params.tipos.find(tp => tp.id === draft.tipoId)?.modalidade !== "paletizado" && (
+                        <>
+                          <Field label="Pessoas TERCEIRIZADA">
+                            <input type="number" min="0" style={styles.input} value={draft.qtdTerceirizada}
+                              onChange={e => setDraft(d => ({ ...d, qtdTerceirizada: e.target.value }))} />
+                          </Field>
+                          <Field label="Pessoas da SUPERIOR">
+                            <input type="number" min="0" style={styles.input} value={draft.qtdPessoasSuperior}
+                              onChange={e => setDraft(d => ({ ...d, qtdPessoasSuperior: e.target.value }))} />
+                          </Field>
+                          <Field label="Qtd. de BÔNUS da operação">
+                            <input type="number" min="0" style={styles.input} value={draft.qtdSuperior}
+                              onChange={e => setDraft(d => ({ ...d, qtdSuperior: e.target.value }))} />
+                          </Field>
+                        </>
+                      )}
                       <Field label="Data planejada">
                         <input type="date" style={styles.input} value={draft.dataPlanejada}
                           onChange={e => setDraft(d => ({ ...d, dataPlanejada: e.target.value }))} />
@@ -1970,8 +2038,8 @@ function Dashboard({ ops, params, now }) {
               const cor = d.subdim > 0 ? C.laranja : vazio ? C.prataClaro : C.navy2;
               return (
                 <div key={d.ts} onClick={() => setDiaSel(d)} style={{
-                  background: d.hoje ? "#EEF2F8" : C.branco,
-                  border: `1px solid ${d.hoje ? C.navy2 : C.prataClaro}`,
+                  background: d.hoje ? "#FFF9DB" : C.branco,
+                  border: `1px solid ${d.hoje ? "#F2CB4E" : C.prataClaro}`,
                   borderTop: `4px solid ${cor}`,
                   borderRadius: 9, padding: "10px 8px", textAlign: "center", minWidth: 0, cursor: "pointer"
                 }}>
@@ -2027,7 +2095,7 @@ function Dashboard({ ops, params, now }) {
           }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>
-                {diaSel.hoje ? "Hoje" : diaSel.curto} · {diaSel.data} — {diaSel.ops} operação{diaSel.ops !== 1 ? "ões" : ""}
+                {diaSel.hoje ? "Hoje" : diaSel.curto} · {diaSel.data} — {diaSel.ops} {diaSel.ops === 1 ? "operação" : "operações"}
               </div>
               <button onClick={() => setDiaSel(null)} style={{
                 border: "none", background: "transparent", fontSize: 22, lineHeight: 1, color: C.prata, cursor: "pointer"
@@ -3205,7 +3273,7 @@ function StatusTag({ status }) {
 }
 function DirTag({ dir }) {
   const rec = dir === "recebimento";
-  return <span style={{ ...styles.pill, background: rec ? "#E3F2FD" : "#EDE7F6", color: rec ? C.navy : "#5E35B1" }}>{rec ? "Recebimento" : "Expedição"}</span>;
+  return <span style={{ ...styles.pill, background: rec ? "#E3F2FD" : "#FDECEA", color: rec ? "#0D47A1" : "#B71C1C" }}>{rec ? "Recebimento" : "Expedição"}</span>;
 }
 function EmptyState({ text }) {
   return <div style={styles.empty}><Package size={30} color={C.prataClaro} /><div style={{ marginTop: 8 }}>{text}</div></div>;
