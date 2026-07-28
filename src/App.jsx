@@ -66,7 +66,10 @@ const DEFAULT_PARAMS = {
 function produtividadeBase(tipo) {
   if (!tipo) return null;
   const v = tipo.baseVolume, p = tipo.basePessoas, h = tipo.baseHoras;
-  if (!v || !p || !h) return null;
+  if (!v || !h) return null;
+  /* Paletizado nao tem headcount de referencia: base vira un/hora puro. */
+  if (tipo.modalidade === "paletizado") return v / h;
+  if (!p) return null;
   return v / (p * h);
 }
 
@@ -136,7 +139,11 @@ function calcOp(op, params) {
   /* produtividade realizada — base do aprendizado para recalibrar metas.
      Paletizado não tem headcount alocado, então não há produtividade a medir. */
   const pessoas = paletizado ? 0 : pessoasDaOperacao(op, tipo);
-  const prodReal = (!paletizado && tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null;
+  /* Paletizado nao tem headcount de referencia: produtividade medida em un/hora,
+     sem dividir por pessoas -- ainda assim entra na calibragem de metas. */
+  const prodReal = paletizado
+    ? ((tempoReal && op.volume) ? op.volume / tempoReal : null)
+    : ((tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null);
   return { tipo, paletizado, pessoasRef, metaHoras, meta, referencia, custoTerc, bonusPotencial, bonusPago,
     custoReal, economia, tempoReal, cumpriuMeta, nomeados, valorPorPessoa, pessoas, prodReal, alvoRateio,
     rateioPendente: bonusPago > 0 && (alvoRateio != null ? nomeados.length !== alvoRateio : nomeados.length === 0),
@@ -214,6 +221,7 @@ function pessoasNecessarias(tipo, volume, horasAlvo) {
 const TOLERANCIA_DIM = 15;   // % de excesso sobre o tempo de referência
 
 function avaliarDimensionamento(tipo, volume, equipe) {
+  if (tipo && tipo.modalidade === "paletizado") return null; // sem headcount de referencia
   const prod = produtividadeBase(tipo);
   const alvo = tipo ? (tipo.baseHoras || tipo.metaHoras) : 0;
   if (!prod || !volume || !equipe || !alvo) return null;
@@ -487,6 +495,7 @@ function PortaEntrada({ params, onEntrar }) {
    ============================================================ */
 function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, usuario }) {
   const [obs, setObs] = useState({});
+  const [docaSel, setDocaSel] = useState({});
   const [aviso, setAviso] = useState("");
 
   /* Titularidade: quem iniciou é quem finaliza.
@@ -519,8 +528,14 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
   });
 
   const iniciar = async (id) => {
+    const doca = docaSel[id];
+    if (!doca) {
+      setAviso("Selecione a doca antes de iniciar a operação.");
+      setTimeout(() => setAviso(""), 3000);
+      return;
+    }
     await persistOps(ops.map(o => o.id === id
-      ? { ...o, status: "em_andamento", inicio: Date.now(), conferenteInicio: usuario || null } : o));
+      ? { ...o, status: "em_andamento", inicio: Date.now(), conferenteInicio: usuario || null, doca } : o));
     setAviso("Operação iniciada — bom trabalho!"); setTimeout(() => setAviso(""), 3000);
   };
   const finalizar = async (id) => {
@@ -607,6 +622,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, fontSize: 12, color: C.prata }}>
                     <span style={styles.infoChip}><Package size={12} /> {c.tipo?.label}</span>
+                    {op.doca && <span style={styles.infoChip}>Doca {op.doca}</span>}
                     {op.volume ? <span style={styles.infoChip}>{op.volume} un</span> : null}
                     <span style={styles.infoChip}><Users size={12} /> {op.qtdTerceirizada} terceirizados</span>
                     {op.qtdSuperior > 0 && <span style={styles.infoChip}><Award size={12} /> {op.qtdSuperior} bônus</span>}
@@ -646,9 +662,19 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                   {/* Botão de ação — grande. Quem não iniciou vê o estado, não o comando. */}
                   <div style={{ marginTop: 14 }}>
                     {!rodando ? (
-                      <button style={{ ...styles.btnBig, background: C.verde }} onClick={() => iniciar(op.id)}>
-                        <Play size={22} strokeWidth={2.6} /> INICIAR OPERAÇÃO
-                      </button>
+                      <>
+                        <select value={docaSel[op.id] || ""} onChange={e => setDocaSel(d => ({ ...d, [op.id]: e.target.value }))}
+                          style={{ ...styles.input, marginBottom: 8, width: "100%" }}>
+                          <option value="">Selecione a doca...</option>
+                          {Array.from({ length: 9 }, (_, i) => String(i + 1).padStart(2, "0")).map(n => (
+                            <option key={n} value={n}>Doca {n}</option>
+                          ))}
+                        </select>
+                        <button style={{ ...styles.btnBig, background: docaSel[op.id] ? C.verde : C.prataClaro,
+                          cursor: docaSel[op.id] ? "pointer" : "not-allowed" }} onClick={() => iniciar(op.id)}>
+                          <Play size={22} strokeWidth={2.6} /> INICIAR OPERAÇÃO
+                        </button>
+                      </>
                     ) : meu ? (
                       <button style={{ ...styles.btnBig, background: C.navy }} onClick={() => finalizar(op.id)}>
                         <Square size={20} strokeWidth={2.6} /> FINALIZAR OPERAÇÃO
@@ -1489,6 +1515,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
   const abrir = (op) => {
     setEditId(op.id);
     setDraft({
+      ref: op.ref || "",
       dataPlanejada: dataParaInput(diaPlanejado(op)),
       inicio: paraInput(op.inicio),
       fim: paraInput(op.fim),
@@ -1510,6 +1537,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
     if (draft.status === "em_andamento" && !ini) return setMsg("Informe o horário de início.");
     if (draft.status === "cancelada" && !draft.motivoCancelamento) return setMsg("Selecione o motivo do cancelamento.");
     if (draft.status !== "cancelada" && !draft.motivo.trim()) return setMsg("Descreva o motivo do ajuste (fica registrado para auditoria).");
+    if (!draft.ref.trim()) return setMsg("Informe a referência (NF/Pedido).");
 
     const antes = { inicio: op.inicio, fim: op.fim, status: op.status };
     const novaData = inputParaData(draft.dataPlanejada);
@@ -1526,9 +1554,10 @@ function AjusteRegistros({ ops, params, persistOps }) {
     const registro = {
       quando: Date.now(),
       motivo: motivoRegistro,
-      de: `${op.status} · ${dataAntes} · ${fmtDT(op.inicio)} → ${fmtDT(op.fim)}`,
-      para: `${draft.status} · ${dataDepois} · ${fmtDT(ini)} → ${fmtDT(fim)}`
+      de: `${op.ref} · ${op.status} · ${dataAntes} · ${fmtDT(op.inicio)} → ${fmtDT(op.fim)}`,
+      para: `${draft.ref.trim() || op.ref} · ${draft.status} · ${dataDepois} · ${fmtDT(ini)} → ${fmtDT(fim)}`
         + (dataMudou ? " (data replanejada)" : "")
+        + (draft.ref.trim() && draft.ref.trim() !== op.ref ? " (referência alterada)" : "")
         + (draft.status === "cancelada" ? ` · cancelada (${draft.motivoCancelamento === "cliente" ? "Cliente" : "Superior"})` : "")
     };
     /* Se o gestor encerrou uma operação que o conferente deixou aberta,
@@ -1537,6 +1566,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
     const fechouAgora = draft.status === "concluida" && op.status !== "concluida";
     await persistOps(ops.map(o => o.id === op.id ? {
       ...o,
+      ref: draft.ref.trim() || o.ref,
       status: draft.status,
       dataPlanejada: novaData,
       inicio: (draft.status === "pendente" || draft.status === "cancelada") ? null : ini,
@@ -1649,6 +1679,10 @@ function AjusteRegistros({ ops, params, persistOps }) {
                 {emEdicao && draft && (
                   <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.prataClaro}` }}>
                     <div style={styles.formGrid}>
+                      <Field label="Referência (NF/Pedido)">
+                        <input type="text" style={styles.input} value={draft.ref}
+                          onChange={e => setDraft(d => ({ ...d, ref: e.target.value }))} />
+                      </Field>
                       <Field label="Data planejada">
                         <input type="date" style={styles.input} value={draft.dataPlanejada}
                           onChange={e => setDraft(d => ({ ...d, dataPlanejada: e.target.value }))} />
@@ -1759,6 +1793,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
 function Dashboard({ ops, params, now }) {
+  const [diaSel, setDiaSel] = useState(null);
   const concluidas = useMemo(() =>
     ops.filter(o => o.status === "concluida")
       .map(o => ({ op: o, c: calcOp(o, params) }))
@@ -1934,11 +1969,11 @@ function Dashboard({ ops, params, now }) {
               const vazio = d.ops === 0;
               const cor = d.subdim > 0 ? C.laranja : vazio ? C.prataClaro : C.navy2;
               return (
-                <div key={d.ts} style={{
+                <div key={d.ts} onClick={() => setDiaSel(d)} style={{
                   background: d.hoje ? "#EEF2F8" : C.branco,
                   border: `1px solid ${d.hoje ? C.navy2 : C.prataClaro}`,
                   borderTop: `4px solid ${cor}`,
-                  borderRadius: 9, padding: "10px 8px", textAlign: "center", minWidth: 0
+                  borderRadius: 9, padding: "10px 8px", textAlign: "center", minWidth: 0, cursor: "pointer"
                 }}>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 11,
                     color: d.hoje ? C.navy : C.prata, textTransform: "uppercase", letterSpacing: .3 }}>
@@ -1979,6 +2014,52 @@ function Dashboard({ ops, params, now }) {
           )}
           {!forecast.some(d => d.subdim > 0) && <div style={{ marginBottom: 22 }} />}
         </>
+      )}
+
+      {diaSel && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(15,23,42,.55)", zIndex: 2000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16
+        }} onClick={() => setDiaSel(null)}>
+          <div style={{
+            background: C.branco, borderRadius: 12, maxWidth: 560, width: "100%",
+            maxHeight: "80vh", overflow: "auto", padding: "18px 20px", boxShadow: "0 10px 40px rgba(0,0,0,.3)"
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>
+                {diaSel.hoje ? "Hoje" : diaSel.curto} · {diaSel.data} — {diaSel.ops} operação{diaSel.ops !== 1 ? "ões" : ""}
+              </div>
+              <button onClick={() => setDiaSel(null)} style={{
+                border: "none", background: "transparent", fontSize: 22, lineHeight: 1, color: C.prata, cursor: "pointer"
+              }}>×</button>
+            </div>
+            {diaSel.ops === 0 ? (
+              <EmptyState text="Nenhuma operação programada para este dia." />
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {ops.filter(o => diaPlanejado(o) === diaSel.ts && o.status !== "cancelada").map(o => {
+                  const c = calcOp(o, params);
+                  const corStatus = o.status === "concluida" ? C.verde : o.status === "em_andamento" ? C.laranja : C.prata;
+                  const labelStatus = o.status === "concluida" ? "Concluída" : o.status === "em_andamento" ? "Em andamento" : "Pendente";
+                  return (
+                    <div key={o.id} style={{ border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <strong style={{ fontSize: 13, color: C.navy }}>{o.ref}</strong>
+                        <DirTag dir={o.direcao} />
+                      </div>
+                      <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{o.cliente}</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
+                        <span>{c.tipo?.label}</span>
+                        {o.volume ? <span>{o.volume.toLocaleString("pt-BR")} un</span> : null}
+                        <span style={{ color: corStatus, fontWeight: 700 }}>{labelStatus}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ===== HOJE ===== */}
@@ -2114,7 +2195,7 @@ function Dashboard({ ops, params, now }) {
                 <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7, marginBottom: 10 }}>
                   <div>
                     <span style={{ color: C.prata }}>Base atual:</span>{" "}
-                    <strong>{a.base.toFixed(1)} un/pessoa/h</strong>{" "}
+                    <strong>{a.base.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>{" "}
                     <span style={{ color: C.prata }}>({minPorUnidade(a.base).toFixed(2)} min/un)</span>
                   </div>
                   <div style={{ fontSize: 11.5, color: C.prata }}>
@@ -2133,7 +2214,7 @@ function Dashboard({ ops, params, now }) {
                   <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7 }}>
                     <div>
                       <span style={{ color: C.prata }}>Realizado (mediana):</span>{" "}
-                      <strong style={{ color: cor }}>{a.mediana.toFixed(1)} un/pessoa/h</strong>
+                      <strong style={{ color: cor }}>{a.mediana.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>
                       {a.difPct != null && (
                         <span style={{ color: a.difPct >= 0 ? C.verde : C.vermelho, fontWeight: 700, marginLeft: 6 }}>
                           {a.difPct >= 0 ? "▲" : "▼"} {Math.abs(a.difPct).toFixed(0)}%
@@ -2150,7 +2231,7 @@ function Dashboard({ ops, params, now }) {
                     <div style={{ marginTop: 10, padding: "10px 12px", background: "#FFF4EB", border: `1px solid ${C.laranja}`, borderRadius: 8, fontSize: 12.5, color: C.laranjaEsc, lineHeight: 1.6 }}>
                       <strong>Sugestão de recalibragem</strong><br />
                       A equipe vem entregando {a.difPct > 0 ? "acima" : "abaixo"} da base.
-                      Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un com {a.tipo.basePessoas} pessoas,
+                      Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
                       o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
                       <strong>{hhmm(a.horasSugeridas)}</strong>.
                       <div style={{ marginTop: 6, fontSize: 11.5 }}>
