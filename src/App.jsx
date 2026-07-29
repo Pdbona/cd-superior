@@ -856,8 +856,10 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
      por descuido gera registro errado que só aparece no fechamento. */
   const empty = { ref: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
   const [form, setForm] = useState(empty);
-  const [busca, setBusca] = useState("");
   const [erro, setErro] = useState("");
+  const [ajusteAberto, setAjusteAberto] = useState(false);
+  const [dataAjusteInput, setDataAjusteInput] = useState("");
+  const [tsAjuste, setTsAjuste] = useState(null);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const salvar = () => {
@@ -887,18 +889,61 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
       status: "pendente", inicio: null, fim: null, observacao: "", colaboradores: [], ajustes: [], createdAt: Date.now() }, ...ops]);
     setForm(empty);
   };
-  const excluir = (id) => persistOps(ops.filter(o => o.id !== id));
-  const filtradas = ops.filter(o => !busca.trim() || o.ref.toLowerCase().includes(busca.toLowerCase()) || o.cliente.toLowerCase().includes(busca.toLowerCase()));
-
   /* Cadastro único por data — só aparecem as datas que têm operações
      planejadas (não canceladas), do mais próximo pro mais distante. */
   const datasComOperacao = Array.from(new Set(
     ops.filter(o => o.status !== "cancelada").map(o => diaPlanejado(o))
   )).sort((a, b) => a - b);
 
+  /* Na tela normal só aparecem hoje em diante — dias anteriores se ajustam
+     pela busca de data abaixo, pra não poluir o dia a dia do gestor. */
+  const hoje = inicioDoDia(Date.now());
+  const datasFuturas = datasComOperacao.filter(ts => ts >= hoje);
+  const maxDataAjuste = dataParaInput(hoje - 86400000);
+
   const setDiaTerc = (diaTs, patch) => {
     const atual = diasTerc[diaTs] || { qtd: 0 };
     persistDiasTerc({ ...diasTerc, [diaTs]: { ...atual, ...patch } });
+  };
+
+  const carregarDiaAnterior = () => {
+    const ts = inputParaData(dataAjusteInput);
+    if (!ts) return;
+    setTsAjuste(Math.min(ts, hoje - 86400000));
+  };
+  const fecharAjuste = () => { setTsAjuste(null); setDataAjusteInput(""); setAjusteAberto(false); };
+
+  const DiaCard = ({ diaTs }) => {
+    const reg = diasTerc[diaTs] || { qtd: 0 };
+    const precisa = reg.qtd > 0;
+    const opsDoDia = ops.filter(o => diaPlanejado(o) === diaTs && o.status !== "cancelada").length;
+    return (
+      <div style={{ ...styles.card, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>{rotuloDia(diaTs)}</div>
+          <div style={{ fontSize: 11, color: C.prata }}>{opsDoDia} operaç{opsDoDia > 1 ? "ões" : "ão"}</div>
+        </div>
+        <Field label="Precisa terceirizado nesse dia?">
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setDiaTerc(diaTs, { qtd: reg.qtd > 0 ? reg.qtd : 1 })}
+              style={{ ...styles.toggle, ...(precisa ? styles.toggleOn : {}) }}>Sim</button>
+            <button onClick={() => setDiaTerc(diaTs, { qtd: 0 })}
+              style={{ ...styles.toggle, ...(!precisa ? styles.toggleOn : {}) }}>Não</button>
+          </div>
+        </Field>
+        {precisa && (
+          <Field label="Quantidade de terceirizados contratados">
+            <input style={{ ...styles.input, maxWidth: 110 }} type="number" min="0" value={reg.qtd}
+              onChange={e => setDiaTerc(diaTs, { qtd: parseInt(e.target.value || 0, 10) })} />
+          </Field>
+        )}
+        {precisa && (
+          <div style={{ fontSize: 11.5, color: C.prata }}>
+            Custo do dia: <strong style={{ color: C.texto }}>{brl(reg.qtd * params.custoTerceirizada)}</strong>
+          </div>
+        )}
+      </div>
+    );
   };
   const tipoSel = params.tipos.find(t => t.id === form.tipoId);
   const ehPaletizado = tipoSel && tipoSel.modalidade === "paletizado";
@@ -1139,79 +1184,45 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
         </div>
       </div>
 
-      <SectionTitle icon={Calendar}>Terceirizados Contratados por Dia <Badge>{datasComOperacao.length}</Badge></SectionTitle>
+      <SectionTitle icon={Calendar}>Terceirizados Contratados por Dia <Badge>{datasFuturas.length}</Badge></SectionTitle>
       <p style={styles.helper}>
         Diferente da MdO terceirizada de cada operação (que serve só pra calcular meta/tempo), aqui você registra
         quantos terceirizados foram <strong>de fato contratados naquele dia</strong> — a mesma pessoa pode ter
         trabalhado em várias operações no mesmo dia, e é isso que define o custo real e a economia do dia.
       </p>
-      {datasComOperacao.length === 0 ? (
+      {datasFuturas.length === 0 ? (
         <EmptyState text="Nenhuma operação planejada ainda — os blocos de dia aparecem aqui conforme você cadastra operações." />
       ) : (
-        <div style={{ display: "grid", gap: 10, marginBottom: 6 }}>
-          {datasComOperacao.map(diaTs => {
-            const reg = diasTerc[diaTs] || { qtd: 0 };
-            const precisa = reg.qtd > 0;
-            const opsDoDia = ops.filter(o => diaPlanejado(o) === diaTs && o.status !== "cancelada").length;
-            return (
-              <div key={diaTs} style={{ ...styles.card, padding: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-                <div style={{ minWidth: 130 }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>{rotuloDia(diaTs)}</div>
-                  <div style={{ fontSize: 11, color: C.prata }}>{opsDoDia} operaç{opsDoDia > 1 ? "ões" : "ão"}</div>
-                </div>
-                <Field label="Precisa terceirizado nesse dia?">
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => setDiaTerc(diaTs, { qtd: reg.qtd > 0 ? reg.qtd : 1 })}
-                      style={{ ...styles.toggle, ...(precisa ? styles.toggleOn : {}) }}>Sim</button>
-                    <button onClick={() => setDiaTerc(diaTs, { qtd: 0 })}
-                      style={{ ...styles.toggle, ...(!precisa ? styles.toggleOn : {}) }}>Não</button>
-                  </div>
-                </Field>
-                {precisa && (
-                  <Field label="Quantidade de terceirizados contratados">
-                    <input style={{ ...styles.input, maxWidth: 110 }} type="number" min="0" value={reg.qtd}
-                      onChange={e => setDiaTerc(diaTs, { qtd: parseInt(e.target.value || 0, 10) })} />
-                  </Field>
-                )}
-                {precisa && (
-                  <div style={{ fontSize: 11.5, color: C.prata, marginLeft: "auto" }}>
-                    Custo do dia: <strong style={{ color: C.texto }}>{brl(reg.qtd * params.custoTerceirizada)}</strong>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 12, marginBottom: 6 }}>
+          {datasFuturas.map(diaTs => <DiaCard key={diaTs} diaTs={diaTs} />)}
         </div>
       )}
 
-      <SectionTitle icon={ClipboardList}>Todas as Operações <Badge>{ops.length}</Badge></SectionTitle>
-      <div style={styles.searchRow}>
-        <Search size={16} color={C.prata} />
-        <input style={styles.searchInput} value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por referência ou cliente…" />
+      <div style={{ marginTop: 16 }}>
+        <button style={styles.btnGhost} onClick={() => setAjusteAberto(a => !a)}>
+          <Eraser size={15} /> Ajustar dia anterior ao corrente
+        </button>
       </div>
 
-      {filtradas.length === 0 ? <EmptyState text="Nenhuma operação cadastrada ainda." /> : (
-        <div style={{ display: "grid", gap: 10 }}>
-          {filtradas.map(op => {
-            const c = calcOp(op, params);
-            return (
-              <div key={op.id} style={styles.opRow}>
-                <TipoIcon tipo={c.tipo} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <strong style={{ color: C.navy, fontFamily: "'Montserrat',sans-serif", fontSize: 14 }}>{op.ref}</strong>
-                    <StatusTag status={op.status} /><DirTag dir={op.direcao} />
-                    {op.demo && <span style={{ ...styles.pill, background: "#FFF3E0", color: C.laranjaEsc }}>exemplo</span>}
-                  </div>
-                  <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente} · {c.tipo?.label} · {op.volume ? `${op.volume} un` : "—"}</div>
-                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
-                    <Users size={11} style={{ verticalAlign: -1 }} /> {op.qtdTerceirizada} terc. + {op.qtdSuperior} bônus · Ref. {brl(c.referencia)} · Meta {hhmm(c.metaHoras)}
-                  </div>
-                </div>
-                <button style={styles.iconBtnDanger} title="Excluir" onClick={() => excluir(op.id)}><Trash2 size={15} /></button>
-              </div>
-            );
-          })}
+      {ajusteAberto && (
+        <div style={{ ...styles.card, marginTop: 12 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <Field label="Selecione a data">
+              <input style={{ ...styles.input, maxWidth: 190 }} type="date" max={maxDataAjuste}
+                value={dataAjusteInput} onChange={e => setDataAjusteInput(e.target.value)} />
+            </Field>
+            <button style={styles.btnPrimary} onClick={carregarDiaAnterior} disabled={!dataAjusteInput}>
+              <Search size={15} /> Carregar dia
+            </button>
+            {tsAjuste != null && (
+              <button style={styles.chipX} onClick={fecharAjuste} title="Fechar ajuste">×</button>
+            )}
+          </div>
+          {tsAjuste != null && (
+            <div style={{ marginTop: 14, maxWidth: 320 }}>
+              <DiaCard diaTs={tsAjuste} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1222,7 +1233,9 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
    GESTOR — ABA 2: ACOMPANHAMENTO (status ao vivo)
    ============================================================ */
 function Acompanhamento({ ops, params, now }) {
-  const pendentes = ops.filter(o => o.status === "pendente");
+  /* pendentes ordenadas pela data planejada — a próxima a rodar aparece primeiro */
+  const pendentes = ops.filter(o => o.status === "pendente")
+    .sort((a, b) => diaPlanejado(a) - diaPlanejado(b));
   const andamento = ops.filter(o => o.status === "em_andamento");
   /* últimas 72h, mais recentes primeiro — histórico completo fica em Relatórios */
   const concluidas = ops
@@ -1231,13 +1244,16 @@ function Acompanhamento({ ops, params, now }) {
   const ocultas = ops.filter(o => o.status === "concluida" && !dentro72h(o.fim)).length;
 
   const Coluna = ({ titulo, lista, cor, icone: Ic, render, rodape }) => (
-    <div style={{ ...styles.card, padding: 0, overflow: "hidden", borderTop: `4px solid ${cor}` }}>
+    <div style={{ ...styles.card, padding: 0, overflow: "hidden", borderTop: `4px solid ${cor}`, alignSelf: "start" }}>
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.prataClaro}`, display: "flex", alignItems: "center", gap: 8, background: C.bgLeve }}>
         <Ic size={17} color={cor} strokeWidth={2.3} />
         <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, textTransform: "uppercase" }}>{titulo}</span>
         <span style={{ marginLeft: "auto", fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: cor }}>{lista.length}</span>
       </div>
-      <div style={{ padding: 12, display: "grid", gap: 10, maxHeight: 460, overflowY: "auto" }}>
+      <div style={{
+        padding: 12, display: "grid", gap: 10, maxHeight: 460, overflowY: "auto",
+        overscrollBehavior: "contain", WebkitOverflowScrolling: "touch"
+      }}>
         {lista.length === 0
           ? <div style={{ color: C.prata, fontSize: 12.5, textAlign: "center", padding: "18px 0" }}>Nenhuma</div>
           : lista.map(render)}
@@ -1268,6 +1284,9 @@ function Acompanhamento({ ops, params, now }) {
               </div>
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente}</div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>{c.tipo?.label} · {op.qtdTerceirizada}T + {op.qtdSuperior}B · meta {hhmm(c.metaHoras)}</div>
+              <div style={{ fontSize: 11, color: C.navy2, marginTop: 3, fontWeight: 700 }}>
+                <Calendar size={11} style={{ verticalAlign: -1 }} /> Planejada: {rotuloDia(diaPlanejado(op))}
+              </div>
             </div>
           );
         }} />
@@ -1320,6 +1339,9 @@ function Acompanhamento({ ops, params, now }) {
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente}</div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>
                 Meta {hhmm(c.metaHoras)} · Economia <strong style={{ color: C.laranja }}>{brl(c.economia)}</strong>
+              </div>
+              <div style={{ fontSize: 10.5, color: C.prata, marginTop: 3, fontFamily: "'Roboto Mono',monospace" }}>
+                {fmtDT(op.inicio)} → {fmtDT(op.fim)}
               </div>
               {(op.conferenteFim || op.conferenteInicio) && (
                 <div style={{ fontSize: 10.5, color: C.prata, marginTop: 2 }}>
