@@ -30,6 +30,12 @@ const C = {
 
 const K_OPS = "sbs_sup_ops_v2";
 const K_PARAMS = "sbs_sup_params_v2";
+/* Terceirizados contratados por DIA (não por operação) — objeto
+   { "<timestamp início do dia>": { qtd: number } }. Existe separado de
+   qtdTerceirizada (que fica por operação, só pra meta/tempo daquela
+   operação) porque o custo real é "quantos terceirizados eu contratei
+   naquele dia", independente de quantas operações rodaram nele. */
+const K_DIAS = "sbs_sup_dias_terc_v1";
 const SHARED = true; // dados visíveis a todos que usam este app
 
 const DEFAULT_PARAMS = {
@@ -131,10 +137,14 @@ function calcOp(op, params) {
   const custoReal = custoTerc + bonusPago;
   const economia = referencia - custoReal;
   /* rateio: divide o bônus pago igualmente entre os colaboradores nomeados.
-     O rateio só fica completo quando a quantidade de nomeados bate exatamente
-     com "Pessoas da Superior" programada no cadastro — nem mais, nem menos. */
+     alvoRateio é o TETO de quantas pessoas podem ser nomeadas — independente
+     de qtdPessoasSuperior (que serve só para a meta). Se qtdPessoasRateio não
+     foi informado (registros antigos ou campo em branco), cai para
+     qtdPessoasSuperior. Pode ratear para MENOS pessoas que o teto; só não pode
+     ultrapassar. */
   const nomeados = Array.isArray(op.colaboradores) ? op.colaboradores.filter(Boolean) : [];
-  const alvoRateio = op.qtdPessoasSuperior > 0 ? op.qtdPessoasSuperior : null;
+  const alvoRateio = op.qtdPessoasRateio > 0 ? op.qtdPessoasRateio
+    : (op.qtdPessoasSuperior > 0 ? op.qtdPessoasSuperior : null);
   const valorPorPessoa = (bonusPago > 0 && nomeados.length > 0) ? bonusPago / nomeados.length : 0;
   /* produtividade realizada — base do aprendizado para recalibrar metas.
      Paletizado não tem headcount alocado, então não há produtividade a medir. */
@@ -146,8 +156,30 @@ function calcOp(op, params) {
     : ((tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null);
   return { tipo, paletizado, pessoasRef, metaHoras, meta, referencia, custoTerc, bonusPotencial, bonusPago,
     custoReal, economia, tempoReal, cumpriuMeta, nomeados, valorPorPessoa, pessoas, prodReal, alvoRateio,
-    rateioPendente: bonusPago > 0 && (alvoRateio != null ? nomeados.length !== alvoRateio : nomeados.length === 0),
+    rateioPendente: bonusPago > 0 && nomeados.length === 0,
     totalPessoas: pessoas };
+}
+
+/* ---------- economia por DIA ----------
+   Diferente de calcOp (que calcula por operação), aqui o custo real de
+   terceirizado é "quantos terceirizados foram CONTRATADOS naquele dia"
+   (diasTerc), não a soma do que cada operação pediu — porque o mesmo
+   terceirizado pode ter trabalhado em várias operações do dia.
+   referencia_dia = soma de calcOp(op).referencia de todas as ops não
+   canceladas do dia (cenário: e se fosse 100% terceirizado).
+   custo_real_dia = (terceirizados contratados no dia × custoTerceirizada)
+   + bônus pago no dia (soma de calcOp(op).bonusPago das ops do dia).
+   economia_dia = referencia_dia − custo_real_dia. */
+function calcDia(diaTs, ops, params, diasTerc) {
+  const doDia = ops.filter(o => diaPlanejado(o) === diaTs && o.status !== "cancelada");
+  const calcs = doDia.map(o => calcOp(o, params));
+  const referenciaDia = calcs.reduce((s, c) => s + c.referencia, 0);
+  const bonusDia = calcs.reduce((s, c) => s + c.bonusPago, 0);
+  const qtdTercDia = (diasTerc && diasTerc[diaTs] && diasTerc[diaTs].qtd) || 0;
+  const custoTercDia = qtdTercDia * params.custoTerceirizada;
+  const custoRealDia = custoTercDia + bonusDia;
+  const economiaDia = referenciaDia - custoRealDia;
+  return { diaTs, ops: doDia, referenciaDia, qtdTercDia, custoTercDia, bonusDia, custoRealDia, economiaDia };
 }
 
 /* ---------- recalibração de metas ----------
@@ -296,6 +328,9 @@ export default function App() {
   const [usuario, setUsuario] = useState(null); // nome do conferente logado
   const [ops, setOps] = useState([]);
   const [params, setParams] = useState(DEFAULT_PARAMS);
+  /* diasTerc: { [tsInicioDoDia]: { qtd: number } } — terceirizados contratados
+     naquele dia, independente de quantas operações rodaram nele. */
+  const [diasTerc, setDiasTerc] = useState({});
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
   const [sync, setSync] = useState(false);
@@ -316,6 +351,7 @@ export default function App() {
       }
     } catch (e) {}
     try { const o = await storage.get(K_OPS, SHARED); if (o?.value) setOps(JSON.parse(o.value)); } catch (e) {}
+    try { const d = await storage.get(K_DIAS, SHARED); if (d?.value) setDiasTerc(JSON.parse(d.value)); } catch (e) {}
     setSync(false); setLoading(false);
   }, []);
 
@@ -342,6 +378,13 @@ export default function App() {
       setErroSalvar(false);
     } catch (e) { console.error(e); setErroSalvar(true); }
   }, []);
+  const persistDiasTerc = useCallback(async (next) => {
+    setDiasTerc(next);
+    try {
+      await storage.set(K_DIAS, JSON.stringify(next), SHARED);
+      setErroSalvar(false);
+    } catch (e) { console.error(e); setErroSalvar(true); }
+  }, []);
 
   if (loading) return <Splash />;
   if (!modo) return <PortaEntrada params={params}
@@ -355,6 +398,7 @@ export default function App() {
     ? <AppConferente ops={ops} params={params} persistOps={persistOps} now={now} usuario={usuario}
         sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
+        diasTerc={diasTerc} persistDiasTerc={persistDiasTerc}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />}
   </>;
 }
@@ -736,7 +780,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, now, sair, sync, recarregar }) {
+function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar }) {
   const [tab, setTab] = useState("operacoes");
   const TABS = [
     { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
@@ -787,10 +831,10 @@ function AppGestor({ ops, params, persistOps, persistParams, now, sair, sync, re
       </nav>
 
       <main style={styles.main}>
-        {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} />}
+        {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} />}
-        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} />}
-        {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} />}
+        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} />}
+        {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
@@ -807,10 +851,10 @@ function AppGestor({ ops, params, persistOps, persistParams, now, sair, sync, re
 /* ============================================================
    GESTOR — ABA 1: OPERAÇÕES (cadastro)
    ============================================================ */
-function Operacoes({ ops, params, persistOps }) {
+function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
   /* Nenhum campo de seleção vem pré-preenchido: um cliente ou tipo herdado
      por descuido gera registro errado que só aparece no fechamento. */
-  const empty = { ref: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "" };
+  const empty = { ref: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
   const [form, setForm] = useState(empty);
   const [busca, setBusca] = useState("");
   const [erro, setErro] = useState("");
@@ -826,6 +870,11 @@ function Operacoes({ ops, params, persistOps }) {
     const ehPaletizado = tipoEscolhido && tipoEscolhido.modalidade === "paletizado";
     const qt = parseInt(form.qtdTerceirizada || 0, 10), qs = parseInt(form.qtdSuperior || 0, 10);
     const qps = form.qtdPessoasSuperior === "" ? qs : parseInt(form.qtdPessoasSuperior || 0, 10);
+    /* qtdPessoasRateio é independente de qtdPessoasSuperior: se não for informado,
+       cai para qtdPessoasSuperior (comportamento antigo), mas pode ser diferente —
+       ex.: conferente + auxiliar + movimentação também recebem bônus, mas não
+       entram na conta de meta. */
+    const qpr = form.qtdPessoasRateio === "" ? null : parseInt(form.qtdPessoasRateio || 0, 10);
     if (!ehPaletizado && qt + qps <= 0) return setErro("Informe quantas pessoas vão executar a operação.");
     const dp = inputParaData(form.dataPlanejada);
     if (!dp) return setErro("Informe a data planejada da operação.");
@@ -834,12 +883,23 @@ function Operacoes({ ops, params, persistOps }) {
       dataPlanejada: dp,
       volume: parseInt(form.volume || 0, 10),
       skus: parseInt(form.skus || 0, 10),
-      qtdTerceirizada: qt, qtdPessoasSuperior: qps, qtdSuperior: qs,
+      qtdTerceirizada: qt, qtdPessoasSuperior: qps, qtdSuperior: qs, qtdPessoasRateio: qpr,
       status: "pendente", inicio: null, fim: null, observacao: "", colaboradores: [], ajustes: [], createdAt: Date.now() }, ...ops]);
     setForm(empty);
   };
   const excluir = (id) => persistOps(ops.filter(o => o.id !== id));
   const filtradas = ops.filter(o => !busca.trim() || o.ref.toLowerCase().includes(busca.toLowerCase()) || o.cliente.toLowerCase().includes(busca.toLowerCase()));
+
+  /* Cadastro único por data — só aparecem as datas que têm operações
+     planejadas (não canceladas), do mais próximo pro mais distante. */
+  const datasComOperacao = Array.from(new Set(
+    ops.filter(o => o.status !== "cancelada").map(o => diaPlanejado(o))
+  )).sort((a, b) => a - b);
+
+  const setDiaTerc = (diaTs, patch) => {
+    const atual = diasTerc[diaTs] || { qtd: 0 };
+    persistDiasTerc({ ...diasTerc, [diaTs]: { ...atual, ...patch } });
+  };
   const tipoSel = params.tipos.find(t => t.id === form.tipoId);
   const ehPaletizado = tipoSel && tipoSel.modalidade === "paletizado";
 
@@ -963,6 +1023,18 @@ function Operacoes({ ops, params, persistOps }) {
                 Valor total a ser rateado entre os colaboradores da Superior. Os nomes são definidos depois, na aba Rateio.
               </div>
             </Field>
+            {parseInt(form.qtdSuperior || 0, 10) > 0 && (
+              <Field label="Quantidade de pessoas do rateio">
+                <input style={styles.input} type="number" min="0" value={form.qtdPessoasRateio}
+                  onChange={e => set("qtdPessoasRateio", e.target.value)}
+                  placeholder={form.qtdPessoasSuperior || "0"} />
+                <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
+                  Quantas pessoas podem receber o bônus — pode ser diferente de "Pessoas da SUPERIOR" (ex.: conferente,
+                  auxiliar, movimentação também participam do rateio, mas não entram na meta). Se deixar em branco,
+                  usa o mesmo valor de "Pessoas da SUPERIOR".
+                </div>
+              </Field>
+            )}
           </>)}
         </div>
 
@@ -1066,6 +1138,51 @@ function Operacoes({ ops, params, persistOps }) {
           <button style={styles.btnPrimary} onClick={salvar}><Plus size={17} strokeWidth={2.5} /> Cadastrar Operação</button>
         </div>
       </div>
+
+      <SectionTitle icon={Calendar}>Terceirizados Contratados por Dia <Badge>{datasComOperacao.length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        Diferente da MdO terceirizada de cada operação (que serve só pra calcular meta/tempo), aqui você registra
+        quantos terceirizados foram <strong>de fato contratados naquele dia</strong> — a mesma pessoa pode ter
+        trabalhado em várias operações no mesmo dia, e é isso que define o custo real e a economia do dia.
+      </p>
+      {datasComOperacao.length === 0 ? (
+        <EmptyState text="Nenhuma operação planejada ainda — os blocos de dia aparecem aqui conforme você cadastra operações." />
+      ) : (
+        <div style={{ display: "grid", gap: 10, marginBottom: 6 }}>
+          {datasComOperacao.map(diaTs => {
+            const reg = diasTerc[diaTs] || { qtd: 0 };
+            const precisa = reg.qtd > 0;
+            const opsDoDia = ops.filter(o => diaPlanejado(o) === diaTs && o.status !== "cancelada").length;
+            return (
+              <div key={diaTs} style={{ ...styles.card, padding: 14, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ minWidth: 130 }}>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>{rotuloDia(diaTs)}</div>
+                  <div style={{ fontSize: 11, color: C.prata }}>{opsDoDia} operaç{opsDoDia > 1 ? "ões" : "ão"}</div>
+                </div>
+                <Field label="Precisa terceirizado nesse dia?">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setDiaTerc(diaTs, { qtd: reg.qtd > 0 ? reg.qtd : 1 })}
+                      style={{ ...styles.toggle, ...(precisa ? styles.toggleOn : {}) }}>Sim</button>
+                    <button onClick={() => setDiaTerc(diaTs, { qtd: 0 })}
+                      style={{ ...styles.toggle, ...(!precisa ? styles.toggleOn : {}) }}>Não</button>
+                  </div>
+                </Field>
+                {precisa && (
+                  <Field label="Quantidade de terceirizados contratados">
+                    <input style={{ ...styles.input, maxWidth: 110 }} type="number" min="0" value={reg.qtd}
+                      onChange={e => setDiaTerc(diaTs, { qtd: parseInt(e.target.value || 0, 10) })} />
+                  </Field>
+                )}
+                {precisa && (
+                  <div style={{ fontSize: 11.5, color: C.prata, marginLeft: "auto" }}>
+                    Custo do dia: <strong style={{ color: C.texto }}>{brl(reg.qtd * params.custoTerceirizada)}</strong>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <SectionTitle icon={ClipboardList}>Todas as Operações <Badge>{ops.length}</Badge></SectionTitle>
       <div style={styles.searchRow}>
@@ -1247,10 +1364,11 @@ function Rateio({ ops, params, persistOps, persistParams }) {
   const toggleParticipante = async (op, nome) => {
     const atuais = Array.isArray(op.colaboradores) ? op.colaboradores : [];
     const jaMarcado = atuais.includes(nome);
-    /* trava: não deixa marcar além da quantidade de Pessoas da Superior
-       programada no cadastro. Registros antigos sem esse campo (alvo null)
+    /* trava: não deixa marcar além da quantidade de pessoas do rateio
+       (qtdPessoasRateio, independente da meta). Se não informado, cai para
+       qtdPessoasSuperior. Registros antigos sem nenhum dos dois (alvo null)
        mantêm o comportamento livre de antes. */
-    const alvo = op.qtdPessoasSuperior > 0 ? op.qtdPessoasSuperior : null;
+    const alvo = op.qtdPessoasRateio > 0 ? op.qtdPessoasRateio : (op.qtdPessoasSuperior > 0 ? op.qtdPessoasSuperior : null);
     if (!jaMarcado && alvo != null && atuais.length >= alvo) return;
     const novos = jaMarcado ? atuais.filter(x => x !== nome) : [...atuais, nome];
     await persistOps(ops.map(o => o.id === op.id ? { ...o, colaboradores: novos } : o));
@@ -1403,7 +1521,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
                   Quem participou desta operação?
                   {c.alvoRateio != null && (
                     <span style={{ fontWeight: 400, color: C.prata, textTransform: "none", letterSpacing: 0 }}>
-                      {" "}— {c.nomeados.length} de {c.alvoRateio} programado{c.alvoRateio > 1 ? "s" : ""}
+                      {" "}— {c.nomeados.length} de até {c.alvoRateio}
                     </span>
                   )}
                 </label>
@@ -1424,25 +1542,20 @@ function Rateio({ ops, params, persistOps, persistParams }) {
                 </div>
               </div>
 
-              {c.alvoRateio != null && c.nomeados.length === c.alvoRateio ? (
+              {c.nomeados.length > 0 ? (
                 <div style={{ ...styles.infoBox, marginTop: 12, background: "#EAF6EE", border: `1px solid ${C.supVerde}` }}>
                   <strong>{brl(c.bonusPago)}</strong> dividido entre <strong>{c.nomeados.length}</strong> {c.nomeados.length > 1 ? "colaboradores" : "colaborador"} ={" "}
                   <strong style={{ color: C.supVerde }}>{brl(c.valorPorPessoa)}</strong> para cada
-                </div>
-              ) : c.alvoRateio != null ? (
-                <div style={{ ...styles.infoBox, marginTop: 12, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
-                  Faltam <strong>{c.alvoRateio - c.nomeados.length}</strong> pessoa{c.alvoRateio - c.nomeados.length > 1 ? "s" : ""} para
-                  nomear — a operação foi programada com {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""} da Superior.
-                  O rateio só libera com a quantidade exata.
-                </div>
-              ) : c.nomeados.length > 0 ? (
-                <div style={{ ...styles.infoBox, marginTop: 12, background: "#EAF6EE", border: `1px solid ${C.supVerde}` }}>
-                  <strong>{brl(c.bonusPago)}</strong> dividido entre <strong>{c.nomeados.length}</strong> {c.nomeados.length > 1 ? "colaboradores" : "colaborador"} ={" "}
-                  <strong style={{ color: C.supVerde }}>{brl(c.valorPorPessoa)}</strong> para cada
+                  {c.alvoRateio != null && c.nomeados.length < c.alvoRateio && (
+                    <div style={{ fontSize: 11.5, color: C.prata, fontWeight: 400, marginTop: 4 }}>
+                      Programado para até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""} — ainda pode nomear mais {c.alvoRateio - c.nomeados.length}, se quiser.
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div style={{ ...styles.infoBox, marginTop: 12, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
-                  Nenhum participante marcado — o bônus de {brl(c.bonusPago)} está aguardando nomeação.
+                  Nenhum participante marcado — o bônus de {brl(c.bonusPago)} está aguardando nomeação
+                  {c.alvoRateio != null && <> (até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""})</>}.
                 </div>
               )}
             </div>
@@ -1497,7 +1610,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
    Correção manual de horários que o conferente errou ou esqueceu.
    Toda alteração fica auditada em op.ajustes[].
    ============================================================ */
-function AjusteRegistros({ ops, params, persistOps }) {
+function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
   const [editId, setEditId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busca, setBusca] = useState("");
@@ -1523,12 +1636,14 @@ function AjusteRegistros({ ops, params, persistOps }) {
       qtdTerceirizada: op.qtdTerceirizada ?? "",
       qtdPessoasSuperior: op.qtdPessoasSuperior ?? "",
       qtdSuperior: op.qtdSuperior ?? "",
+      qtdPessoasRateio: op.qtdPessoasRateio ?? "",
       dataPlanejada: dataParaInput(diaPlanejado(op)),
       inicio: paraInput(op.inicio),
       fim: paraInput(op.fim),
       status: op.status,
       observacao: op.observacao || "",
       motivoCancelamento: op.motivoCancelamento || "",
+      diaTercQtd: (diasTerc[diaPlanejado(op)] || {}).qtd ?? 0,
       motivo: ""
     });
     setMsg("");
@@ -1589,6 +1704,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
       qtdTerceirizada: draft.qtdTerceirizada !== "" ? parseInt(draft.qtdTerceirizada, 10) : o.qtdTerceirizada,
       qtdPessoasSuperior: draft.qtdPessoasSuperior !== "" ? parseInt(draft.qtdPessoasSuperior, 10) : o.qtdPessoasSuperior,
       qtdSuperior: draft.qtdSuperior !== "" ? parseInt(draft.qtdSuperior, 10) : o.qtdSuperior,
+      qtdPessoasRateio: draft.qtdPessoasRateio !== "" ? parseInt(draft.qtdPessoasRateio, 10) : o.qtdPessoasRateio,
       status: draft.status,
       dataPlanejada: novaData,
       inicio: (draft.status === "pendente" || draft.status === "cancelada") ? null : ini,
@@ -1600,6 +1716,31 @@ function AjusteRegistros({ ops, params, persistOps }) {
       observacao: draft.observacao,
       ajustes: [...(o.ajustes || []), registro]
     } : o));
+
+    /* Terceirizado por dia: vínculo dinâmico — se esta era a ÚNICA operação
+       do dia antigo (fora canceladas) e a data mudou, o cadastro do dia
+       acompanha para a nova data. Se ainda restar outra operação no dia
+       antigo, o cadastro de lá permanece intacto (não é apagado nem movido). */
+    let diasTercNext = diasTerc;
+    const diaAntigo = diaPlanejado(op);
+    if (dataMudou) {
+      const restamOutrasNoDiaAntigo = ops.some(o =>
+        o.id !== op.id && diaPlanejado(o) === diaAntigo && o.status !== "cancelada");
+      if (!restamOutrasNoDiaAntigo && diasTerc[diaAntigo] && !diasTerc[novaData]) {
+        diasTercNext = { ...diasTerc };
+        delete diasTercNext[diaAntigo];
+        diasTercNext[novaData] = diasTerc[diaAntigo];
+      }
+    }
+    /* A quantidade do dia também é editável direto aqui — útil quando uma
+       ausência de última hora força chamar terceirizado fora do planejado. */
+    const qtdDraftDia = draft.diaTercQtd === "" ? 0 : parseInt(draft.diaTercQtd, 10);
+    const qtdAtualDia = (diasTercNext[novaData] || {}).qtd || 0;
+    if (qtdDraftDia !== qtdAtualDia) {
+      diasTercNext = { ...diasTercNext, [novaData]: { ...(diasTercNext[novaData] || {}), qtd: qtdDraftDia } };
+    }
+    if (diasTercNext !== diasTerc) await persistDiasTerc(diasTercNext);
+
     setMsg("");
     fechar();
   };
@@ -1749,11 +1890,24 @@ function AjusteRegistros({ ops, params, persistOps }) {
                             <input type="number" min="0" style={styles.input} value={draft.qtdSuperior}
                               onChange={e => setDraft(d => ({ ...d, qtdSuperior: e.target.value }))} />
                           </Field>
+                          <Field label="Quantidade de pessoas do rateio">
+                            <input type="number" min="0" style={styles.input} value={draft.qtdPessoasRateio}
+                              onChange={e => setDraft(d => ({ ...d, qtdPessoasRateio: e.target.value }))}
+                              placeholder={String(draft.qtdPessoasSuperior || 0)} />
+                          </Field>
                         </>
                       )}
                       <Field label="Data planejada">
                         <input type="date" style={styles.input} value={draft.dataPlanejada}
                           onChange={e => setDraft(d => ({ ...d, dataPlanejada: e.target.value }))} />
+                      </Field>
+                      <Field label="Terceirizados contratados no dia">
+                        <input type="number" min="0" style={styles.input} value={draft.diaTercQtd}
+                          onChange={e => setDraft(d => ({ ...d, diaTercQtd: e.target.value }))} />
+                        <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
+                          Vale para o dia todo (não só esta operação) — se mudar a data acima, este cadastro
+                          acompanha a nova data quando não sobrar outra operação no dia antigo.
+                        </div>
                       </Field>
                       <Field label="Status">
                         <select style={styles.input} value={draft.status} onChange={e => setDraft(d => ({ ...d, status: e.target.value }))}>
@@ -1860,7 +2014,7 @@ function AjusteRegistros({ ops, params, persistOps }) {
 /* ============================================================
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
-function Dashboard({ ops, params, now }) {
+function Dashboard({ ops, params, now, diasTerc }) {
   const [diaSel, setDiaSel] = useState(null);
   const concluidas = useMemo(() =>
     ops.filter(o => o.status === "concluida")
@@ -1927,6 +2081,31 @@ function Dashboard({ ops, params, now }) {
         Aderencia: d.ops ? Math.round((d.naMeta / d.ops) * 100) : 0 };
     });
   }, [doMes]);
+
+  /* ---- visão POR DIA (nova) ----
+     Diferente de savingDiario (que soma a economia de cada OPERAÇÃO por dia
+     de conclusão), aqui a economia é calculada pelo DIA como um todo — usando
+     o terceirizado efetivamente CONTRATADO naquele dia (diasTerc), que é o
+     número real de custo, não a soma do que cada operação pediu. */
+  const porDiaMes = useMemo(() => {
+    const hoje = inicioDoDia(Date.now());
+    const dias = new Set(
+      ops.filter(o => o.status !== "cancelada" && mesDe(diaPlanejado(o)) === mAtual).map(o => diaPlanejado(o))
+    );
+    Object.keys(diasTerc || {}).forEach(ts => { if (mesDe(Number(ts)) === mAtual) dias.add(Number(ts)); });
+    return Array.from(dias).sort((a, b) => a - b).map(ts => ({
+      ...calcDia(ts, ops, params, diasTerc),
+      rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+      futuro: ts > hoje
+    }));
+  }, [ops, params, diasTerc, mAtual]);
+
+  const aggPorDia = useMemo(() => porDiaMes.reduce((s, d) => ({
+    referencia: s.referencia + d.referenciaDia,
+    custoReal: s.custoReal + d.custoRealDia,
+    bonus: s.bonus + d.bonusDia,
+    economia: s.economia + d.economiaDia
+  }), { referencia: 0, custoReal: 0, bonus: 0, economia: 0 }), [porDiaMes]);
 
   /* análise de produtividade para sugerir recalibragem de metas */
   const calibragem = useMemo(() => analisarProdutividade(ops, params), [ops, params]);
@@ -2232,6 +2411,53 @@ function Dashboard({ ops, params, now }) {
                 <Line type="monotone" dataKey="Acumulado" stroke={C.laranja} strokeWidth={3} dot={{ r: 4, fill: C.laranja }} name="Saving acumulado" />
               </ComposedChart>
             </ResponsiveContainer>
+          </div>
+        </>
+      )}
+
+      {/* ===== VISÃO POR DIA (nova) ===== */}
+      <SectionTitle icon={Calendar}>Economia por Dia — {nomeMes(mAtual)}</SectionTitle>
+      <p style={styles.helper}>
+        Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
+        Planejamento/Ajustes), não a soma do que cada operação pediu — porque a mesma pessoa pode ter trabalhado
+        em mais de uma operação no mesmo dia.
+      </p>
+      <div style={styles.kpiGrid}>
+        <Kpi label="Referência do mês" valor={brl(aggPorDia.referencia)} nota="Cenário 100% terceirizado" icon={TrendingDown} color={C.navy} />
+        <Kpi label="Custo real do mês" valor={brl(aggPorDia.custoReal)} nota="Terceirizado contratado + bônus" icon={DollarSign} color={C.navy2} />
+        <Kpi label="Economia do mês" valor={brl(aggPorDia.economia)} nota="Por dia, não por operação" icon={Award} highlight color={C.supVerde} />
+      </div>
+      {porDiaMes.length === 0 ? (
+        <EmptyState text="Nenhum dia com operação ou terceirizado cadastrado neste mês." />
+      ) : (
+        <>
+          <div style={{ ...styles.chartCard, marginBottom: 14 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={porDiaMes} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
+                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="custoRealDia" fill={C.prata} radius={[4, 4, 0, 0]} name="Custo real do dia" />
+                <Bar dataKey="economiaDia" fill={C.supVerde} radius={[4, 4, 0, 0]} name="Economia do dia" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
+            {porDiaMes.slice().reverse().map(d => (
+              <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
+                opacity: d.futuro ? .55 : 1 }}>
+                <div style={{ minWidth: 80, fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 13, color: C.navy }}>{d.rotulo}</div>
+                <div style={{ fontSize: 11.5, color: C.prata }}>{d.ops.length} operaç{d.ops.length !== 1 ? "ões" : "ão"}</div>
+                <div style={{ fontSize: 11.5, color: C.texto }}>Ref. <strong>{brl(d.referenciaDia)}</strong></div>
+                <div style={{ fontSize: 11.5, color: C.texto }}>Terc. contratado <strong>{d.qtdTercDia}</strong> ({brl(d.custoTercDia)})</div>
+                <div style={{ fontSize: 11.5, color: C.texto }}>Bônus <strong>{brl(d.bonusDia)}</strong></div>
+                <div style={{ fontSize: 12, fontWeight: 700, marginLeft: "auto", color: d.economiaDia >= 0 ? C.supVerde : C.vermelho }}>
+                  {brl(d.economiaDia)}
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}
