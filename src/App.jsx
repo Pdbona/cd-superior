@@ -114,6 +114,24 @@ const hhmm = (h) => {
   return `${Math.floor(m / 60)}h${(m % 60).toString().padStart(2, "0")}`;
 };
 const fmtDT = (ts) => ts ? new Date(ts).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+/* plural de "operação". O código antigo fazia `operação${n!==1?"ões":""}`,
+   que imprimia "operaçãoões" no plural — aparecia em vários KPIs. */
+const plOp = (n) => `${n} operaç${n === 1 ? "ão" : "ões"}`;
+/* só o relógio — os cards do painel mostram quando a operação começou/terminou */
+const hora = (ts) => ts ? new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—";
+/* headcount separado por origem — o gestor precisa ver quanto é terceiro e quanto é Superior */
+function headcount(op) {
+  const terc = op.qtdTerceirizada || 0;
+  const sup = op.qtdPessoasSuperior != null ? op.qtdPessoasSuperior : (op.qtdSuperior || 0);
+  return { terc, sup, total: terc + sup };
+}
+
+/* ---------- tolerância da meta ----------
+   Atrasos de até 15 minutos ainda contam como dentro da meta. Sem isso, um
+   contratempo trivial no fim do turno zeraria o bônus de toda a equipe e o
+   indicador deixaria de refletir a operação real. */
+const TOLERANCIA_META_MIN = 15;
+const TOLERANCIA_META_H = TOLERANCIA_META_MIN / 60;
 
 function calcOp(op, params) {
   const tipo = params.tipos.find(t => t.id === op.tipoId) || params.tipos[0];
@@ -128,10 +146,14 @@ function calcOp(op, params) {
   /* qtdSuperior = QUANTIDADE DE BÔNUS da operação (não headcount).
      Ex.: 2 bônus x R$200 = R$400 no bolo, rateado depois entre os nomeados. */
   const bonusPotencial = paletizado ? 0 : (op.qtdSuperior || 0) * params.bonusSuperior;
+  /* A meta tem tolerância de TOLERANCIA_META_MIN minutos: um atraso pequeno
+     (troca de doca, espera de empilhadeira) não deve derrubar o bônus da
+     equipe. O prazo efetivo é metaHoras + tolerância. */
+  const metaComTolerancia = metaHoras + TOLERANCIA_META_H;
   let tempoReal = null, cumpriuMeta = null;
   if (op.status === "concluida" && op.inicio && op.fim) {
     tempoReal = (op.fim - op.inicio) / 3600000;
-    cumpriuMeta = tempoReal <= metaHoras;
+    cumpriuMeta = tempoReal <= metaComTolerancia;
   }
   const bonusPago = cumpriuMeta === true ? bonusPotencial : 0;
   const custoReal = custoTerc + bonusPago;
@@ -154,7 +176,7 @@ function calcOp(op, params) {
   const prodReal = paletizado
     ? ((tempoReal && op.volume) ? op.volume / tempoReal : null)
     : ((tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null);
-  return { tipo, paletizado, pessoasRef, metaHoras, meta, referencia, custoTerc, bonusPotencial, bonusPago,
+  return { tipo, paletizado, pessoasRef, metaHoras, metaComTolerancia, meta, referencia, custoTerc, bonusPotencial, bonusPago,
     custoReal, economia, tempoReal, cumpriuMeta, nomeados, valorPorPessoa, pessoas, prodReal, alvoRateio,
     rateioPendente: bonusPago > 0 && nomeados.length === 0,
     totalPessoas: pessoas };
@@ -637,7 +659,9 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
               const c = calcOp(op, params);
               const rodando = op.status === "em_andamento";
               const elapsed = op.inicio ? (now - op.inicio) / 3600000 : 0;
-              const over = rodando && elapsed > c.metaHoras;
+              /* só fica vermelho depois da tolerância — dentro dela o bônus
+                 ainda está de pé, e o conferente não deve ver "perdido" */
+              const over = rodando && elapsed > c.metaComTolerancia;
               const meu = podeFinalizar(op);
               const deOutro = rodando && !meu;
               return (
@@ -1327,7 +1351,7 @@ function Acompanhamento({ ops, params, now }) {
         }} />
 
         <Coluna titulo="Finalizadas · últimas 72h" lista={concluidas} cor={C.verde} icone={CheckCircle2}
-          rodape={ocultas > 0 ? `+${ocultas} operação${ocultas > 1 ? "ões" : ""} anterior${ocultas > 1 ? "es" : ""} — veja em Relatórios` : null}
+          rodape={ocultas > 0 ? `+${plOp(ocultas)} anterior${ocultas > 1 ? "es" : ""} — veja em Relatórios` : null}
           render={op => {
           const c = calcOp(op, params);
           return (
@@ -1505,14 +1529,14 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       <div style={styles.kpiGrid}>
         <Kpi label="Bônus Rateado" valor={brl(totalRateado)} nota={`${porColaborador.length} colaborador${porColaborador.length !== 1 ? "es" : ""}`} icon={Award} highlight color={C.supVerde} />
         <Kpi label="Operações com Bônus" valor={comBonus.length} nota="Concluídas na meta" icon={CheckCircle2} color={C.navy} />
-        <Kpi label="Aguardando Nomeação" valor={brl(totalPendente)} nota={`${pendentes.length} operação${pendentes.length !== 1 ? "ões" : ""} sem participantes`} icon={AlertTriangle}
+        <Kpi label="Aguardando Nomeação" valor={brl(totalPendente)} nota={`${plOp(pendentes.length)} sem participantes`} icon={AlertTriangle}
           color={pendentes.length > 0 ? C.laranja : C.prata} />
       </div>
 
       {pendentes.length > 0 && (
         <div style={styles.alertBox}>
           <AlertTriangle size={16} />
-          <span><strong>{pendentes.length} operação{pendentes.length > 1 ? "ões" : ""}</strong> gerou bônus mas ainda não tem participantes nomeados. Marque abaixo para liberar o rateio.</span>
+          <span><strong>{plOp(pendentes.length)}</strong> gerou bônus mas ainda não tem participantes nomeados. Marque abaixo para liberar o rateio.</span>
         </div>
       )}
 
@@ -1805,8 +1829,8 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
           <span>Buscando em <strong>todo o histórico</strong> — {lista.length} resultado{lista.length !== 1 ? "s" : ""} para "{busca}".</span>
         ) : (
           <span>
-            Exibindo as <strong>últimas 72h</strong> e o <strong>que está programado</strong> ({recentes.length} operação{recentes.length !== 1 ? "ões" : ""}).
-            {anteriores > 0 && <> Há {anteriores} operação{anteriores !== 1 ? "ões" : ""} mais antiga{anteriores !== 1 ? "s" : ""} — use a busca acima para localizá-la{anteriores !== 1 ? "s" : ""}.</>}
+            Exibindo as <strong>últimas 72h</strong> e o <strong>que está programado</strong> ({plOp(recentes.length)}).
+            {anteriores > 0 && <> Há {plOp(anteriores)} mais antiga{anteriores !== 1 ? "s" : ""} — use a busca acima para localizá-la{anteriores !== 1 ? "s" : ""}.</>}
           </span>
         )}
       </div>
@@ -1990,12 +2014,12 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                       const ini = paraTs(draft.inicio), f = paraTs(draft.fim);
                       if (!ini || !f || f <= ini) return null;
                       const horas = (f - ini) / 3600000;
-                      const ok = horas <= c.metaHoras;
+                      const ok = horas <= c.metaComTolerancia;
                       return (
                         <div style={{ ...styles.infoBox, marginTop: 12, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
                           <span><strong>Novo tempo:</strong> {hhmm(horas)}</span>
                           <span style={{ color: ok ? C.verde : C.vermelho, fontWeight: 700 }}>
-                            {ok ? "✓ dentro da meta" : "✗ fora da meta"} ({hhmm(c.metaHoras)})
+                            {ok ? "✓ dentro da meta" : "✗ fora da meta"} ({hhmm(c.metaHoras)} + {TOLERANCIA_META_MIN}min)
                           </span>
                           <span><strong>Bônus:</strong> {ok ? brl(c.bonusPotencial) : brl(0)}</span>
                         </div>
@@ -2082,30 +2106,45 @@ function Dashboard({ ops, params, now, diasTerc }) {
 
   const emRisco = emAndamento.filter(x => x.st !== "ok");
 
+  /* operações concluídas hoje, da mais recente para a mais antiga —
+     alimenta o painel "Realizadas Hoje", logo abaixo do que está rodando */
+  const realizadasHoje = useMemo(() =>
+    doDia.slice().sort((a, b) => b.op.fim - a.op.fim)
+  , [doDia]);
+
   /* operações fora da meta no mês */
   const foraMeta = useMemo(() => doMes.filter(x => x.c.cumpriuMeta === false), [doMes]);
 
-  /* evolução do saving por dia dentro do mês corrente */
-  const savingDiario = useMemo(() => {
+  /* ---- evolução diária do mês corrente ----
+     Uma linha por dia com operação concluída, servindo aos dois gráficos:
+     performance (aderência do dia e acumulada) e economia (dia e acumulada). */
+  const evolucaoDiaria = useMemo(() => {
     const mapa = {};
     doMes.forEach(({ op, c }) => {
-      const dia = new Date(op.fim).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-      if (!mapa[dia]) mapa[dia] = { dia, economia: 0, ops: 0, naMeta: 0, ts: inicioDoDia(op.fim) };
-      mapa[dia].economia += c.economia;
-      mapa[dia].ops += 1;
-      if (c.cumpriuMeta) mapa[dia].naMeta += 1;
+      const ts = inicioDoDia(op.fim);
+      if (!mapa[ts]) mapa[ts] = {
+        ts, dia: new Date(op.fim).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        economia: 0, ops: 0, naMeta: 0
+      };
+      mapa[ts].economia += c.economia;
+      mapa[ts].ops += 1;
+      if (c.cumpriuMeta) mapa[ts].naMeta += 1;
     });
     const arr = Object.values(mapa).sort((a, b) => a.ts - b.ts);
-    let acc = 0;
+    let accEco = 0, accOps = 0, accMeta = 0;
     return arr.map(d => {
-      acc += d.economia;
-      return { ...d, Economia: Math.round(d.economia), Acumulado: Math.round(acc),
-        Aderencia: d.ops ? Math.round((d.naMeta / d.ops) * 100) : 0 };
+      accEco += d.economia; accOps += d.ops; accMeta += d.naMeta;
+      return { ...d,
+        Economia: Math.round(d.economia),
+        Acumulado: Math.round(accEco),
+        Operacoes: d.ops,
+        Aderencia: d.ops ? Math.round((d.naMeta / d.ops) * 100) : 0,
+        AderenciaAcum: accOps ? Math.round((accMeta / accOps) * 100) : 0 };
     });
   }, [doMes]);
 
   /* ---- visão POR DIA (nova) ----
-     Diferente de savingDiario (que soma a economia de cada OPERAÇÃO por dia
+     Diferente de evolucaoDiaria (que soma a economia de cada OPERAÇÃO por dia
      de conclusão), aqui a economia é calculada pelo DIA como um todo — usando
      o terceirizado efetivamente CONTRATADO naquele dia (diasTerc), que é o
      número real de custo, não a soma do que cada operação pediu. */
@@ -2129,8 +2168,8 @@ function Dashboard({ ops, params, now, diasTerc }) {
     economia: s.economia + d.economiaDia
   }), { referencia: 0, custoReal: 0, bonus: 0, economia: 0 }), [porDiaMes]);
 
-  /* análise de produtividade para sugerir recalibragem de metas */
-  const calibragem = useMemo(() => analisarProdutividade(ops, params), [ops, params]);
+  /* A calibragem de metas saiu daqui para a aba Parâmetros: é ajuste de
+     cadastro, não gestão à vista — e esta tela roda em TV no CD. */
 
   /* forecast: 7 dias à frente, a partir de hoje */
   const forecast = useMemo(() => {
@@ -2142,11 +2181,19 @@ function Dashboard({ ops, params, now, diasTerc }) {
       const concluidasDoDia = ops.filter(o => o.status === "concluida" && diaPlanejado(o) === ts);
       const todasDoDia = [...doDia, ...concluidasDoDia];
       let volume = 0, pessoas = 0, horas = 0, subdim = 0;
+      /* separado por direção: o gestor escala doca e equipe de forma
+         diferente para quem recebe e para quem expede */
+      const rec = { ops: 0, volume: 0, pessoas: 0 };
+      const exp = { ops: 0, volume: 0, pessoas: 0 };
       todasDoDia.forEach(o => {
         const c = calcOp(o, params);
         volume += o.volume || 0;
         pessoas += c.pessoas || 0;
         horas += c.metaHoras || 0;
+        const alvo = o.direcao === "recebimento" ? rec : exp;
+        alvo.ops += 1;
+        alvo.volume += o.volume || 0;
+        alvo.pessoas += c.pessoas || 0;
         const dim = avaliarDimensionamento(c.tipo, o.volume, c.pessoas);
         if (dim && dim.critico) subdim++;
       });
@@ -2154,84 +2201,38 @@ function Dashboard({ ops, params, now, diasTerc }) {
         curto: new Date(ts).toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
         data: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
         ops: todasDoDia.length, pendentes: doDia.length, concluidas: concluidasDoDia.length,
-        volume, pessoas, horas, subdim, hoje: i === 0 });
+        volume, pessoas, horas, subdim, rec, exp, hoje: i === 0 });
     }
     return dias;
   }, [ops, params]);
 
   const totalForecast = forecast.reduce((s, d) => s + d.ops, 0);
+  const totalRec = forecast.reduce((s, d) => s + d.rec.ops, 0);
+  const totalExp = forecast.reduce((s, d) => s + d.exp.ops, 0);
 
-  if (agg.n === 0 && emAndamento.length === 0) return (
+  /* Só esconde o painel quando não há absolutamente nada — nem concluída, nem
+     rodando, nem programada. Com forecast preenchido a tela ainda serve:
+     é onde o gestor confere a semana antes de qualquer operação começar. */
+  if (agg.n === 0 && emAndamento.length === 0 && totalForecast === 0) return (
     <div><SectionTitle icon={LayoutDashboard}>Painel Gerencial</SectionTitle>
       <EmptyState text="Ainda não há operações concluídas. Assim que o conferente finalizar, os indicadores aparecem aqui." /></div>
   );
 
-  const dataCusto = concluidas.map(({ op, c }) => ({ nome: op.ref, "Referência": Math.round(c.referencia), "Custo Real": Math.round(c.custoReal) }));
-  const dataTempo = concluidas.map(({ op, c }) => ({ nome: op.ref, Real: +c.tempoReal.toFixed(2), Meta: c.metaHoras, cumpriu: c.cumpriuMeta }));
-  let acc = 0;
-  const dataEco = concluidas.map(({ op, c }) => { acc += c.economia; return { nome: op.ref, Acumulada: Math.round(acc) }; });
-  const compTipo = params.tipos.map(t => {
-    const grp = concluidas.filter(x => x.op.tipoId === t.id);
-    return { nome: t.label.replace(/^Pneu de /i, ""), Economia: Math.round(grp.reduce((s, x) => s + x.c.economia, 0)), qtd: grp.length };
-  }).filter(x => x.qtd > 0);
-
   return (
     <div>
-      {/* ===== GESTÃO À VISTA — OPERAÇÕES EM RISCO ===== */}
-      {emAndamento.length > 0 && (
-        <>
-          <SectionTitle icon={Gauge}>
-            Operação Agora
-            <Badge>{emAndamento.length} em andamento</Badge>
-            {emRisco.length > 0 && (
-              <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
-                <AlertTriangle size={11} /> {emRisco.length} em risco
-              </span>
-            )}
-          </SectionTitle>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 12, marginBottom: 22 }}>
-            {emAndamento.map(({ op, c, el, st }) => {
-              const cor = corTempo(st);
-              const pct = Math.min(100, (el / c.metaHoras) * 100);
-              const cls = st === "estourou" ? "critico-meta" : st === "atencao" ? "alerta-meta" : "";
-              return (
-                <div key={op.id} className={cls}
-                  style={{ background: st === "estourou" ? "#FFF5F5" : st === "atencao" ? "#FFFBF0" : C.branco,
-                    border: `1px solid ${st === "ok" ? C.prataClaro : cor}`, borderLeft: `5px solid ${cor}`,
-                    borderRadius: 10, padding: "14px 16px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                    <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 14, color: C.navy }}>{op.ref}</strong>
-                    <span className={st !== "ok" ? "piscar" : ""}
-                      style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 22, color: cor, lineHeight: 1 }}>
-                      {hhmm(el)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.texto, marginTop: 4 }}>{op.cliente} · {c.tipo?.label}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4,
-                    fontSize: 12, fontWeight: 700, color: op.conferenteInicio ? C.navy2 : C.prata }}>
-                    <HardHat size={13} strokeWidth={2.3} />
-                    {op.conferenteInicio || "Conferente não identificado"}
-                  </div>
-                  <div style={{ height: 8, background: C.prataClaro, borderRadius: 5, marginTop: 10, overflow: "hidden" }}>
-                    <div style={{ width: `${pct}%`, height: "100%", background: cor, transition: "width .6s" }} />
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 6, fontWeight: 700, color: st === "ok" ? C.prata : cor, display: "flex", alignItems: "center", gap: 4 }}>
-                    {st === "estourou" && <><AlertTriangle size={11} /> Estourou {hhmm(el - c.metaHoras)} · bônus perdido</>}
-                    {st === "atencao" && <><AlertTriangle size={11} /> Faltam {hhmm(c.metaHoras - el)} para a meta</>}
-                    {st === "ok" && <>Meta {hhmm(c.metaHoras)} · {Math.round(pct)}% consumido</>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {/* ===== FORECAST OPERACIONAL — 7 DIAS ===== */}
+      {/* ===== FORECAST OPERACIONAL — 7 DIAS =====
+         Vem antes de tudo: o gestor abre o painel para decidir o que fazer
+         com o dia que ainda não aconteceu, não para revisar o que passou. */}
       {totalForecast > 0 && (
         <>
           <SectionTitle icon={Calendar}>
             Forecast Operacional <Badge>{totalForecast} nos próximos 7 dias</Badge>
+            <span style={{ ...styles.pill, background: "#E3F2FD", color: "#0D47A1", marginLeft: 4 }}>
+              {totalRec} recebimento{totalRec !== 1 ? "s" : ""}
+            </span>
+            <span style={{ ...styles.pill, background: "#FDECEA", color: "#B71C1C" }}>
+              {totalExp} expediç{totalExp !== 1 ? "ões" : "ão"}
+            </span>
           </SectionTitle>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 8, marginBottom: 10, minWidth: 0 }}>
             {forecast.map(d => {
@@ -2257,9 +2258,12 @@ function Dashboard({ ops, params, now, diasTerc }) {
                     {d.ops === 1 ? "operação" : "operações"}
                   </div>
                   {!vazio && (
-                    <div style={{ fontSize: 10, color: C.texto, lineHeight: 1.5, borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 5 }}>
-                      <div>{d.volume.toLocaleString("pt-BR")} un</div>
-                      <div style={{ color: C.prata }}>{d.pessoas}p · {hhmm(d.horas)}</div>
+                    <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 5, display: "grid", gap: 3, textAlign: "left" }}>
+                      <FcDir sigla="REC" dados={d.rec} cor="#0D47A1" bg="#E3F2FD" />
+                      <FcDir sigla="EXP" dados={d.exp} cor="#B71C1C" bg="#FDECEA" />
+                      <div style={{ fontSize: 9.5, color: C.prata, textAlign: "center", marginTop: 2 }}>
+                        {d.pessoas}p · {hhmm(d.horas)}
+                      </div>
                     </div>
                   )}
                   {d.subdim > 0 && (
@@ -2283,6 +2287,46 @@ function Dashboard({ ops, params, now, diasTerc }) {
           )}
           {!forecast.some(d => d.subdim > 0) && <div style={{ marginBottom: 22 }} />}
         </>
+      )}
+
+      {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
+      {emAndamento.length > 0 && (
+        <>
+          <SectionTitle icon={Gauge}>
+            Operação Agora
+            <Badge>{emAndamento.length} em andamento</Badge>
+            {emRisco.length > 0 && (
+              <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
+                <AlertTriangle size={11} /> {emRisco.length} em risco
+              </span>
+            )}
+          </SectionTitle>
+          <div style={styles.opCardGrid}>
+            {emAndamento.map(({ op, c, el, st }) => (
+              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ===== REALIZADAS HOJE — fechamento do dia em andamento ===== */}
+      <SectionTitle icon={CheckCircle2}>
+        Realizadas Hoje
+        <Badge>{realizadasHoje.length} concluída{realizadasHoje.length !== 1 ? "s" : ""}</Badge>
+        {realizadasHoje.length > 0 && (
+          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
+            {realizadasHoje.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un
+          </span>
+        )}
+      </SectionTitle>
+      {realizadasHoje.length === 0 ? (
+        <div style={{ marginBottom: 22 }}>
+          <EmptyState text="Nenhuma operação concluída hoje ainda." />
+        </div>
+      ) : (
+        <div style={styles.opCardGrid}>
+          {realizadasHoje.map(({ op, c }) => <CardOpFeita key={op.id} op={op} c={c} />)}
+        </div>
       )}
 
       {diaSel && (
@@ -2331,32 +2375,105 @@ function Dashboard({ ops, params, now, diasTerc }) {
         </div>
       )}
 
-      {/* ===== HOJE ===== */}
-      <SectionTitle icon={Calendar}>Hoje <Badge>{aggDia.n} concluída{aggDia.n !== 1 ? "s" : ""}</Badge></SectionTitle>
-      <div style={styles.kpiGrid}>
-        <Kpi label="Economia do Dia" valor={brl(aggDia.economia)} nota={aggDia.n ? `${aggDia.economiaPct.toFixed(0)}% vs terceirizada` : "Sem operações hoje"} icon={TrendingDown} highlight color={C.laranja} />
-        <Kpi label="Aderência à Meta (hoje)" valor={aggDia.n ? `${aggDia.noPrazoPct.toFixed(0)}%` : "—"} nota={`${aggDia.noPrazo} de ${aggDia.n} no prazo`} icon={Target}
-          color={aggDia.n === 0 ? C.prata : aggDia.noPrazoPct >= 80 ? C.verde : aggDia.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
-        <Kpi label="Bônus Gerado (hoje)" valor={brl(aggDia.bonusPago)} nota="Só operações na meta" icon={Award} color={C.supVerde} />
+      {/* ===== PERFORMANCE, ECONOMIA E BÔNUS — dia e mês na mesma caixa =====
+         Uma caixa por indicador, com as duas janelas lado a lado: o número do
+         dia responde "como estamos agora", o do mês responde "como está o
+         fechamento". Separar em duas seções obrigava o gestor a comparar
+         cartões distantes na tela. */}
+      <SectionTitle icon={Gauge}>
+        Indicadores <Badge>{nomeMes(mAtual)}</Badge>
+        {aggMesAnt.n > 0 && <span style={{ fontSize: 12, fontWeight: 500, color: C.prata }}>mês vs {nomeMes(mAnterior)}</span>}
+      </SectionTitle>
+      <div style={styles.kpiDuploGrid}>
+        <KpiDuplo
+          label="Performance" icon={Target} color={corAderencia(aggMes.n ? aggMes.noPrazoPct : null)}
+          hojeValor={aggDia.n ? `${aggDia.noPrazoPct.toFixed(0)}%` : "—"}
+          hojeNota={aggDia.n ? `${aggDia.noPrazo} de ${aggDia.n} no prazo` : "Sem operações hoje"}
+          hojeCor={corAderencia(aggDia.n ? aggDia.noPrazoPct : null)}
+          mesValor={aggMes.n ? `${aggMes.noPrazoPct.toFixed(0)}%` : "—"}
+          mesNota={aggMesAnt.n ? `Anterior: ${aggMesAnt.noPrazoPct.toFixed(0)}%` : `${aggMes.noPrazo} de ${aggMes.n} no prazo`}
+          mesCor={corAderencia(aggMes.n ? aggMes.noPrazoPct : null)}
+          variacao={varMeta} sufixoVar="p.p." melhorMaior
+          rodape={`Aderência à meta · tolerância de ${TOLERANCIA_META_MIN} min`} />
+
+        <KpiDuplo
+          label="Economia" icon={TrendingDown} color={C.laranja} highlight
+          hojeValor={brl(aggDia.economia)}
+          hojeNota={aggDia.n ? `${aggDia.economiaPct.toFixed(0)}% vs terceirizada` : "Sem operações hoje"}
+          hojeCor={C.laranja}
+          mesValor={brl(aggMes.economia)}
+          mesNota={aggMesAnt.n ? `Anterior: ${brl(aggMesAnt.economia)}` : `${aggMes.economiaPct.toFixed(0)}% vs terceirizada`}
+          mesCor={C.laranja}
+          variacao={varEconomia} melhorMaior
+          rodape="Referência 100% terceirizada menos o custo real" />
+
+        <KpiDuplo
+          label="Bônus" icon={Award} color={C.supVerde}
+          hojeValor={brl(aggDia.bonusPago)}
+          hojeNota={aggDia.n ? `${plOp(aggDia.noPrazo)} na meta` : "Sem operações hoje"}
+          hojeCor={C.supVerde}
+          mesValor={brl(aggMes.bonusPago)}
+          mesNota={aggMes.bonusPerdido > 0 ? `Não pago: ${brl(aggMes.bonusPerdido)}` : "Nenhum bônus perdido"}
+          mesCor={C.supVerde}
+          variacao={variacao(aggMes.bonusPago, aggMesAnt.bonusPago)} melhorMaior
+          rodape={`${plOp(foraMeta.length)} fora da meta no mês`} />
       </div>
 
-      {/* ===== MÊS × MÊS ANTERIOR ===== */}
-      <SectionTitle icon={TrendingDown}>
-        Mês Corrente <Badge>{nomeMes(mAtual)}</Badge>
-        {aggMesAnt.n > 0 && <span style={{ fontSize: 12, fontWeight: 500, color: C.prata }}>vs {nomeMes(mAnterior)}</span>}
-      </SectionTitle>
+      {/* ===== EVOLUÇÃO — PERFORMANCE E ECONOMIA LADO A LADO ===== */}
+      {evolucaoDiaria.length > 0 && (
+        <>
+          <SectionTitle icon={Activity}>Evolução Diária — {nomeMes(mAtual)}</SectionTitle>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(400px,1fr))", gap: 14, marginBottom: 22 }}>
+            <div style={styles.chartCard}>
+              <div style={styles.chartTitle}>Performance — aderência à meta</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={evolucaoDiaria} margin={{ top: 10, right: 12, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                  <XAxis dataKey="dia" tick={{ fontSize: 11, fill: C.texto }} />
+                  <YAxis yAxisId="pct" domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                  <YAxis yAxisId="ops" orientation="right" allowDecimals={false} tick={{ fontSize: 11, fill: C.prata }} />
+                  <Tooltip contentStyle={tooltipStyle}
+                    formatter={(v, n) => n === "Operações" ? [v, n] : [`${v}%`, n]} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar yAxisId="ops" dataKey="Operacoes" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Operações" />
+                  <Line yAxisId="pct" type="monotone" dataKey="Aderencia" stroke={C.navy2} strokeWidth={2}
+                    dot={{ r: 3, fill: C.navy2 }} name="Aderência do dia" />
+                  <Line yAxisId="pct" type="monotone" dataKey="AderenciaAcum" stroke={C.supVerde} strokeWidth={3}
+                    dot={{ r: 4, fill: C.supVerde }} name="Aderência acumulada" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={styles.chartCard}>
+              <div style={styles.chartTitle}>Economia — saving acumulado</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={evolucaoDiaria} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                  <XAxis dataKey="dia" tick={{ fontSize: 11, fill: C.texto }} />
+                  <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
+                  <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="Economia" fill={C.prata} radius={[4, 4, 0, 0]} name="Economia do dia" />
+                  <Line type="monotone" dataKey="Acumulado" stroke={C.laranja} strokeWidth={3}
+                    dot={{ r: 4, fill: C.laranja }} name="Saving acumulado" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ===== FECHAMENTO DO MÊS — números de apoio ===== */}
+      <SectionTitle icon={ClipboardList}>Fechamento do Mês <Badge>{nomeMes(mAtual)}</Badge></SectionTitle>
       <div style={styles.kpiGrid}>
-        <KpiComparativo label="Economia do Mês" valor={brl(aggMes.economia)} variacao={varEconomia}
-          nota={aggMesAnt.n ? `Mês anterior: ${brl(aggMesAnt.economia)}` : "Sem base de comparação"}
-          icon={TrendingDown} highlight color={C.laranja} melhorMaior />
-        <KpiComparativo label="Aderência à Meta" valor={aggMes.n ? `${aggMes.noPrazoPct.toFixed(0)}%` : "—"} variacao={varMeta} sufixoVar="p.p."
-          nota={aggMesAnt.n ? `Mês anterior: ${aggMesAnt.noPrazoPct.toFixed(0)}%` : `${aggMes.noPrazo} de ${aggMes.n} no prazo`}
-          icon={Target} melhorMaior
-          color={aggMes.n === 0 ? C.prata : aggMes.noPrazoPct >= 80 ? C.verde : aggMes.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
         <KpiComparativo label="Operações Concluídas" valor={aggMes.n} variacao={variacao(aggMes.n, aggMesAnt.n)}
           nota={aggMesAnt.n ? `Mês anterior: ${aggMesAnt.n}` : "Primeiro mês de apuração"}
           icon={ClipboardList} color={C.navy} melhorMaior />
-        <Kpi label="Bônus Não Pago (mês)" valor={brl(aggMes.bonusPerdido)} nota={`${foraMeta.length} operação${foraMeta.length !== 1 ? "ões" : ""} fora da meta`}
+        <Kpi label="Custo Real (mês)" valor={brl(aggMes.custoReal)} nota="Terceirizada + bônus pago"
+          icon={DollarSign} color={C.navy2} />
+        <Kpi label="Referência (mês)" valor={brl(aggMes.referencia)} nota="Cenário 100% terceirizado"
+          icon={Building2} color={C.prata} />
+        <Kpi label="Bônus Não Pago (mês)" valor={brl(aggMes.bonusPerdido)} nota={`${plOp(foraMeta.length)} fora da meta`}
           icon={AlertTriangle} color={aggMes.bonusPerdido > 0 ? C.vermelho : C.prata} />
       </div>
 
@@ -2417,27 +2534,11 @@ function Dashboard({ ops, params, now, diasTerc }) {
         </>
       )}
 
-      {/* ===== EVOLUÇÃO DO SAVING NO MÊS ===== */}
-      {savingDiario.length > 0 && (
-        <>
-          <SectionTitle icon={TrendingDown}>Evolução do Saving — {nomeMes(mAtual)}</SectionTitle>
-          <div style={{ ...styles.chartCard, marginBottom: 22 }}>
-            <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={savingDiario} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="dia" tick={{ fontSize: 11, fill: C.texto }} />
-                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v, n) => n === "Aderência" ? [`${v}%`, n] : [brl(v), n]} contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="Economia" fill={C.prata} radius={[4, 4, 0, 0]} name="Economia do dia" />
-                <Line type="monotone" dataKey="Acumulado" stroke={C.laranja} strokeWidth={3} dot={{ r: 4, fill: C.laranja }} name="Saving acumulado" />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </>
-      )}
+      {/* A evolução do saving subiu para a seção "Evolução Diária", ao lado
+         da performance — ver as duas curvas juntas é o que mostra se a
+         economia veio de produtividade ou de corte de headcount. */}
 
-      {/* ===== VISÃO POR DIA (nova) ===== */}
+      {/* ===== VISÃO POR DIA ===== */}
       <SectionTitle icon={Calendar}>Economia por Dia — {nomeMes(mAtual)}</SectionTitle>
       <p style={styles.helper}>
         Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
@@ -2458,7 +2559,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
               <BarChart data={porDiaMes} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
-                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
+                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
                 <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="custoRealDia" fill={C.prata} radius={[4, 4, 0, 0]} name="Custo real do dia" />
@@ -2483,109 +2584,6 @@ function Dashboard({ ops, params, now, diasTerc }) {
           </div>
         </>
       )}
-
-      {/* ===== RECALIBRAÇÃO DE METAS ===== */}
-      <SectionTitle icon={Gauge}>Calibragem de Metas</SectionTitle>
-      <p style={styles.helper}>
-        O app compara a produtividade realizada com a linha de base de cada tipo. A meta de cada operação
-        já é proporcional ao volume e à equipe — aqui você vê se a própria linha de base precisa ser revista.
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 24 }}>
-        {calibragem.map(a => {
-          const semDados = a.n === 0;
-          const cor = semDados ? C.prata : !a.suficiente ? C.navy2 : a.precisaAjuste ? C.laranja : C.verde;
-          return (
-            <div key={a.tipo.id} style={{ ...styles.card, padding: "15px 16px", borderTop: `4px solid ${cor}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <TipoIcon tipo={a.tipo} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{a.tipo.label}</div>
-                  <div style={{ fontSize: 11, color: C.prata }}>
-                    {a.n} registro{a.n !== 1 ? "s" : ""} válido{a.n !== 1 ? "s" : ""}
-                    {!a.suficiente && a.n > 0 && ` · mínimo ${a.amostraMinima} para sugerir`}
-                  </div>
-                </div>
-              </div>
-
-              {a.base && (
-                <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7, marginBottom: 10 }}>
-                  <div>
-                    <span style={{ color: C.prata }}>Base atual:</span>{" "}
-                    <strong>{a.base.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>{" "}
-                    <span style={{ color: C.prata }}>({minPorUnidade(a.base).toFixed(2)} min/un)</span>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: C.prata }}>
-                    {a.tipo.baseVolume?.toLocaleString("pt-BR")} un · {a.tipo.basePessoas} pessoas · {hhmm(a.tipo.baseHoras)}
-                  </div>
-                </div>
-              )}
-
-              {semDados ? (
-                <div style={{ ...styles.infoBox, fontSize: 12 }}>
-                  Sem operações concluídas com volume informado. Assim que houver registros,
-                  a análise aparece aqui.
-                </div>
-              ) : (
-                <>
-                  <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7 }}>
-                    <div>
-                      <span style={{ color: C.prata }}>Realizado (mediana):</span>{" "}
-                      <strong style={{ color: cor }}>{a.mediana.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>
-                      {a.difPct != null && (
-                        <span style={{ color: a.difPct >= 0 ? C.verde : C.vermelho, fontWeight: 700, marginLeft: 6 }}>
-                          {a.difPct >= 0 ? "▲" : "▼"} {Math.abs(a.difPct).toFixed(0)}%
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11.5, color: C.prata }}>
-                      Dispersão entre operações: {a.cv.toFixed(0)}%
-                      {a.cv > 35 && " — alta, os tempos variam bastante"}
-                    </div>
-                  </div>
-
-                  {a.suficiente && a.precisaAjuste && a.horasSugeridas && (
-                    <div style={{ marginTop: 10, padding: "10px 12px", background: "#FFF4EB", border: `1px solid ${C.laranja}`, borderRadius: 8, fontSize: 12.5, color: C.laranjaEsc, lineHeight: 1.6 }}>
-                      <strong>Sugestão de recalibragem</strong><br />
-                      A equipe vem entregando {a.difPct > 0 ? "acima" : "abaixo"} da base.
-                      Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
-                      o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
-                      <strong>{hhmm(a.horasSugeridas)}</strong>.
-                      <div style={{ marginTop: 6, fontSize: 11.5 }}>
-                        Ajuste em Parâmetros se concordar — nada é alterado automaticamente.
-                      </div>
-                    </div>
-                  )}
-
-                  {a.suficiente && !a.precisaAjuste && (
-                    <div style={{ marginTop: 10, fontSize: 12.5, color: C.verde, fontWeight: 600 }}>
-                      <CheckCircle2 size={13} style={{ verticalAlign: -2, marginRight: 4 }} />
-                      Linha de base coerente com o realizado (desvio abaixo de {TOLERANCIA_PCT}%).
-                    </div>
-                  )}
-
-                  {!a.suficiente && (
-                    <div style={{ marginTop: 10, fontSize: 12, color: C.prata, lineHeight: 1.55 }}>
-                      Faltam {a.amostraMinima - a.n} registro{a.amostraMinima - a.n !== 1 ? "s" : ""} para
-                      o app sugerir uma recalibragem com segurança.
-                    </div>
-                  )}
-
-                  {a.corrSku != null && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.prataClaro}`, fontSize: 12, color: C.texto, lineHeight: 1.6 }}>
-                      <strong>Variedade de SKU</strong> ({a.nSku} operação{a.nSku !== 1 ? "ões" : ""} com SKU informado):{" "}
-                      {a.corrSku < -0.4
-                        ? <span style={{ color: C.laranjaEsc }}>mais SKU vem reduzindo a produtividade — indício de que a separação pesa no tempo.</span>
-                        : a.corrSku > 0.4
-                          ? <span style={{ color: C.navy2 }}>correlação positiva — a variedade não parece penalizar; vale investigar o que mais explica.</span>
-                          : <span style={{ color: C.prata }}>sem correlação clara até aqui.</span>}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
 
       {/* O histórico completo, os gráficos por operação e a tabela detalhada
          ficam em Relatórios. Esta tela é gestão à vista — pensada para TV. */}
@@ -3167,6 +3165,12 @@ function Parametros({ params, persistParams, persistOps, ops }) {
   const addTipo = () => setDraft(d => ({ ...d, tipos: [...d.tipos, { id: uid(), label: "Nova operação", pessoas: 4, metaHoras: 3, icon: "box", modalidade: "manual" }] }));
   const delTipo = (id) => setDraft(d => ({ ...d, tipos: d.tipos.filter(t => t.id !== id) }));
 
+  /* Calibragem: veio do Dashboard para cá porque a conclusão dela é sempre
+     "ajustar a linha de base do tipo" — e é logo abaixo, nesta mesma tela,
+     que o ajuste acontece. Usa params (salvo), não draft, para comparar o
+     realizado com o que está de fato valendo. */
+  const calibragem = useMemo(() => analisarProdutividade(ops || [], params), [ops, params]);
+
   const salvar = () => {
     const clean = {
       custoTerceirizada: Math.max(0, parseFloat(draft.custoTerceirizada) || 0),
@@ -3389,6 +3393,116 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       </div>
       <button style={{ ...styles.btnGhost, marginTop: 12 }} onClick={addTipo}><Plus size={15} /> Adicionar tipo de operação</button>
 
+      {/* ===== CALIBRAGEM DE METAS ===== */}
+      <SectionTitle icon={Gauge}>Calibragem de Metas</SectionTitle>
+      <p style={styles.helper}>
+        O app compara a produtividade realizada com a linha de base de cada tipo. A meta de cada operação
+        já é proporcional ao volume e à equipe — aqui você vê se a própria linha de base, cadastrada acima,
+        precisa ser revista. Nada é alterado automaticamente.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 24 }}>
+        {calibragem.map(a => {
+          const semDados = a.n === 0;
+          const cor = semDados ? C.prata : !a.suficiente ? C.navy2 : a.precisaAjuste ? C.laranja : C.verde;
+          return (
+            <div key={a.tipo.id} style={{ ...styles.card, padding: "15px 16px", borderTop: `4px solid ${cor}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <TipoIcon tipo={a.tipo} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{a.tipo.label}</div>
+                  <div style={{ fontSize: 11, color: C.prata }}>
+                    {a.n} registro{a.n !== 1 ? "s" : ""} válido{a.n !== 1 ? "s" : ""}
+                    {!a.suficiente && a.n > 0 && ` · mínimo ${a.amostraMinima} para sugerir`}
+                  </div>
+                </div>
+              </div>
+
+              {a.base && (
+                <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7, marginBottom: 10 }}>
+                  <div>
+                    <span style={{ color: C.prata }}>Base atual:</span>{" "}
+                    <strong>{a.base.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>{" "}
+                    <span style={{ color: C.prata }}>({minPorUnidade(a.base).toFixed(2)} min/un)</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.prata }}>
+                    {a.tipo.baseVolume?.toLocaleString("pt-BR")} un · {a.tipo.basePessoas} pessoas · {hhmm(a.tipo.baseHoras)}
+                  </div>
+                </div>
+              )}
+
+              {semDados ? (
+                <div style={{ ...styles.infoBox, fontSize: 12 }}>
+                  Sem operações concluídas com volume informado. Assim que houver registros,
+                  a análise aparece aqui.
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7 }}>
+                    <div>
+                      <span style={{ color: C.prata }}>Realizado (mediana):</span>{" "}
+                      <strong style={{ color: cor }}>{a.mediana.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>
+                      {a.difPct != null && (
+                        <span style={{ color: a.difPct >= 0 ? C.verde : C.vermelho, fontWeight: 700, marginLeft: 6 }}>
+                          {a.difPct >= 0 ? "▲" : "▼"} {Math.abs(a.difPct).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: C.prata }}>
+                      Dispersão entre operações: {a.cv.toFixed(0)}%
+                      {a.cv > 35 && " — alta, os tempos variam bastante"}
+                    </div>
+                  </div>
+
+                  {a.suficiente && a.precisaAjuste && a.horasSugeridas && (
+                    <div style={{ marginTop: 10, padding: "10px 12px", background: "#FFF4EB", border: `1px solid ${C.laranja}`, borderRadius: 8, fontSize: 12.5, color: C.laranjaEsc, lineHeight: 1.6 }}>
+                      <strong>Sugestão de recalibragem</strong><br />
+                      A equipe vem entregando {a.difPct > 0 ? "acima" : "abaixo"} da base.
+                      Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
+                      o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
+                      <strong>{hhmm(a.horasSugeridas)}</strong>.
+                      <div style={{ marginTop: 8 }}>
+                        <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
+                          onClick={() => { setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2)); }}>
+                          <CheckCircle2 size={14} /> Aplicar nos campos acima
+                        </button>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 11.5 }}>
+                        O botão só preenche o campo — o valor passa a valer depois de <strong>Salvar parâmetros</strong>.
+                      </div>
+                    </div>
+                  )}
+
+                  {a.suficiente && !a.precisaAjuste && (
+                    <div style={{ marginTop: 10, fontSize: 12.5, color: C.verde, fontWeight: 600 }}>
+                      <CheckCircle2 size={13} style={{ verticalAlign: -2, marginRight: 4 }} />
+                      Linha de base coerente com o realizado (desvio abaixo de {TOLERANCIA_PCT}%).
+                    </div>
+                  )}
+
+                  {!a.suficiente && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: C.prata, lineHeight: 1.55 }}>
+                      Falta{a.amostraMinima - a.n !== 1 ? "m" : ""} {a.amostraMinima - a.n} registro
+                      {a.amostraMinima - a.n !== 1 ? "s" : ""} para o app sugerir uma recalibragem com segurança.
+                    </div>
+                  )}
+
+                  {a.corrSku != null && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.prataClaro}`, fontSize: 12, color: C.texto, lineHeight: 1.6 }}>
+                      <strong>Variedade de SKU</strong> ({plOp(a.nSku)} com SKU informado):{" "}
+                      {a.corrSku < -0.4
+                        ? <span style={{ color: C.laranjaEsc }}>mais SKU vem reduzindo a produtividade — indício de que a separação pesa no tempo.</span>
+                        : a.corrSku > 0.4
+                          ? <span style={{ color: C.navy2 }}>correlação positiva — a variedade não parece penalizar; vale investigar o que mais explica.</span>
+                          : <span style={{ color: C.prata }}>sem correlação clara até aqui.</span>}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
       <div style={{ marginTop: 22, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button style={styles.btnPrimary} onClick={salvar}><CheckCircle2 size={17} /> Salvar parâmetros</button>
         {salvo && <span style={{ color: C.verde, fontWeight: 600, fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}><CheckCircle2 size={15} /> Salvo!</span>}
@@ -3411,10 +3525,12 @@ function Splash() {
     </div>
   );
 }
-/* limiar de alerta: 80% da meta consumida */
+/* limiar de alerta: 80% da meta consumida.
+   "estourou" só depois da tolerância de 15 min — antes disso a operação
+   ainda paga bônus, então marcar vermelho ali seria mentira para o gestor. */
 const ALERTA_PCT = 0.8;
 function statusTempo(elapsed, meta) {
-  if (elapsed > meta) return "estourou";
+  if (elapsed > meta + TOLERANCIA_META_H) return "estourou";
   if (elapsed >= meta * ALERTA_PCT) return "atencao";
   return "ok";
 }
@@ -3498,6 +3614,181 @@ function KpiComparativo({ label, valor, nota, icon: Ic, highlight, color, variac
     </div>
   );
 }
+/* cor do semáforo de aderência — usada nos KPIs e nos cards */
+const corAderencia = (pct) => pct == null ? C.prata
+  : pct >= 80 ? C.verde : pct >= 50 ? C.amarelo : C.vermelho;
+
+/* ---------- KPI com as duas janelas (dia e mês) na mesma caixa ----------
+   O gestor lê "como está agora" e "como fecha o mês" sem trocar de seção. */
+function KpiDuplo({ label, icon: Ic, color, highlight, rodape,
+  hojeValor, hojeNota, hojeCor, mesValor, mesNota, mesCor,
+  variacao: v, sufixoVar, melhorMaior }) {
+  const temVar = v != null && isFinite(v);
+  const positivo = temVar && (melhorMaior ? v >= 0 : v <= 0);
+  const corVar = !temVar ? C.prata : positivo ? C.verde : C.vermelho;
+  return (
+    <div style={{ ...styles.kpiCard, borderTopColor: color || C.navy, padding: "15px 16px 13px",
+      ...(highlight ? { boxShadow: "0 4px 16px rgba(255,107,0,.20)" } : {}) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={styles.kpiLabel}>{label}</span>
+        {Ic && <Ic size={19} color={color || C.navy2} strokeWidth={2.2} />}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <div style={styles.kpiPeriodo}>Hoje</div>
+          <div style={{ ...styles.kpiValor, fontSize: 23, color: hojeCor || color || C.navy, margin: "2px 0 0" }}>{hojeValor}</div>
+          <div style={{ ...styles.kpiNota, marginTop: 3 }}>{hojeNota}</div>
+        </div>
+        <div style={{ borderLeft: `1px solid ${C.prataClaro}`, paddingLeft: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+            <span style={styles.kpiPeriodo}>No mês</span>
+            {temVar && (
+              <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 10.5,
+                color: corVar, whiteSpace: "nowrap" }}>
+                {v >= 0 ? "▲" : "▼"} {Math.abs(v).toFixed(sufixoVar ? 1 : 0)}{sufixoVar ? ` ${sufixoVar}` : "%"}
+              </span>
+            )}
+          </div>
+          <div style={{ ...styles.kpiValor, fontSize: 23, color: mesCor || color || C.navy, margin: "2px 0 0" }}>{mesValor}</div>
+          <div style={{ ...styles.kpiNota, marginTop: 3 }}>{mesNota}</div>
+        </div>
+      </div>
+      {rodape && (
+        <div style={{ marginTop: 11, paddingTop: 9, borderTop: `1px dashed ${C.prataClaro}`,
+          fontSize: 10.5, color: C.prata, lineHeight: 1.4 }}>
+          {rodape}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- linha de direção no card do forecast ---------- */
+function FcDir({ sigla, dados, cor, bg }) {
+  const off = dados.ops === 0;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, opacity: off ? .38 : 1 }}>
+      <span style={{ background: off ? C.prataClaro : bg, color: off ? C.prata : cor,
+        fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 8.5, letterSpacing: .3,
+        padding: "2px 4px", borderRadius: 4, lineHeight: 1 }}>{sigla}</span>
+      <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 11.5,
+        color: off ? C.prata : C.navy, lineHeight: 1 }}>{dados.ops}</span>
+      <span style={{ fontSize: 9, color: C.prata, marginLeft: "auto", whiteSpace: "nowrap" }}>
+        {dados.volume ? `${dados.volume.toLocaleString("pt-BR")}un` : "—"}
+      </span>
+    </div>
+  );
+}
+
+/* ---------- headcount da operação, separado por origem ---------- */
+function LinhaPessoas({ op }) {
+  const { terc, sup, total } = headcount(op);
+  if (!total) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.prata, flexWrap: "wrap" }}>
+      <Users size={12} strokeWidth={2.4} color={C.prata} />
+      <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 11.5, color: C.navy }}>{total}</strong>
+      <span>pessoas</span>
+      <span style={{ color: C.prataClaro }}>·</span>
+      <span>{terc} terc. + {sup} Superior</span>
+    </div>
+  );
+}
+
+/* ---------- card compacto: operação em andamento ---------- */
+function CardOpAgora({ op, c, el, st }) {
+  const cor = corTempo(st);
+  const pct = Math.min(100, (el / c.metaHoras) * 100);
+  const cls = st === "estourou" ? "critico-meta" : st === "atencao" ? "alerta-meta" : "";
+  return (
+    <div className={cls}
+      style={{ background: st === "estourou" ? "#FFF5F5" : st === "atencao" ? "#FFFBF0" : C.branco,
+        border: `1px solid ${st === "ok" ? C.prataClaro : cor}`, borderLeft: `4px solid ${cor}`,
+        borderRadius: 9, padding: "11px 12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+        <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12.5, color: C.navy }}>{op.ref}</strong>
+        <span className={st !== "ok" ? "piscar" : ""}
+          style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: cor, lineHeight: 1 }}>
+          {hhmm(el)}
+        </span>
+      </div>
+      <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} /></div>
+      <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
+        {op.cliente} · {c.tipo?.label}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, fontSize: 11, flexWrap: "wrap" }}>
+        <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 12, color: C.navy }}>
+          {(op.volume || 0).toLocaleString("pt-BR")} un
+        </strong>
+        <span style={{ color: C.prataClaro }}>·</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: C.prata }}>
+          <Clock size={11} strokeWidth={2.4} /> início {hora(op.inicio)}
+        </span>
+      </div>
+      <div style={{ marginTop: 4 }}><LinhaPessoas op={op} /></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 5,
+        fontSize: 10.5, fontWeight: 700, color: op.conferenteInicio ? C.navy2 : C.prata }}>
+        <HardHat size={12} strokeWidth={2.3} />
+        {op.conferenteInicio || "Conferente não identificado"}
+      </div>
+      <div style={{ height: 6, background: C.prataClaro, borderRadius: 4, marginTop: 8, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: cor, transition: "width .6s" }} />
+      </div>
+      <div style={{ fontSize: 10, marginTop: 5, fontWeight: 700, color: st === "ok" ? C.prata : cor,
+        display: "flex", alignItems: "center", gap: 4 }}>
+        {st === "estourou" && <><AlertTriangle size={10} /> Estourou {hhmm(el - c.metaComTolerancia)} · bônus perdido</>}
+        {st === "atencao" && <><AlertTriangle size={10} /> Faltam {hhmm(Math.max(0, c.metaHoras - el))} para a meta</>}
+        {st === "ok" && <>Meta {hhmm(c.metaHoras)} · {Math.round(pct)}% consumido</>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- card compacto: operação concluída hoje ---------- */
+function CardOpFeita({ op, c }) {
+  const naMeta = c.cumpriuMeta === true;
+  const cor = naMeta ? C.verde : C.vermelho;
+  const dif = c.tempoReal != null ? c.tempoReal - c.metaHoras : null;
+  return (
+    <div style={{ background: naMeta ? "#F6FBF7" : "#FFF9F9", border: `1px solid ${C.prataClaro}`,
+      borderLeft: `4px solid ${cor}`, borderRadius: 9, padding: "11px 12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+        <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12.5, color: C.navy }}>{op.ref}</strong>
+        <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: cor, lineHeight: 1 }}>
+          {hhmm(c.tempoReal)}
+        </span>
+      </div>
+      <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} /></div>
+      <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
+        {op.cliente} · {c.tipo?.label}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, fontSize: 11, flexWrap: "wrap" }}>
+        <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 12, color: C.navy }}>
+          {(op.volume || 0).toLocaleString("pt-BR")} un
+        </strong>
+        <span style={{ color: C.prataClaro }}>·</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: C.prata }}>
+          <Clock size={11} strokeWidth={2.4} /> {hora(op.inicio)} → {hora(op.fim)}
+        </span>
+      </div>
+      <div style={{ marginTop: 4 }}><LinhaPessoas op={op} /></div>
+      {op.conferenteFim || op.conferenteInicio ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 5,
+          fontSize: 10.5, fontWeight: 700, color: C.navy2 }}>
+          <HardHat size={12} strokeWidth={2.3} />
+          {op.conferenteFim || op.conferenteInicio}
+        </div>
+      ) : null}
+      <div style={{ marginTop: 8, paddingTop: 7, borderTop: `1px dashed ${C.prataClaro}`,
+        display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: cor, flexWrap: "wrap" }}>
+        {naMeta
+          ? <><CheckCircle2 size={11} /> Na meta ({hhmm(c.metaHoras)}) · bônus {brl(c.bonusPago)}</>
+          : <><AlertTriangle size={11} /> Fora da meta ({hhmm(c.metaHoras)}) · +{hhmm(dif)}</>}
+      </div>
+    </div>
+  );
+}
+
 function ChartCard({ title, children }) {
   return <div style={styles.chartCard}><div style={styles.chartTitle}>{title}</div>{children}</div>;
 }
@@ -3527,6 +3818,9 @@ function EmptyState({ text }) {
   return <div style={styles.empty}><Package size={30} color={C.prataClaro} /><div style={{ marginTop: 8 }}>{text}</div></div>;
 }
 const tooltipStyle = { borderRadius: 8, border: `1px solid ${C.prataClaro}`, fontFamily: "'Roboto',sans-serif", fontSize: 12 };
+/* eixo de dinheiro: "12k" só quando a escala justifica. Com valores na casa
+   das centenas o formato antigo repetia "0k" e "-0k" em todos os ticks. */
+const tickBRL = (v) => Math.abs(v) >= 2000 ? `${(v / 1000).toFixed(0)}k` : `${v}`;
 
 /* ============================================================
    ESTILOS
@@ -3568,6 +3862,11 @@ const styles = {
   helper: { fontSize: 13, color: C.texto, margin: "0 0 14px", lineHeight: 1.5 },
   toast: { background: C.verde, color: C.branco, padding: "11px 18px", display: "flex", alignItems: "center", gap: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13.5 },
   kpiGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(185px,1fr))", gap: 14, margin: "6px 0 18px" },
+  /* caixas de indicador com dia e mês lado a lado — precisam de mais largura */
+  kpiDuploGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(290px,1fr))", gap: 14, margin: "6px 0 18px" },
+  kpiPeriodo: { fontFamily: "'Montserrat',sans-serif", fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: .5, color: C.prata },
+  /* cards de operação do painel — menores que os antigos, cabem mais na TV */
+  opCardGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(215px,1fr))", gap: 10, marginBottom: 22 },
   kpiCard: { background: C.branco, border: `1px solid ${C.prataClaro}`, borderTop: `4px solid ${C.navy}`, borderRadius: 10, padding: "15px 16px", boxShadow: "0 2px 10px rgba(30,58,95,.08)" },
   kpiLabel: { fontFamily: "'Montserrat',sans-serif", fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: C.navy2, lineHeight: 1.25, maxWidth: 130 },
   kpiValor: { fontFamily: "'Roboto Mono',monospace", fontSize: 23, fontWeight: 700, margin: "10px 0 4px" },
