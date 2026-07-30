@@ -2999,10 +2999,10 @@ function Relatorios({ ops, params }) {
     const m = {};
     dados.forEach(({ op, c }) => {
       const k = c.tipo?.label || "—";
-      if (!m[k]) m[k] = { tipo: k, ops: 0, referencia: 0, custoReal: 0, economia: 0, noPrazo: 0, horas: 0, meta: 0 };
+      if (!m[k]) m[k] = { tipo: k, ops: 0, referencia: 0, custoReal: 0, economia: 0, noPrazo: 0, horas: 0, meta: 0, volume: 0 };
       const r = m[k];
       r.ops++; r.referencia += c.referencia; r.custoReal += c.custoReal; r.economia += c.economia;
-      r.horas += c.tempoReal || 0; r.meta += c.metaHoras;
+      r.horas += c.tempoReal || 0; r.meta += c.metaHoras; r.volume += op.volume || 0;
       if (c.cumpriuMeta) r.noPrazo++;
     });
     return Object.values(m).sort((a, b) => b.economia - a.economia);
@@ -3043,14 +3043,46 @@ function Relatorios({ ops, params }) {
     dados.forEach(({ op, c }) => {
       const ts = inicioDoDia(op.fim);
       if (!m[ts]) m[ts] = { ts, rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
-        volume: 0, ops: 0, noPrazo: 0, horas: 0 };
+        volume: 0, ops: 0, noPrazo: 0, horas: 0, meta: 0 };
       m[ts].volume += op.volume || 0;
       m[ts].ops += 1;
       m[ts].horas += c.tempoReal || 0;
+      m[ts].meta += c.metaHoras || 0;
       if (c.cumpriuMeta) m[ts].noPrazo += 1;
     });
     return Object.values(m).sort((a, b) => a.ts - b.ts);
   }, [dados]);
+
+  /* Programação por dia — base do relatório de planejamento. Diferente de
+     volumeDiario, que só olha o que já foi executado. */
+  const planoDiario = useMemo(() => {
+    const m = {};
+    planejadas.forEach(({ op, c }) => {
+      const ts = diaPlanejado(op);
+      if (!m[ts]) m[ts] = { ts, rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        diaSemana: new Date(ts).toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
+        volume: 0, ops: 0, horas: 0, pessoas: 0, rec: 0, exp: 0 };
+      const d = m[ts];
+      d.volume += op.volume || 0;
+      d.ops += 1;
+      d.horas += c.metaHoras || 0;
+      d.pessoas += c.pessoas || 0;
+      if (op.direcao === "recebimento") d.rec += 1; else d.exp += 1;
+    });
+    return Object.values(m).sort((a, b) => a.ts - b.ts);
+  }, [planejadas]);
+
+  /* Consolidação por tipo do que está programado */
+  const planoPorTipo = useMemo(() => {
+    const m = {};
+    planejadas.forEach(({ op, c }) => {
+      const k = c.tipo?.label || "—";
+      if (!m[k]) m[k] = { tipo: k, ops: 0, volume: 0, horas: 0, pessoas: 0 };
+      const r = m[k];
+      r.ops++; r.volume += op.volume || 0; r.horas += c.metaHoras || 0; r.pessoas += c.pessoas || 0;
+    });
+    return Object.values(m).sort((a, b) => b.volume - a.volume);
+  }, [planejadas]);
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
 
@@ -3163,7 +3195,7 @@ function Relatorios({ ops, params }) {
   /* ---------- DASHBOARD HTML DIRETORIA ---------- */
   const gerarHTML = () => {
     if (dados.length === 0) return flash("Nenhuma operação concluída no período selecionado.");
-    const html = montarHTMLDiretoria({ dados, agg, porCliente, porTipo, params, de, ate, cliFiltro });
+    const html = montarHTMLDiretoria({ dados, agg, porCliente, porTipo, volumeDiario, params, de, ate, cliFiltro });
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3175,42 +3207,57 @@ function Relatorios({ ops, params }) {
 
   const abrirPreview = () => {
     if (dados.length === 0) return flash("Nenhuma operação concluída no período selecionado.");
-    const html = montarHTMLDiretoria({ dados, agg, porCliente, porTipo, params, de, ate, cliFiltro });
+    const html = montarHTMLDiretoria({ dados, agg, porCliente, porTipo, volumeDiario, params, de, ate, cliFiltro });
     const w = window.open("", "_blank");
     if (w) { w.document.write(html); w.document.close(); }
     else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
   };
 
-  /* ---------- RELATÓRIO AO CLIENTE ---------- */
-  const htmlCliente = () => montarHTMLCliente({
-    dados, planejadas, agg, mediaAnual, volumeDiario, porTipo, de, ate, cliFiltro
+  /* ---------- RELATÓRIOS AO CLIENTE ----------
+     Duas peças distintas, porque respondem a perguntas diferentes:
+     "desempenho" olha para trás (o que entregamos e em que prazo);
+     "programação" olha para frente (o que está agendado e como nos
+     preparamos). Misturar as duas gerava um relatório com metade das
+     seções vazias sempre que o período escolhido era futuro. */
+  const htmlCliente = (modo) => montarHTMLCliente({
+    modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario,
+    porTipo, planoPorTipo, de, ate, cliFiltro
   });
-  const semDadosCliente = () => dados.length === 0 && planejadas.length === 0;
 
-  const gerarCliente = () => {
-    if (semDadosCliente()) return flash("Nenhuma operação realizada nem programada para este recorte.");
-    const blob = new Blob([htmlCliente()], { type: "text/html;charset=utf-8" });
+  const entregar = (modo, acao) => {
+    const vazio = modo === "planejado" ? planejadas.length === 0 : dados.length === 0;
+    if (vazio) return flash(modo === "planejado"
+      ? "Nenhuma operação programada para este cliente daqui em diante."
+      : "Nenhuma operação concluída no período selecionado.");
+    const html = htmlCliente(modo);
+    if (acao === "preview") {
+      const w = window.open("", "_blank");
+      if (w) { w.document.write(html); w.document.close(); }
+      else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
+      return;
+    }
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const alvo = cliFiltro === "todos" ? "Consolidado" : cliFiltro.replace(/[^\w]/g, "_");
-    a.href = url; a.download = `Superior_Relatorio_${alvo}_${de}_a_${ate}.html`;
+    a.href = url;
+    a.download = modo === "planejado"
+      ? `Superior_Programacao_${alvo}.html`
+      : `Superior_Desempenho_${alvo}_${de}_a_${ate}.html`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-    flash("Relatório do cliente gerado — pode enviar por e-mail ou WhatsApp.");
-  };
-
-  const previewCliente = () => {
-    if (semDadosCliente()) return flash("Nenhuma operação realizada nem programada para este recorte.");
-    const w = window.open("", "_blank");
-    if (w) { w.document.write(htmlCliente()); w.document.close(); }
-    else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
+    flash(modo === "planejado"
+      ? "Relatório de programação gerado — pode enviar ao cliente."
+      : "Relatório de desempenho gerado — pode enviar ao cliente.");
   };
 
   return (
     <div>
-      <SectionTitle icon={FileSpreadsheet}>Relatórios &amp; Apresentação</SectionTitle>
+      <SectionTitle icon={FileSpreadsheet}>Relatório para a Diretoria</SectionTitle>
       <p style={styles.helper}>
-        Selecione o período e gere os entregáveis. O Excel traz o detalhamento completo para auditoria; o dashboard HTML é a peça de apresentação para a diretoria.
+        Peça interna: além da performance operacional, traz <strong>custo, economia e bônus</strong> —
+        é o que a diretoria precisa para avaliar o ganho financeiro do modelo. O Excel acompanha com o
+        detalhamento completo para auditoria.
       </p>
 
       {/* Filtros */}
@@ -3251,36 +3298,83 @@ function Relatorios({ ops, params }) {
         </div>
       </div>
 
-      {/* ===== RELATÓRIO PARA O CLIENTE ===== */}
-      <SectionTitle icon={Building2}>Relatório para o Cliente</SectionTitle>
+      {/* ===== RELATÓRIOS PARA O CLIENTE — duas peças ===== */}
+      <SectionTitle icon={Building2}>Relatórios para o Cliente</SectionTitle>
       <p style={styles.helper}>
-        Peça de apresentação para enviar ao cliente: volume movimentado, cumprimento de prazo comparado
-        com a média do ano e o que está programado. <strong>Não contém custo, bônus nem economia</strong> —
-        esses números são da relação da Superior com a terceirizada, não do cliente.
+        Peças de apresentação para enviar ao cliente. <strong>Nenhuma delas contém custo, bônus ou
+        economia</strong> — esses números são da relação da Superior com a terceirizada, não do cliente.
+        Recorte atual: <strong>{cliFiltro === "todos" ? "todos os clientes" : cliFiltro}</strong>
+        {cliFiltro === "todos" && " — selecione um cliente no filtro acima para a peça sair nominal"}.
       </p>
-      <div style={{ ...styles.card, borderTop: `4px solid ${C.supVerde}` }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-          <Previa label="Operações realizadas" valor={String(agg.n)} cor={C.navy} />
-          <Previa label="Volume movimentado" valor={`${agg.volume.toLocaleString("pt-BR")} un`} cor={C.navy2} destaque />
-          <Previa label="Entregas no prazo" valor={`${agg.noPrazoPct.toFixed(0)}%`}
-            cor={agg.noPrazoPct >= 80 ? C.verde : agg.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
-          <Previa label={`Média ${mediaAnual.ano}`} valor={`${mediaAnual.noPrazoPct.toFixed(0)}%`} cor={C.prata} />
-          <Previa label="Programadas" valor={String(planejadas.length)} cor={C.laranja} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(330px,1fr))", gap: 14 }}>
+        {/* --- peça 1: desempenho realizado --- */}
+        <div style={{ ...styles.card, borderTop: `4px solid ${C.supVerde}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
+            <CheckCircle2 size={19} color={C.supVerde} strokeWidth={2.3} />
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, color: C.navy }}>
+              Desempenho Realizado
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: C.prata, marginBottom: 14, lineHeight: 1.5 }}>
+            O que foi entregue no período: volume, tempo médio e cumprimento de prazo contra a média do ano.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+            <Previa label="Operações" valor={String(agg.n)} cor={C.navy} />
+            <Previa label="Volume" valor={`${agg.volume.toLocaleString("pt-BR")} un`} cor={C.navy2} destaque />
+            <Previa label="No prazo" valor={agg.n ? `${agg.noPrazoPct.toFixed(0)}%` : "—"}
+              cor={agg.noPrazoPct >= 80 ? C.verde : agg.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
+            <Previa label={`Média ${mediaAnual.ano}`} valor={`${mediaAnual.noPrazoPct.toFixed(0)}%`} cor={C.prata} />
+          </div>
+          {agg.n === 0 && (
+            <div style={{ ...styles.infoBox, marginTop: 12, fontSize: 12, color: C.laranjaEsc }}>
+              Nenhuma operação concluída neste período — ajuste as datas acima ou use o relatório de programação.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+            <button style={{ ...styles.btnPrimary, background: C.supVerde, opacity: agg.n === 0 ? .5 : 1 }}
+              onClick={() => entregar("realizado", "download")}>
+              <Download size={16} strokeWidth={2.4} /> Baixar
+            </button>
+            <button style={styles.btnGhost} onClick={() => entregar("realizado", "preview")}>
+              <FileText size={15} /> Visualizar
+            </button>
+          </div>
         </div>
 
-        <div style={{ ...styles.infoBox, marginTop: 14, fontSize: 12.5 }}>
-          Recorte atual: <strong>{cliFiltro === "todos" ? "todos os clientes" : cliFiltro}</strong>.
-          {cliFiltro === "todos" && <> Para enviar a um cliente específico, selecione-o no filtro acima —
-            o relatório sai com o nome dele no cabeçalho e só com as operações dele.</>}
-        </div>
-
-        <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-          <button style={{ ...styles.btnPrimary, background: C.supVerde }} onClick={gerarCliente}>
-            <Download size={17} strokeWidth={2.4} /> Baixar Relatório do Cliente
-          </button>
-          <button style={styles.btnGhost} onClick={previewCliente}>
-            <FileText size={15} /> Visualizar agora
-          </button>
+        {/* --- peça 2: programação futura --- */}
+        <div style={{ ...styles.card, borderTop: `4px solid ${C.laranja}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
+            <Calendar size={19} color={C.laranja} strokeWidth={2.3} />
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, color: C.navy }}>
+              Programação
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: C.prata, marginBottom: 14, lineHeight: 1.5 }}>
+            O que está agendado daqui em diante, dia a dia, com a média histórica só como referência de
+            entrega. Não depende do período selecionado acima.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+            <Previa label="Programadas" valor={String(planejadas.length)} cor={C.laranja} destaque />
+            <Previa label="Volume previsto"
+              valor={`${planejadas.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un`} cor={C.navy2} />
+            <Previa label="Dias com operação" valor={String(planoDiario.length)} cor={C.navy} />
+            <Previa label="Tipos" valor={String(planoPorTipo.length)} cor={C.prata} />
+          </div>
+          {planejadas.length === 0 && (
+            <div style={{ ...styles.infoBox, marginTop: 12, fontSize: 12, color: C.laranjaEsc }}>
+              Nenhuma operação programada para este cliente daqui em diante.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+            <button style={{ ...styles.btnPrimary, opacity: planejadas.length === 0 ? .5 : 1 }}
+              onClick={() => entregar("planejado", "download")}>
+              <Download size={16} strokeWidth={2.4} /> Baixar
+            </button>
+            <button style={styles.btnGhost} onClick={() => entregar("planejado", "preview")}>
+              <FileText size={15} /> Visualizar
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3337,7 +3431,7 @@ function Relatorios({ ops, params }) {
 /* ============================================================
    GERADOR DO DASHBOARD HTML — DIRETORIA (arquivo standalone)
    ============================================================ */
-function montarHTMLDiretoria({ dados, agg, porCliente, porTipo, params, de, ate, cliFiltro }) {
+function montarHTMLDiretoria({ dados, agg, porCliente, porTipo, volumeDiario, params, de, ate, cliFiltro }) {
   const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
   const emissao = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -3376,20 +3470,28 @@ function montarHTMLDiretoria({ dados, agg, porCliente, porTipo, params, de, ate,
     <text x="${lpL - 8}" y="${y + 4}" font-size="10" fill="#8A9BB0" text-anchor="end">${Math.round(maxE * f / 1000 * 10) / 10}k</text>`;
   }).join("");
 
-  /* --- barras tempo real x meta --- */
-  const tW = 900, tH = 280, tpL = 56, tpB = 54, tpT = 16;
-  const maxT = Math.max(...dados.map(d => Math.max(d.c.tempoReal || 0, d.c.metaHoras)), 1);
-  const stepT = (tW - tpL - 20) / Math.max(1, dados.length);
-  const tbars = dados.map((d, i) => {
+  /* --- barras tempo real x meta, agrupadas POR DIA ---
+     Antes era uma barra por operação: com 15+ operações as etiquetas viravam
+     um borrão rotacionado e não dava para ler nada. Por dia, cada barra
+     compara o tempo total gasto no dia com o tempo-alvo somado daquele dia. */
+  const vd = volumeDiario || [];
+  const tW = 900, tH = 300, tpL = 60, tpB = 62, tpT = 18;
+  const maxT = Math.max(...vd.map(d => Math.max(d.horas || 0, d.meta || 0)), 1);
+  const stepT = (tW - tpL - 24) / Math.max(1, vd.length);
+  const tbars = vd.map((d, i) => {
     const x = tpL + i * stepT;
-    const h = ((tH - tpT - tpB) * (d.c.tempoReal || 0)) / maxT;
-    const ym = tH - tpB - ((tH - tpT - tpB) * d.c.metaHoras) / maxT;
-    const w = Math.max(8, Math.min(34, stepT * 0.55));
-    return `<rect x="${x}" y="${tH - tpB - h}" width="${w}" height="${h}" fill="${d.c.cumpriuMeta ? "#2E7D32" : "#C62828"}" rx="3"/>
-    <line x1="${x - 3}" y1="${ym}" x2="${x + w + 3}" y2="${ym}" stroke="#1E3A5F" stroke-width="2.4" stroke-dasharray="5 3"/>
-    <text x="${x + w / 2}" y="${tH - tpB + 15}" font-size="9.5" fill="#5C6B7E" text-anchor="middle" transform="rotate(-32 ${x + w / 2} ${tH - tpB + 15})">${esc(d.op.ref.slice(0, 12))}</text>`;
+    const w = Math.max(10, Math.min(38, stepT * 0.5));
+    const hReal = ((tH - tpT - tpB) * (d.horas || 0)) / maxT;
+    const hMeta = ((tH - tpT - tpB) * (d.meta || 0)) / maxT;
+    const noPrazo = d.ops > 0 && d.noPrazo === d.ops;
+    const cor = noPrazo ? "#2E7D32" : d.noPrazo > 0 ? "#F9A825" : "#C62828";
+    return `<rect x="${x}" y="${tH - tpB - hMeta}" width="${w}" height="${hMeta}" fill="#C5CDD8" rx="3"><title>${esc(d.rotulo)} — tempo-alvo ${hhmm(d.meta)}</title></rect>
+    <rect x="${x + w + 3}" y="${tH - tpB - hReal}" width="${w}" height="${hReal}" fill="${cor}" rx="3"><title>${esc(d.rotulo)} — realizado ${hhmm(d.horas)} em ${d.ops} operação(ões)</title></rect>
+    <text x="${x + w + 1}" y="${tH - tpB + 15}" font-size="10" fill="#5C6B7E" text-anchor="middle">${esc(d.rotulo)}</text>
+    <text x="${x + w + 1}" y="${tH - tpB + 28}" font-size="9.5" fill="#1E3A5F" text-anchor="middle" font-weight="700">${d.ops} op</text>
+    <text x="${x + w + 1}" y="${tH - tpB + 41}" font-size="9" fill="#8A9BB0" text-anchor="middle">${d.noPrazo}/${d.ops} no prazo</text>`;
   }).join("");
-  const gridT = [0, .5, 1].map(f => {
+  const gridT = [0, .25, .5, .75, 1].map(f => {
     const y = tH - tpB - (tH - tpT - tpB) * f;
     return `<line x1="${tpL}" y1="${y}" x2="${tW - 12}" y2="${y}" stroke="#E1E7EF"/>
     <text x="${tpL - 8}" y="${y + 4}" font-size="10" fill="#8A9BB0" text-anchor="end">${(maxT * f).toFixed(1)}h</text>`;
@@ -3517,11 +3619,16 @@ footer .r{color:#8A9BB0;text-align:right}
   <h2 class="sec">Performance de Execução</h2>
   <div class="dual">
     <div class="card">
-      <p class="ct">Tempo realizado × meta — em horas</p>
+      <p class="ct">Tempo realizado × tempo-alvo por dia — em horas</p>
       <svg viewBox="0 0 ${tW} ${tH}">
         ${gridT}<line x1="${tpL}" y1="${tH - tpB}" x2="${tW - 12}" y2="${tH - tpB}" stroke="#8A9BB0"/>${tbars}
       </svg>
-      <div class="leg"><span><i style="background:#2E7D32"></i>Dentro da meta</span><span><i style="background:#C62828"></i>Acima da meta</span><span>— — meta do tipo</span></div>
+      <div class="leg">
+        <span><i style="background:#C5CDD8"></i>Tempo-alvo do dia</span>
+        <span><i style="background:#2E7D32"></i>Realizado — todas no prazo</span>
+        <span><i style="background:#F9A825"></i>Realizado — parte no prazo</span>
+        <span><i style="background:#C62828"></i>Realizado — nenhuma no prazo</span>
+      </div>
     </div>
     <div class="card" style="display:flex;flex-direction:column;align-items:center;justify-content:center">
       <p class="ct" style="align-self:flex-start">Aderência às metas de tempo</p>
@@ -3587,7 +3694,8 @@ footer .r{color:#8A9BB0;text-align:right}
    relação da Superior com a terceirizada. Ao cliente interessam volume
    movimentado, cumprimento de prazo e o que está programado.
    ============================================================ */
-function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, porTipo, de, ate, cliFiltro }) {
+function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario, porTipo, planoPorTipo, de, ate, cliFiltro }) {
+  const plano = modo === "planejado";
   const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
   const emissao = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -3662,16 +3770,53 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
     <td class="m">${new Date(diaPlanejado(op)).toLocaleDateString("pt-BR")}</td>
     <td class="m">${esc(op.status === "em_andamento" ? "Em execução" : "Programada")}</td></tr>`).join("");
 
+  /* tempo MÉDIO por operação, não o total: o total só cresce com o volume
+     de trabalho e não diz nada sobre a eficiência de cada operação */
   const linhasTipo = porTipo.map(r => `<tr>
     <td class="b">${esc(r.tipo)}</td><td class="m">${r.ops}</td>
-    <td class="m">${hhmm(r.horas)}</td>
+    <td class="m">${nf(r.volume)}</td>
+    <td class="m">${hhmm(r.ops ? r.horas / r.ops : 0)}</td>
+    <td class="m">${nf(Math.round(r.ops ? r.volume / r.ops : 0))}</td>
     <td class="m">${(r.ops ? (r.noPrazo / r.ops) * 100 : 0).toFixed(0)}%</td></tr>`).join("");
 
+  const linhasPlanoTipo = (planoPorTipo || []).map(r => `<tr>
+    <td class="b">${esc(r.tipo)}</td><td class="m">${r.ops}</td>
+    <td class="m">${nf(r.volume)}</td>
+    <td class="m">${nf(Math.round(r.ops ? r.volume / r.ops : 0))}</td>
+    <td class="m">${hhmm(r.horas)}</td></tr>`).join("");
+
   const volPlanejado = planejadas.reduce((s, x) => s + (x.op.volume || 0), 0);
+  const tempoMedioPeriodo = agg.n ? agg.horasReais / agg.n : 0;
+  const volumeMedioPeriodo = agg.n ? agg.volume / agg.n : 0;
+
+  /* --- gráfico do relatório de programação: volume previsto por dia --- */
+  const pd = planoDiario || [];
+  const pW = 920, pH = 290, pL = 66, pB = 62, pT = 18;
+  const maxP = Math.max(...pd.map(d => d.volume), 1);
+  const stepP = (pW - pL - 24) / Math.max(1, pd.length);
+  const pBars = pd.map((d, i) => {
+    const x = pL + i * stepP;
+    const h = ((pH - pT - pB) * d.volume) / maxP;
+    const w = Math.max(9, Math.min(46, stepP * 0.62));
+    return `<rect x="${x}" y="${pH - pB - h}" width="${w}" height="${h}" fill="#FF6B00" rx="4"><title>${esc(d.rotulo)}: ${nf(d.volume)} un em ${d.ops} operação(ões)</title></rect>
+    <text x="${x + w / 2}" y="${pH - pB - h - 6}" font-size="10" fill="#5C6B7E" text-anchor="middle" font-family="Roboto Mono, monospace">${nf(d.volume)}</text>
+    <text x="${x + w / 2}" y="${pH - pB + 15}" font-size="10" fill="#5C6B7E" text-anchor="middle">${esc(d.rotulo)}</text>
+    <text x="${x + w / 2}" y="${pH - pB + 28}" font-size="9" fill="#8A9BB0" text-anchor="middle">${esc(d.diaSemana)}</text>
+    <text x="${x + w / 2}" y="${pH - pB + 42}" font-size="9.5" fill="#1E3A5F" text-anchor="middle" font-weight="700">${d.ops} op</text>`;
+  }).join("");
+  const pGrid = [0, .25, .5, .75, 1].map(f => {
+    const y = pH - pB - (pH - pT - pB) * f;
+    return `<line x1="${pL}" y1="${y}" x2="${pW - 14}" y2="${y}" stroke="#E1E7EF"/>
+    <text x="${pL - 8}" y="${y + 4}" font-size="10" fill="#8A9BB0" text-anchor="end">${nf(Math.round(maxP * f))}</text>`;
+  }).join("");
+
+  const primeiroDia = pd.length ? new Date(pd[0].ts).toLocaleDateString("pt-BR") : "—";
+  const ultimoDia = pd.length ? new Date(pd[pd.length - 1].ts).toLocaleDateString("pt-BR") : "—";
+  const picoDia = pd.length ? pd.reduce((a, b) => b.volume > a.volume ? b : a) : null;
 
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Superior Transportes — Relatório Operacional · ${esc(alvo)}</title>
+<title>Superior Transportes — ${plano ? "Programação Operacional" : "Relatório Operacional"} · ${esc(alvo)}</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@500;700&display=swap');
   *{box-sizing:border-box} body{margin:0;background:#F7F9FB;color:#37474F;font-family:Roboto,sans-serif}
@@ -3713,8 +3858,10 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
 </style></head><body>
 <header>
   <div>
-    <h1>Relatório Operacional</h1>
-    <div class="sub">${esc(alvo)} · Período ${esc(per)}</div>
+    <h1>${plano ? "Programação Operacional" : "Relatório Operacional"}</h1>
+    <div class="sub">${esc(alvo)} · ${plano
+      ? `Operações agendadas a partir de ${new Date().toLocaleDateString("pt-BR")}`
+      : `Período ${esc(per)}`}</div>
   </div>
   <div style="text-align:right">
     <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:16px">SUPERIOR TRANSPORTES</div>
@@ -3723,7 +3870,66 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
 </header>
 <div class="bar"></div>
 
-<main>
+${plano ? `<main>
+  <div class="lead" style="border-left-color:#FF6B00">
+    Estão programadas <strong>${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"}</strong>
+    para ${esc(alvo)}, totalizando <strong>${nf(volPlanejado)} unidades</strong>
+    distribuídas em <strong>${pd.length} dia${pd.length === 1 ? "" : "s"} de operação</strong>
+    ${pd.length ? `, de ${esc(primeiroDia)} a ${esc(ultimoDia)}` : ""}.
+    ${picoDia ? `O maior volume está previsto para <strong>${esc(picoDia.rotulo)}</strong>, com <strong>${nf(picoDia.volume)} unidades</strong> em ${picoDia.ops} operaç${picoDia.ops === 1 ? "ão" : "ões"}.` : ""}
+  </div>
+
+  <h2 class="sec">Resumo da Programação</h2>
+  <div class="kpis">
+    <div class="kpi or"><div class="l">Volume Previsto</div><div class="v">${nf(volPlanejado)}</div><div class="n">unidades a movimentar</div></div>
+    <div class="kpi"><div class="l">Operações Agendadas</div><div class="v">${planejadas.length}</div><div class="n">recebimentos e expedições</div></div>
+    <div class="kpi"><div class="l">Dias com Operação</div><div class="v">${pd.length}</div><div class="n">${pd.length ? `${esc(primeiroDia)} a ${esc(ultimoDia)}` : "sem datas definidas"}</div></div>
+    <div class="kpi hi"><div class="l">Volume Médio por Dia</div><div class="v">${nf(Math.round(pd.length ? volPlanejado / pd.length : 0))}</div><div class="n">unidades por dia de operação</div></div>
+    <div class="kpi"><div class="l">Horas Previstas</div><div class="v">${hhmm(planejadas.reduce((s, x) => s + (x.c.metaHoras || 0), 0))}</div><div class="n">tempo-alvo somado das operações</div></div>
+  </div>
+
+  <h2 class="sec">Referência de Entrega</h2>
+  <div class="lead" style="border-left-color:#149C3A">
+    Para dimensionar o que está por vir, o histórico de ${mediaAnual.ano} serve de referência:
+    a Superior concluiu <strong>${mediaAnual.n} operaç${mediaAnual.n === 1 ? "ão" : "ões"}</strong>
+    com <strong style="color:#149C3A">${mediaAnual.noPrazoPct.toFixed(0)}% de cumprimento de prazo</strong>,
+    a um ritmo médio de <strong>${mediaAnual.unPorHora.toFixed(0)} unidades por hora</strong>
+    e volume médio de <strong>${nf(Math.round(mediaAnual.volumeMedio))} unidades por operação</strong>.
+    ${volPlanejado > 0 && mediaAnual.unPorHora > 0
+      ? `No mesmo ritmo, o volume programado corresponde a aproximadamente <strong>${hhmm(volPlanejado / mediaAnual.unPorHora)}</strong> de operação.`
+      : ""}
+  </div>
+
+  ${pd.length > 0 ? `
+  <h2 class="sec">Volume Programado por Dia</h2>
+  <div class="card">
+    <p class="ct">Unidades previstas e número de operações em cada dia</p>
+    <svg viewBox="0 0 ${pW} ${pH}">${pGrid}${pBars}
+      <line x1="${pL}" y1="${pH - pB}" x2="${pW - 14}" y2="${pH - pB}" stroke="#C5CDD8"/></svg>
+    <div class="leg"><span><i style="background:#FF6B00"></i>Volume programado (unidades)</span><span>Abaixo de cada barra: dia, dia da semana e quantidade de operações</span></div>
+  </div>` : ""}
+
+  ${linhasPlanoTipo ? `
+  <h2 class="sec">Programação por Tipo de Operação</h2>
+  <table>
+    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume previsto</th><th>Volume médio</th><th>Tempo-alvo total</th></tr></thead>
+    <tbody>${linhasPlanoTipo}</tbody>
+  </table>` : ""}
+
+  <h2 class="sec">Operações Programadas</h2>
+  <table>
+    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
+    <tbody>${linhasPlan}</tbody>
+  </table>
+  ${planejadas.length > 25 ? `<div class="note">Exibindo as 25 operações mais próximas de um total de ${planejadas.length} programadas.</div>` : ""}
+
+  <div class="note">
+    <strong>Sobre esta programação.</strong> As datas refletem o agendamento vigente no momento da emissão
+    deste documento e podem ser ajustadas de comum acordo. Os volumes são os informados no momento do
+    agendamento. O tempo-alvo de cada operação é calculado a partir do volume e da equipe prevista,
+    com tolerância de ${TOLERANCIA_META_MIN} minutos.
+  </div>
+</main>` : `<main>
   <div class="lead">
     No período de <strong>${esc(per)}</strong> a Superior Transportes executou
     <strong>${agg.n} operaç${agg.n === 1 ? "ão" : "ões"}</strong>, movimentando
@@ -3732,7 +3938,6 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
     ${varPrazo != null
       ? `Isso representa <strong>${Math.abs(varPrazo).toFixed(0)} pontos ${varPrazo >= 0 ? "acima" : "abaixo"}</strong> da média de ${mediaAnual.ano}.`
       : `O desempenho está alinhado à média de ${mediaAnual.ano}.`}
-    ${planejadas.length > 0 ? `<br><br>Há <strong>${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"} já programada${planejadas.length === 1 ? "" : "s"}</strong>, totalizando <strong>${nf(volPlanejado)} unidades</strong> previstas.` : ""}
   </div>
 
   <h2 class="sec">Indicadores do Período</h2>
@@ -3741,7 +3946,7 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
     <div class="kpi"><div class="l">Operações Realizadas</div><div class="v">${agg.n}</div><div class="n">concluídas e conferidas</div></div>
     <div class="kpi" style="border-top-color:${corPrazo}"><div class="l">Cumprimento de Prazo</div><div class="v" style="color:${corPrazo}">${agg.noPrazoPct.toFixed(0)}%</div><div class="n">${agg.noPrazo} de ${agg.n} dentro do tempo previsto</div></div>
     <div class="kpi or"><div class="l">Produtividade</div><div class="v">${unHoraPeriodo.toFixed(0)}</div><div class="n">unidades por hora de operação</div></div>
-    <div class="kpi"><div class="l">Programado</div><div class="v">${nf(volPlanejado)}</div><div class="n">unidades em ${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"}</div></div>
+    <div class="kpi"><div class="l">Tempo Médio</div><div class="v">${hhmm(tempoMedioPeriodo)}</div><div class="n">por operação · ${nf(Math.round(volumeMedioPeriodo))} un em média</div></div>
   </div>
 
   <h2 class="sec">Comparativo com a Média de ${mediaAnual.ano}</h2>
@@ -3811,9 +4016,10 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
   ${porTipo.length > 0 ? `
   <h2 class="sec">Desempenho por Tipo de Operação</h2>
   <table>
-    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Horas trabalhadas</th><th>No prazo</th></tr></thead>
+    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume</th><th>Tempo médio</th><th>Volume médio</th><th>No prazo</th></tr></thead>
     <tbody>${linhasTipo}</tbody>
-  </table>` : ""}
+  </table>
+  <div class="note">O <strong>tempo médio</strong> é a duração típica de uma operação deste tipo, e não a soma das horas — é o número que mostra a agilidade da execução.</div>` : ""}
 
   ${dados.length > 0 ? `
   <h2 class="sec">Operações Realizadas</h2>
@@ -3822,21 +4028,13 @@ function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, p
     <tbody>${linhasOps}</tbody>
   </table>` : ""}
 
-  ${planejadas.length > 0 ? `
-  <h2 class="sec">Operações Programadas</h2>
-  <table>
-    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
-    <tbody>${linhasPlan}</tbody>
-  </table>
-  ${planejadas.length > 25 ? `<div class="note">Exibindo as 25 operações mais próximas de um total de ${planejadas.length} programadas.</div>` : ""}` : ""}
-
   <div class="note">
     <strong>Como lemos o prazo.</strong> Cada operação tem um tempo-alvo calculado a partir do volume e da
     equipe alocada, com tolerância de ${TOLERANCIA_META_MIN} minutos. Uma operação é considerada "no prazo"
     quando é concluída dentro desse tempo. Os horários vêm do registro feito pelo conferente no momento
     da operação, com início e término marcados no próprio pátio.
   </div>
-</main>
+</main>`}
 
 <footer>
   <div><strong style="display:block;font-weight:600;margin-bottom:2px">Superior Transportes</strong>Recebimento &amp; Expedição · Gestão Operacional</div>
