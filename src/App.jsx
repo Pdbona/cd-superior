@@ -48,7 +48,12 @@ const DEFAULT_PARAMS = {
      (encargos e afins), então os dois números precisam existir separados:
      usar 200 no rateio pagaria a mais; usar 120 no custo inflaria a economia. */
   bonusRateio: 120,
+  /* PIN de emergência: só vale enquanto não houver nenhum gestor cadastrado.
+     É o que permite entrar numa instalação nova e criar o primeiro gestor. */
   pinGestor: "1234",
+  /* Gestores nomeados, cada um com PIN próprio — igual aos conferentes.
+     Com a lista preenchida, o pinGestor acima deixa de funcionar. */
+  gestores: [],
   /* Cada conferente tem seu próprio PIN. Quem registrou a operação fica
      gravado no histórico — útil quando o gestor precisa apurar um desvio. */
   conferentes: [],
@@ -453,7 +458,7 @@ export default function App() {
     ? <AppConferente ops={ops} params={params} persistOps={persistOps} now={now} usuario={usuario}
         sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
-        diasTerc={diasTerc} persistDiasTerc={persistDiasTerc}
+        diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />}
   </>;
 }
@@ -491,12 +496,21 @@ function PortaEntrada({ params, onEntrar }) {
   const [erro, setErro] = useState("");
 
   const conferentes = params.conferentes || [];
+  const gestores = params.gestores || [];
   /* Sem conferente cadastrado, o acesso segue livre — senão o app trava
      numa instalação nova, antes de o gestor conseguir cadastrar alguém. */
   const exigePin = conferentes.length > 0;
 
   const validar = () => {
     if (pedirPin === "gestor") {
+      /* Com gestores cadastrados, só os PINs deles entram — e o nome de quem
+         entrou aparece no cabeçalho. O pinGestor legado vira porta de
+         emergência apenas enquanto a lista estiver vazia. */
+      if (gestores.length > 0) {
+        const g = gestores.find(x => x.pin === pin);
+        if (g) return onEntrar("gestor", g.nome);
+        setErro("PIN incorreto."); setPin(""); return;
+      }
       if (pin === (params.pinGestor || "1234")) return onEntrar("gestor", null);
       setErro("PIN incorreto."); setPin(""); return;
     }
@@ -573,7 +587,9 @@ function PortaEntrada({ params, onEntrar }) {
               </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>
                 {pedirPin === "gestor"
-                  ? "PIN inicial: 1234 — altere em Parâmetros"
+                  ? (gestores.length > 0
+                      ? "Cada gestor tem seu PIN. Cadastro em Parâmetros."
+                      : "PIN inicial: 1234 — cadastre os gestores em Parâmetros")
                   : "Cada conferente tem seu PIN. Peça ao gestor se não souber o seu."}
               </div>
             </div>
@@ -837,7 +853,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar }) {
+function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario }) {
   const [tab, setTab] = useState("operacoes");
   const TABS = [
     { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
@@ -859,7 +875,9 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
             <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
               <Briefcase size={16} /> PAINEL DO GESTOR
             </div>
-            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Recebimento &amp; Expedição · Lean Logística</div>
+            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
+              {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
+            </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -1472,13 +1490,10 @@ function CardRateio({ op, c, equipe, params, onToggle }) {
             <CheckCircle2 size={11} style={{ verticalAlign: -1 }} /> Finalizada {dataSemana(op.fim)} às {hora(op.fim)}
           </div>
         </div>
+        {/* só o valor que a equipe recebe — o custo não aparece nesta tela */}
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 10.5, color: C.prata, fontWeight: 700, textTransform: "uppercase" }}>A distribuir</div>
           <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: C.supVerde }}>{brl(c.bonusDistribuido)}</div>
-          <div style={{ fontSize: 11, color: C.prata }}>{op.qtdSuperior} bônus × {brl(c.rateioUnit)}</div>
-          {c.bonusPago !== c.bonusDistribuido && (
-            <div style={{ fontSize: 10, color: C.prata, marginTop: 2 }}>custo {brl(c.bonusPago)}</div>
-          )}
         </div>
       </div>
 
@@ -1536,6 +1551,8 @@ function Rateio({ ops, params, persistOps, persistParams }) {
   const [verRateados, setVerRateados] = useState(false);
   /* dentro dos rateados, mostra 72h por padrão e abre o período todo sob demanda */
   const [rateadosTodos, setRateadosTodos] = useState(false);
+  /* busca livre em todo o histórico, para corrigir nomeação antiga */
+  const [buscaRateio, setBuscaRateio] = useState("");
 
   const equipe = params.equipe || [];
 
@@ -1571,18 +1588,52 @@ function Rateio({ ops, params, persistOps, persistParams }) {
     .sort((a, b) => b.op.fim - a.op.fim)
   , [ops, params, mesFiltro]);
 
-  /* Pendentes primeiro, da mais antiga para a mais recente: quem finalizou há
-     mais tempo é quem está esperando o bônus há mais tempo. */
+  /* ---- OPERAÇÕES DO DIA ----
+     Tudo que fechou hoje fica aqui e continua editável o dia inteiro, mesmo
+     depois de nomeado: marcar o primeiro nome não pode arrancar o card da
+     tela no meio da nomeação. Só no dia seguinte ele migra para o arquivo. */
+  const doDia = useMemo(() =>
+    comBonus.filter(x => ehHoje(x.op.fim)).sort((a, b) => b.op.fim - a.op.fim)
+  , [comBonus]);
+  const doDiaPendentes = doDia.filter(x => x.c.rateioPendente).length;
+
+  /* ---- MÊS: dias anteriores ----
+     Pendentes de nomeação primeiro, da mais antiga para a mais recente —
+     quem finalizou antes está esperando o bônus há mais tempo. */
+  const anteriores = useMemo(() =>
+    comBonus.filter(x => !ehHoje(x.op.fim))
+  , [comBonus]);
   const pendentes = useMemo(() =>
-    comBonus.filter(x => x.c.rateioPendente).sort((a, b) => a.op.fim - b.op.fim)
-  , [comBonus]);
-  /* Já rateados: histórico, do mais recente para o mais antigo. Por padrão só
-     as últimas 72h — o resto entra sob demanda, para ajuste pontual. */
+    anteriores.filter(x => x.c.rateioPendente).sort((a, b) => a.op.fim - b.op.fim)
+  , [anteriores]);
+  /* Já rateadas de dias anteriores: arquivo. 72h por padrão, o resto sob
+     demanda ou pela busca — é onde se corrige uma nomeação antiga. */
   const rateados = useMemo(() =>
-    comBonus.filter(x => !x.c.rateioPendente).sort((a, b) => b.op.fim - a.op.fim)
-  , [comBonus]);
+    anteriores.filter(x => !x.c.rateioPendente).sort((a, b) => b.op.fim - a.op.fim)
+  , [anteriores]);
+
+  /* Busca livre em TODO o histórico, sem o recorte de mês: é o caminho para
+     achar uma operação de meses atrás e corrigir quem recebeu. */
+  const buscando = buscaRateio.trim().length >= 2;
+  const achadas = useMemo(() => {
+    if (!buscando) return [];
+    const q = buscaRateio.trim().toLowerCase();
+    return ops
+      .filter(o => o.status === "concluida" && o.fim)
+      .map(o => ({ op: o, c: calcOp(o, params) }))
+      .filter(x => x.c.bonusDistribuido > 0)
+      .filter(x => (x.op.ref || "").toLowerCase().includes(q) || (x.op.cliente || "").toLowerCase().includes(q))
+      .sort((a, b) => b.op.fim - a.op.fim)
+      .slice(0, 30);
+  }, [ops, params, buscaRateio, buscando]);
+
   const rateadosVisiveis = rateadosTodos ? rateados : rateados.filter(x => dentro72h(x.op.fim));
   const rateadosOcultos = rateados.length - rateadosVisiveis.length;
+
+  /* totais separados por janela, para os dois cards de apuração */
+  const totalDia = doDia.reduce((s, x) => s + x.c.bonusDistribuido, 0);
+  const totalDiaRateado = doDia.reduce((s, x) => s + (x.c.nomeados.length ? x.c.bonusDistribuido : 0), 0);
+  const volumeDia = doDia.reduce((s, x) => s + (x.op.volume || 0), 0);
 
   /* consolidado por colaborador */
   const porColaborador = useMemo(() => {
@@ -1642,50 +1693,121 @@ function Rateio({ ops, params, persistOps, persistParams }) {
 
   return (
     <div>
-      <SectionTitle icon={Calendar}>Período de Apuração</SectionTitle>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 18 }}>
-        <Filter size={15} color={C.prata} />
-        {mesesDisponiveis.map(m => (
-          <button key={m} onClick={() => setMesFiltro(m)}
-            style={{ ...styles.chip, ...(mesFiltro === m ? styles.chipOn : {}) }}>
-            {nomeMes(m)}
-          </button>
-        ))}
-      </div>
-
-      <div style={styles.kpiGrid}>
-        <Kpi label="Bônus Rateado" valor={brl(totalRateado)} nota={`${porColaborador.length} colaborador${porColaborador.length !== 1 ? "es" : ""} · ${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)} por bônus`} icon={Award} highlight color={C.supVerde} />
-        <Kpi label="Operações com Bônus" valor={comBonus.length} nota="Concluídas na meta" icon={CheckCircle2} color={C.navy} />
-        <Kpi label="Aguardando Nomeação" valor={brl(totalPendente)} nota={`${plOp(pendentes.length)} sem participantes`} icon={AlertTriangle}
-          color={pendentes.length > 0 ? C.laranja : C.prata} />
-      </div>
-
-      {pendentes.length > 0 && (
-        <div style={styles.alertBox}>
-          <AlertTriangle size={16} />
-          <span>
-            <strong>{plOp(pendentes.length)}</strong> {pendentes.length === 1 ? "gerou" : "geraram"} bônus mas ainda
-            {pendentes.length === 1 ? " não tem" : " não têm"} participantes nomeados. Marque abaixo para liberar o rateio.
-          </span>
+      {/* ===== APURAÇÃO — dia e mês em cards separados ===== */}
+      <SectionTitle icon={Calendar}>Apuração do Rateio</SectionTitle>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14, marginBottom: 20 }}>
+        {/* --- card do dia --- */}
+        <div style={{ ...styles.card, padding: "16px 18px", borderTop: `4px solid ${C.laranja}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <Clock size={18} color={C.laranja} strokeWidth={2.3} />
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, textTransform: "uppercase" }}>
+              Operações do dia
+            </span>
+            <span style={{ marginLeft: "auto", fontSize: 11, color: C.prata }}>{dataSemana(Date.now())}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={styles.kpiPeriodo}>A distribuir</div>
+              <div style={{ ...styles.kpiValor, fontSize: 22, color: C.supVerde, margin: "2px 0 0" }}>{brl(totalDia)}</div>
+              <div style={{ ...styles.kpiNota, marginTop: 3 }}>{plOp(doDia.length)} com bônus</div>
+            </div>
+            <div style={{ borderLeft: `1px solid ${C.prataClaro}`, paddingLeft: 12 }}>
+              <div style={styles.kpiPeriodo}>Volume</div>
+              <div style={{ ...styles.kpiValor, fontSize: 22, color: C.navy, margin: "2px 0 0" }}>
+                {volumeDia.toLocaleString("pt-BR")}
+              </div>
+              <div style={{ ...styles.kpiNota, marginTop: 3 }}>unidades movimentadas</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 11, paddingTop: 9, borderTop: `1px dashed ${C.prataClaro}`, fontSize: 11.5,
+            fontWeight: 700, color: doDiaPendentes > 0 ? C.laranjaEsc : C.supVerde }}>
+            {doDiaPendentes > 0
+              ? <><AlertTriangle size={12} style={{ verticalAlign: -2 }} /> {doDiaPendentes} ainda sem nomeação</>
+              : <><CheckCircle2 size={12} style={{ verticalAlign: -2 }} /> {doDia.length > 0 ? "Todas nomeadas" : "Nenhuma operação com bônus hoje"}</>}
+          </div>
         </div>
-      )}
 
-      {/* ===== FILA DE RATEIO — o que exige ação ===== */}
-      <SectionTitle icon={ClipboardList}>
-        Aguardando Rateio <Badge>{pendentes.length}</Badge>
+        {/* --- card do mês --- */}
+        <div style={{ ...styles.card, padding: "16px 18px", borderTop: `4px solid ${C.supVerde}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <Calendar size={18} color={C.supVerde} strokeWidth={2.3} />
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, textTransform: "uppercase" }}>
+              Rateios do mês
+            </span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {mesesDisponiveis.slice(0, 3).map(m => (
+                <button key={m} onClick={() => setMesFiltro(m)}
+                  style={{ ...styles.chip, fontSize: 11, padding: "3px 9px", ...(mesFiltro === m ? styles.chipOn : {}) }}>
+                  {nomeMes(m)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={styles.kpiPeriodo}>Já rateado</div>
+              <div style={{ ...styles.kpiValor, fontSize: 22, color: C.supVerde, margin: "2px 0 0" }}>{brl(totalRateado)}</div>
+              <div style={{ ...styles.kpiNota, marginTop: 3 }}>
+                {porColaborador.length} colaborador{porColaborador.length !== 1 ? "es" : ""}
+              </div>
+            </div>
+            <div style={{ borderLeft: `1px solid ${C.prataClaro}`, paddingLeft: 12 }}>
+              <div style={styles.kpiPeriodo}>Aguardando</div>
+              <div style={{ ...styles.kpiValor, fontSize: 22, margin: "2px 0 0",
+                color: pendentes.length > 0 ? C.laranja : C.prata }}>{brl(totalPendente)}</div>
+              <div style={{ ...styles.kpiNota, marginTop: 3 }}>{plOp(pendentes.length)} sem nomes</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 11, paddingTop: 9, borderTop: `1px dashed ${C.prataClaro}`, fontSize: 11, color: C.prata }}>
+            {comBonus.length} operaç{comBonus.length === 1 ? "ão" : "ões"} com bônus em {nomeMes(mesFiltro)} ·
+            {" "}{brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)} por bônus
+          </div>
+        </div>
+      </div>
+
+      {/* ===== OPERAÇÕES DO DIA — editáveis o dia todo ===== */}
+      <SectionTitle icon={Clock}>
+        Rateio — Operações do Dia <Badge>{doDia.length}</Badge>
+        {doDiaPendentes > 0 && (
+          <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc, marginLeft: 4 }}>
+            {doDiaPendentes} sem nomeação
+          </span>
+        )}
       </SectionTitle>
       {equipe.length === 0 ? (
         <EmptyState text="Cadastre a equipe no fim desta tela para poder nomear os participantes." />
-      ) : pendentes.length === 0 ? (
-        <div style={{ ...styles.infoBox, background: "#EAF6EE", border: `1px solid ${C.supVerde}`, marginBottom: 8 }}>
-          <CheckCircle2 size={15} style={{ verticalAlign: -3, marginRight: 6, color: C.supVerde }} />
-          Nenhuma operação aguardando nomeação neste período — todo o bônus já foi rateado.
+      ) : doDia.length === 0 ? (
+        <div style={{ ...styles.infoBox, marginBottom: 8 }}>
+          Nenhuma operação com bônus concluída hoje. Assim que uma fechar dentro da meta, ela aparece aqui.
         </div>
       ) : (
         <>
           <p style={styles.helper}>
-            Da mais antiga para a mais recente — quem finalizou primeiro está esperando o bônus há mais tempo.
+            As operações de hoje ficam aqui o dia inteiro, mesmo depois de nomeadas — dá para corrigir quem
+            participou até o fim do turno. Amanhã elas passam para o arquivo abaixo.
           </p>
+          <div style={{ display: "grid", gap: 12 }}>
+            {doDia.map(({ op, c }) => (
+              <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ===== PENDENTES DE DIAS ANTERIORES ===== */}
+      {pendentes.length > 0 && equipe.length > 0 && (
+        <>
+          <SectionTitle icon={AlertTriangle}>
+            Aguardando Rateio — dias anteriores <Badge>{pendentes.length}</Badge>
+          </SectionTitle>
+          <div style={styles.alertBox}>
+            <AlertTriangle size={16} />
+            <span>
+              <strong>{plOp(pendentes.length)}</strong> {pendentes.length === 1 ? "gerou" : "geraram"} bônus em dias
+              anteriores e ainda {pendentes.length === 1 ? "não tem" : "não têm"} participantes nomeados.
+              Da mais antiga para a mais recente.
+            </span>
+          </div>
           <div style={{ display: "grid", gap: 12 }}>
             {pendentes.map(({ op, c }) => (
               <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
@@ -1721,30 +1843,63 @@ function Rateio({ ops, params, persistOps, persistParams }) {
 
           {verRateados && (
             <div style={{ marginTop: 12 }}>
-              <div style={{ ...styles.infoBox, marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <Clock size={14} color={C.navy2} />
-                <span style={{ flex: 1, minWidth: 200 }}>
-                  {rateadosTodos
-                    ? <>Exibindo <strong>todas as {rateados.length}</strong> operações rateadas de {nomeMes(mesFiltro)}.</>
-                    : <>Exibindo as <strong>últimas 72h</strong> ({rateadosVisiveis.length} de {rateados.length}).</>}
-                </span>
-                {(rateadosOcultos > 0 || rateadosTodos) && (
-                  <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
-                    onClick={() => setRateadosTodos(v => !v)}>
-                    {rateadosTodos
-                      ? "Voltar para as últimas 72h"
-                      : `Ver as ${rateadosOcultos} anteriores a 72h`}
-                  </button>
+              {/* busca livre — atravessa o filtro de mês e o corte de 72h,
+                  é o caminho para corrigir a nomeação de uma operação antiga */}
+              <div style={{ ...styles.searchRow, marginBottom: 12 }}>
+                <Search size={16} color={C.prata} />
+                <input style={styles.searchInput} value={buscaRateio}
+                  onChange={e => setBuscaRateio(e.target.value)}
+                  placeholder="Buscar qualquer operação com bônus, de qualquer data — referência ou cliente…" />
+                {buscaRateio && (
+                  <button style={{ ...styles.chipX, width: 24, height: 24 }} onClick={() => setBuscaRateio("")} title="Limpar busca">×</button>
                 )}
               </div>
-              {rateadosVisiveis.length === 0 ? (
-                <EmptyState text="Nenhuma operação rateada nas últimas 72h. Use o botão acima para ver as anteriores." />
+
+              {buscando ? (
+                <>
+                  <div style={{ ...styles.infoBox, marginBottom: 12 }}>
+                    <Search size={14} color={C.navy2} style={{ verticalAlign: -2, marginRight: 6 }} />
+                    Buscando em <strong>todo o histórico</strong>, sem limite de data —
+                    {" "}{achadas.length} resultado{achadas.length !== 1 ? "s" : ""} para "{buscaRateio}".
+                  </div>
+                  {achadas.length === 0 ? (
+                    <EmptyState text={`Nenhuma operação com bônus encontrada para "${buscaRateio}".`} />
+                  ) : (
+                    <div style={{ display: "grid", gap: 12 }}>
+                      {achadas.map(({ op, c }) => (
+                        <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
+                      ))}
+                    </div>
+                  )}
+                </>
               ) : (
-                <div style={{ display: "grid", gap: 12 }}>
-                  {rateadosVisiveis.map(({ op, c }) => (
-                    <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
-                  ))}
-                </div>
+                <>
+                  <div style={{ ...styles.infoBox, marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <Clock size={14} color={C.navy2} />
+                    <span style={{ flex: 1, minWidth: 200 }}>
+                      {rateadosTodos
+                        ? <>Exibindo <strong>todas as {rateados.length}</strong> operações rateadas de {nomeMes(mesFiltro)}.</>
+                        : <>Exibindo as <strong>últimas 72h</strong> ({rateadosVisiveis.length} de {rateados.length}).</>}
+                    </span>
+                    {(rateadosOcultos > 0 || rateadosTodos) && (
+                      <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
+                        onClick={() => setRateadosTodos(v => !v)}>
+                        {rateadosTodos
+                          ? "Voltar para as últimas 72h"
+                          : `Ver as ${rateadosOcultos} anteriores a 72h`}
+                      </button>
+                    )}
+                  </div>
+                  {rateadosVisiveis.length === 0 ? (
+                    <EmptyState text="Nenhuma operação rateada nas últimas 72h. Use o botão acima ou a busca para localizar as anteriores." />
+                  ) : (
+                    <div style={{ display: "grid", gap: 12 }}>
+                      {rateadosVisiveis.map(({ op, c }) => (
+                        <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -2853,6 +3008,50 @@ function Relatorios({ ops, params }) {
     return Object.values(m).sort((a, b) => b.economia - a.economia);
   }, [dados]);
 
+  /* ---------- base do relatório ao cliente ----------
+     Sem custo, bônus ou economia: são números da relação comercial da
+     Superior com a terceirizada, não do cliente. O que interessa ao cliente
+     é volume movimentado, prazo cumprido e o que está programado. */
+  const planejadas = useMemo(() => ops
+    .filter(o => (o.status === "pendente" || o.status === "em_andamento"))
+    .filter(o => cliFiltro === "todos" || o.cliente === cliFiltro)
+    .filter(o => diaPlanejado(o) >= inicioDoDia(Date.now()))
+    .map(o => ({ op: o, c: calcOp(o, params) }))
+    .sort((a, b) => diaPlanejado(a.op) - diaPlanejado(b.op))
+  , [ops, params, cliFiltro]);
+
+  /* Média do ano corrente — a régua contra a qual o período é comparado */
+  const mediaAnual = useMemo(() => {
+    const ano = new Date().getFullYear();
+    const doAno = ops
+      .filter(o => o.status === "concluida" && o.fim && new Date(o.fim).getFullYear() === ano)
+      .filter(o => cliFiltro === "todos" || o.cliente === cliFiltro)
+      .map(o => ({ op: o, c: calcOp(o, params) }));
+    const n = doAno.length;
+    const noPrazo = doAno.filter(x => x.c.cumpriuMeta).length;
+    const volume = doAno.reduce((s, x) => s + (x.op.volume || 0), 0);
+    const horas = doAno.reduce((s, x) => s + (x.c.tempoReal || 0), 0);
+    return { ano, n, volume, horas,
+      noPrazoPct: n ? (noPrazo / n) * 100 : 0,
+      volumeMedio: n ? volume / n : 0,
+      unPorHora: horas ? volume / horas : 0 };
+  }, [ops, params, cliFiltro]);
+
+  /* volume por dia dentro do período — série do gráfico do cliente */
+  const volumeDiario = useMemo(() => {
+    const m = {};
+    dados.forEach(({ op, c }) => {
+      const ts = inicioDoDia(op.fim);
+      if (!m[ts]) m[ts] = { ts, rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        volume: 0, ops: 0, noPrazo: 0, horas: 0 };
+      m[ts].volume += op.volume || 0;
+      m[ts].ops += 1;
+      m[ts].horas += c.tempoReal || 0;
+      if (c.cumpriuMeta) m[ts].noPrazo += 1;
+    });
+    return Object.values(m).sort((a, b) => a.ts - b.ts);
+  }, [dados]);
+
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
 
   /* ---------- EXPORTAR EXCEL ---------- */
@@ -2982,6 +3181,31 @@ function Relatorios({ ops, params }) {
     else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
   };
 
+  /* ---------- RELATÓRIO AO CLIENTE ---------- */
+  const htmlCliente = () => montarHTMLCliente({
+    dados, planejadas, agg, mediaAnual, volumeDiario, porTipo, de, ate, cliFiltro
+  });
+  const semDadosCliente = () => dados.length === 0 && planejadas.length === 0;
+
+  const gerarCliente = () => {
+    if (semDadosCliente()) return flash("Nenhuma operação realizada nem programada para este recorte.");
+    const blob = new Blob([htmlCliente()], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const alvo = cliFiltro === "todos" ? "Consolidado" : cliFiltro.replace(/[^\w]/g, "_");
+    a.href = url; a.download = `Superior_Relatorio_${alvo}_${de}_a_${ate}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    flash("Relatório do cliente gerado — pode enviar por e-mail ou WhatsApp.");
+  };
+
+  const previewCliente = () => {
+    if (semDadosCliente()) return flash("Nenhuma operação realizada nem programada para este recorte.");
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(htmlCliente()); w.document.close(); }
+    else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
+  };
+
   return (
     <div>
       <SectionTitle icon={FileSpreadsheet}>Relatórios &amp; Apresentação</SectionTitle>
@@ -3022,6 +3246,39 @@ function Relatorios({ ops, params }) {
             <Download size={17} strokeWidth={2.4} /> Baixar Dashboard Diretoria
           </button>
           <button style={styles.btnGhost} onClick={abrirPreview}>
+            <FileText size={15} /> Visualizar agora
+          </button>
+        </div>
+      </div>
+
+      {/* ===== RELATÓRIO PARA O CLIENTE ===== */}
+      <SectionTitle icon={Building2}>Relatório para o Cliente</SectionTitle>
+      <p style={styles.helper}>
+        Peça de apresentação para enviar ao cliente: volume movimentado, cumprimento de prazo comparado
+        com a média do ano e o que está programado. <strong>Não contém custo, bônus nem economia</strong> —
+        esses números são da relação da Superior com a terceirizada, não do cliente.
+      </p>
+      <div style={{ ...styles.card, borderTop: `4px solid ${C.supVerde}` }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+          <Previa label="Operações realizadas" valor={String(agg.n)} cor={C.navy} />
+          <Previa label="Volume movimentado" valor={`${agg.volume.toLocaleString("pt-BR")} un`} cor={C.navy2} destaque />
+          <Previa label="Entregas no prazo" valor={`${agg.noPrazoPct.toFixed(0)}%`}
+            cor={agg.noPrazoPct >= 80 ? C.verde : agg.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
+          <Previa label={`Média ${mediaAnual.ano}`} valor={`${mediaAnual.noPrazoPct.toFixed(0)}%`} cor={C.prata} />
+          <Previa label="Programadas" valor={String(planejadas.length)} cor={C.laranja} />
+        </div>
+
+        <div style={{ ...styles.infoBox, marginTop: 14, fontSize: 12.5 }}>
+          Recorte atual: <strong>{cliFiltro === "todos" ? "todos os clientes" : cliFiltro}</strong>.
+          {cliFiltro === "todos" && <> Para enviar a um cliente específico, selecione-o no filtro acima —
+            o relatório sai com o nome dele no cabeçalho e só com as operações dele.</>}
+        </div>
+
+        <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+          <button style={{ ...styles.btnPrimary, background: C.supVerde }} onClick={gerarCliente}>
+            <Download size={17} strokeWidth={2.4} /> Baixar Relatório do Cliente
+          </button>
+          <button style={styles.btnGhost} onClick={previewCliente}>
             <FileText size={15} /> Visualizar agora
           </button>
         </div>
@@ -3325,12 +3582,282 @@ footer .r{color:#8A9BB0;text-align:right}
 }
 
 /* ============================================================
+   RELATÓRIO AO CLIENTE — peça de apresentação da operação
+   Deliberadamente SEM custo, bônus ou economia: esses números pertencem à
+   relação da Superior com a terceirizada. Ao cliente interessam volume
+   movimentado, cumprimento de prazo e o que está programado.
+   ============================================================ */
+function montarHTMLCliente({ dados, planejadas, agg, mediaAnual, volumeDiario, porTipo, de, ate, cliFiltro }) {
+  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
+  const emissao = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const alvo = cliFiltro === "todos" ? "Operação Consolidada" : cliFiltro;
+  const nf = (v) => (v || 0).toLocaleString("pt-BR");
+
+  /* produtividade do período x média do ano — a comparação pedida */
+  const unHoraPeriodo = agg.horasReais ? agg.volume / agg.horasReais : 0;
+  /* Só mostra a comparação quando ela diz alguma coisa. Quando o período é o
+     único do ano, período e média coincidem e "▲ 0%" seria ruído. */
+  const bruta = (v) => (v != null && Math.abs(v) >= 1) ? v : null;
+  const varProd = bruta(mediaAnual.unPorHora ? ((unHoraPeriodo - mediaAnual.unPorHora) / mediaAnual.unPorHora) * 100 : null);
+  const varPrazo = bruta(mediaAnual.noPrazoPct ? agg.noPrazoPct - mediaAnual.noPrazoPct : null);
+  const corPrazo = agg.noPrazoPct >= 80 ? "#2E7D32" : agg.noPrazoPct >= 50 ? "#F9A825" : "#C62828";
+
+  /* --- gráfico: volume movimentado por dia --- */
+  const vW = 920, vH = 280, vL = 66, vB = 52, vT = 18;
+  const maxV = Math.max(...volumeDiario.map(d => d.volume), 1);
+  const stepV = (vW - vL - 24) / Math.max(1, volumeDiario.length);
+  const vBars = volumeDiario.map((d, i) => {
+    const x = vL + i * stepV;
+    const h = ((vH - vT - vB) * d.volume) / maxV;
+    const w = Math.max(9, Math.min(46, stepV * 0.62));
+    const cheio = d.ops > 0 && d.noPrazo === d.ops;
+    return `<rect x="${x}" y="${vH - vB - h}" width="${w}" height="${h}" fill="${cheio ? "#149C3A" : "#2B4C7E"}" rx="4"><title>${esc(d.rotulo)}: ${nf(d.volume)} un</title></rect>
+    <text x="${x + w / 2}" y="${vH - vB - h - 6}" font-size="10" fill="#5C6B7E" text-anchor="middle" font-family="Roboto Mono, monospace">${nf(d.volume)}</text>
+    <text x="${x + w / 2}" y="${vH - vB + 16}" font-size="10" fill="#5C6B7E" text-anchor="middle">${esc(d.rotulo)}</text>`;
+  }).join("");
+  const vGrid = [0, .25, .5, .75, 1].map(f => {
+    const y = vH - vB - (vH - vT - vB) * f;
+    return `<line x1="${vL}" y1="${y}" x2="${vW - 14}" y2="${y}" stroke="#E1E7EF"/>
+    <text x="${vL - 8}" y="${y + 4}" font-size="10" fill="#8A9BB0" text-anchor="end">${nf(Math.round(maxV * f))}</text>`;
+  }).join("");
+
+  /* --- gráfico: aderência por dia, com a média anual como régua --- */
+  const aW = 920, aH = 250, aL = 56, aB = 50, aT = 18;
+  const stepA = (aW - aL - 24) / Math.max(1, volumeDiario.length);
+  const aBars = volumeDiario.map((d, i) => {
+    const pct = d.ops ? (d.noPrazo / d.ops) * 100 : 0;
+    const x = aL + i * stepA;
+    const h = ((aH - aT - aB) * pct) / 100;
+    const w = Math.max(9, Math.min(46, stepA * 0.62));
+    const cor = pct >= 80 ? "#149C3A" : pct >= 50 ? "#F9A825" : "#C62828";
+    return `<rect x="${x}" y="${aH - aB - h}" width="${w}" height="${h}" fill="${cor}" rx="4"><title>${esc(d.rotulo)}: ${pct.toFixed(0)}%</title></rect>
+    <text x="${x + w / 2}" y="${aH - aB + 16}" font-size="10" fill="#5C6B7E" text-anchor="middle">${esc(d.rotulo)}</text>`;
+  }).join("");
+  const yMedia = aH - aB - ((aH - aT - aB) * Math.min(100, mediaAnual.noPrazoPct)) / 100;
+  const aGrid = [0, .5, 1].map(f => {
+    const y = aH - aB - (aH - aT - aB) * f;
+    return `<line x1="${aL}" y1="${y}" x2="${aW - 14}" y2="${y}" stroke="#E1E7EF"/>
+    <text x="${aL - 8}" y="${y + 4}" font-size="10" fill="#8A9BB0" text-anchor="end">${(f * 100).toFixed(0)}%</text>`;
+  }).join("");
+
+  /* --- medidor de prazo --- */
+  const ang = Math.PI * (1 - Math.min(100, agg.noPrazoPct) / 100);
+  const gx = 130 + 96 * Math.cos(ang), gy = 122 - 96 * Math.sin(ang);
+
+  const linhasOps = dados.slice().reverse().map(({ op, c }) => `<tr>
+    <td class="b">${esc(op.ref)}</td>
+    <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
+    <td>${esc(c.tipo?.label || "—")}</td>
+    <td class="m">${nf(op.volume)}</td>
+    <td class="m">${new Date(op.fim).toLocaleDateString("pt-BR")}</td>
+    <td class="m">${hhmm(c.tempoReal)}</td>
+    <td class="m"><span class="tag ${c.cumpriuMeta ? "ok" : "no"}">${c.cumpriuMeta ? "No prazo" : "Acima"}</span></td></tr>`).join("");
+
+  const linhasPlan = planejadas.slice(0, 25).map(({ op, c }) => `<tr>
+    <td class="b">${esc(op.ref)}</td>
+    <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
+    <td>${esc(c.tipo?.label || "—")}</td>
+    <td class="m">${nf(op.volume)}</td>
+    <td class="m">${new Date(diaPlanejado(op)).toLocaleDateString("pt-BR")}</td>
+    <td class="m">${esc(op.status === "em_andamento" ? "Em execução" : "Programada")}</td></tr>`).join("");
+
+  const linhasTipo = porTipo.map(r => `<tr>
+    <td class="b">${esc(r.tipo)}</td><td class="m">${r.ops}</td>
+    <td class="m">${hhmm(r.horas)}</td>
+    <td class="m">${(r.ops ? (r.noPrazo / r.ops) * 100 : 0).toFixed(0)}%</td></tr>`).join("");
+
+  const volPlanejado = planejadas.reduce((s, x) => s + (x.op.volume || 0), 0);
+
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superior Transportes — Relatório Operacional · ${esc(alvo)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@500;700&display=swap');
+  *{box-sizing:border-box} body{margin:0;background:#F7F9FB;color:#37474F;font-family:Roboto,sans-serif}
+  header{background:#1E3A5F;color:#fff;padding:26px 40px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+  header h1{font-family:Montserrat,sans-serif;font-size:22px;margin:0 0 4px;font-weight:800;letter-spacing:.2px}
+  header .sub{font-size:13px;color:#C5CDD8}
+  .bar{height:5px;background:linear-gradient(90deg,#FF6B00 0 55%,#149C3A 55% 100%)}
+  main{max-width:1040px;margin:0 auto;padding:30px 24px 50px}
+  h2.sec{font-family:Montserrat,sans-serif;font-size:17px;font-weight:800;color:#1E3A5F;border-left:5px solid #1E3A5F;padding-left:11px;margin:34px 0 14px}
+  .lead{background:#fff;border:1px solid #E1E7EF;border-left:4px solid #149C3A;border-radius:10px;padding:16px 20px;font-size:14px;line-height:1.65}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:18px 0}
+  .kpi{background:#fff;border:1px solid #E1E7EF;border-top:4px solid #1E3A5F;border-radius:10px;padding:16px 18px}
+  .kpi .l{font-family:Montserrat,sans-serif;font-size:10.5px;font-weight:700;text-transform:uppercase;color:#2B4C7E;letter-spacing:.4px}
+  .kpi .v{font-family:Roboto Mono,monospace;font-size:26px;font-weight:700;color:#1E3A5F;margin:7px 0 3px}
+  .kpi .n{font-size:11.5px;color:#8A9BB0;line-height:1.4}
+  .kpi.hi{border-top-color:#149C3A}.kpi.hi .v{color:#149C3A}
+  .kpi.or{border-top-color:#FF6B00}.kpi.or .v{color:#FF6B00}
+  .cards{display:grid;grid-template-columns:1fr;gap:16px}
+  .card{background:#fff;border:1px solid #E1E7EF;border-radius:10px;padding:18px 20px}
+  .ct{font-family:Montserrat,sans-serif;font-size:13px;font-weight:700;color:#1E3A5F;margin:0 0 12px}
+  svg{width:100%;height:auto;display:block}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #E1E7EF;border-radius:10px;overflow:hidden;font-size:12.5px}
+  th{background:#1E3A5F;color:#fff;font-family:Montserrat,sans-serif;font-size:10.5px;text-transform:uppercase;padding:10px 11px;text-align:left;letter-spacing:.4px}
+  td{padding:9px 11px;border-bottom:1px solid #EDF1F6}
+  tr:nth-child(even) td{background:#FAFCFE}
+  td.b{font-weight:700;color:#1E3A5F}
+  td.m{font-family:Roboto Mono,monospace}
+  .tag{padding:2px 8px;border-radius:5px;font-size:10.5px;font-weight:700;font-family:Montserrat,sans-serif}
+  .tag.ok{background:#E8F5E9;color:#2E7D32}.tag.no{background:#FDECEA;color:#C62828}
+  .leg{display:flex;gap:18px;font-size:11.5px;color:#5C6B7E;margin-top:10px;flex-wrap:wrap}
+  .leg i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .note{background:#EEF2F8;border:1px solid #E1E7EF;border-radius:9px;padding:13px 16px;font-size:12px;color:#5C6B7E;line-height:1.6;margin-top:14px}
+  .cmp{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .up{color:#2E7D32;font-weight:700;font-family:Montserrat,sans-serif;font-size:12.5px}
+  .dn{color:#C62828;font-weight:700;font-family:Montserrat,sans-serif;font-size:12.5px}
+  footer{background:#1E3A5F;color:#C5CDD8;padding:20px 40px;display:flex;justify-content:space-between;font-size:12px;flex-wrap:wrap;gap:12px}
+  footer .r{text-align:right}
+  @media print{body{background:#fff}header,footer{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<header>
+  <div>
+    <h1>Relatório Operacional</h1>
+    <div class="sub">${esc(alvo)} · Período ${esc(per)}</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:16px">SUPERIOR TRANSPORTES</div>
+    <div class="sub">Recebimento &amp; Expedição</div>
+  </div>
+</header>
+<div class="bar"></div>
+
+<main>
+  <div class="lead">
+    No período de <strong>${esc(per)}</strong> a Superior Transportes executou
+    <strong>${agg.n} operaç${agg.n === 1 ? "ão" : "ões"}</strong>, movimentando
+    <strong>${nf(agg.volume)} unidades</strong> com
+    <strong style="color:${corPrazo}">${agg.noPrazoPct.toFixed(0)}% de cumprimento de prazo</strong>.
+    ${varPrazo != null
+      ? `Isso representa <strong>${Math.abs(varPrazo).toFixed(0)} pontos ${varPrazo >= 0 ? "acima" : "abaixo"}</strong> da média de ${mediaAnual.ano}.`
+      : `O desempenho está alinhado à média de ${mediaAnual.ano}.`}
+    ${planejadas.length > 0 ? `<br><br>Há <strong>${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"} já programada${planejadas.length === 1 ? "" : "s"}</strong>, totalizando <strong>${nf(volPlanejado)} unidades</strong> previstas.` : ""}
+  </div>
+
+  <h2 class="sec">Indicadores do Período</h2>
+  <div class="kpis">
+    <div class="kpi hi"><div class="l">Volume Movimentado</div><div class="v">${nf(agg.volume)}</div><div class="n">unidades no período</div></div>
+    <div class="kpi"><div class="l">Operações Realizadas</div><div class="v">${agg.n}</div><div class="n">concluídas e conferidas</div></div>
+    <div class="kpi" style="border-top-color:${corPrazo}"><div class="l">Cumprimento de Prazo</div><div class="v" style="color:${corPrazo}">${agg.noPrazoPct.toFixed(0)}%</div><div class="n">${agg.noPrazo} de ${agg.n} dentro do tempo previsto</div></div>
+    <div class="kpi or"><div class="l">Produtividade</div><div class="v">${unHoraPeriodo.toFixed(0)}</div><div class="n">unidades por hora de operação</div></div>
+    <div class="kpi"><div class="l">Programado</div><div class="v">${nf(volPlanejado)}</div><div class="n">unidades em ${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"}</div></div>
+  </div>
+
+  <h2 class="sec">Comparativo com a Média de ${mediaAnual.ano}</h2>
+  <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div class="card">
+      <p class="ct">Cumprimento de prazo</p>
+      <div class="cmp">
+        <span style="font-family:Roboto Mono,monospace;font-size:30px;font-weight:700;color:${corPrazo}">${agg.noPrazoPct.toFixed(0)}%</span>
+        <span style="font-size:12.5px;color:#8A9BB0">no período</span>
+        ${varPrazo != null ? `<span class="${varPrazo >= 0 ? "up" : "dn"}">${varPrazo >= 0 ? "▲" : "▼"} ${Math.abs(varPrazo).toFixed(0)} p.p.</span>` : ""}
+      </div>
+      <div class="note" style="margin-top:12px">
+        Média de ${mediaAnual.ano}: <strong>${mediaAnual.noPrazoPct.toFixed(0)}%</strong>
+        em ${mediaAnual.n} operaç${mediaAnual.n === 1 ? "ão" : "ões"} acumuladas no ano.
+      </div>
+    </div>
+    <div class="card">
+      <p class="ct">Produtividade — unidades por hora</p>
+      <div class="cmp">
+        <span style="font-family:Roboto Mono,monospace;font-size:30px;font-weight:700;color:#FF6B00">${unHoraPeriodo.toFixed(0)}</span>
+        <span style="font-size:12.5px;color:#8A9BB0">un/hora no período</span>
+        ${varProd != null ? `<span class="${varProd >= 0 ? "up" : "dn"}">${varProd >= 0 ? "▲" : "▼"} ${Math.abs(varProd).toFixed(0)}%</span>` : ""}
+      </div>
+      <div class="note" style="margin-top:12px">
+        Média de ${mediaAnual.ano}: <strong>${mediaAnual.unPorHora.toFixed(0)} un/hora</strong> ·
+        volume médio por operação: <strong>${nf(Math.round(mediaAnual.volumeMedio))} un</strong>.
+      </div>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+      <p class="ct" style="align-self:flex-start">Prazo no período</p>
+      <svg viewBox="0 0 260 150" style="max-width:250px">
+        <path d="M 34 122 A 96 96 0 0 1 226 122" fill="none" stroke="#E1E7EF" stroke-width="19" stroke-linecap="round"/>
+        <path d="M 34 122 A 96 96 0 0 1 ${gx.toFixed(1)} ${gy.toFixed(1)}" fill="none" stroke="${corPrazo}" stroke-width="19" stroke-linecap="round"/>
+        <text x="130" y="112" text-anchor="middle" font-family="Roboto Mono, monospace" font-size="38" font-weight="700" fill="${corPrazo}">${agg.noPrazoPct.toFixed(0)}%</text>
+        <text x="130" y="140" text-anchor="middle" font-family="Roboto, sans-serif" font-size="12" fill="#8A9BB0">${agg.noPrazo} de ${agg.n} no prazo</text>
+      </svg>
+    </div>
+  </div>
+
+  ${volumeDiario.length > 0 ? `
+  <h2 class="sec">Volume Movimentado por Dia</h2>
+  <div class="card">
+    <p class="ct">Unidades processadas — ${esc(per)}</p>
+    <svg viewBox="0 0 ${vW} ${vH}">${vGrid}${vBars}
+      <line x1="${vL}" y1="${vH - vB}" x2="${vW - 14}" y2="${vH - vB}" stroke="#C5CDD8"/></svg>
+    <div class="leg">
+      <span><i style="background:#149C3A"></i>Dia com 100% das operações no prazo</span>
+      <span><i style="background:#2B4C7E"></i>Dia com alguma operação acima do prazo</span>
+    </div>
+  </div>
+
+  <h2 class="sec">Cumprimento de Prazo por Dia</h2>
+  <div class="card">
+    <p class="ct">Percentual de operações dentro do tempo previsto</p>
+    <svg viewBox="0 0 ${aW} ${aH}">${aGrid}${aBars}
+      <line x1="${aL}" y1="${yMedia.toFixed(1)}" x2="${aW - 14}" y2="${yMedia.toFixed(1)}" stroke="#1E3A5F" stroke-width="2.2" stroke-dasharray="6 4"/>
+      <text x="${aW - 18}" y="${(yMedia - 7).toFixed(1)}" font-size="11" fill="#1E3A5F" text-anchor="end" font-weight="700">média ${mediaAnual.ano}: ${mediaAnual.noPrazoPct.toFixed(0)}%</text>
+      <line x1="${aL}" y1="${aH - aB}" x2="${aW - 14}" y2="${aH - aB}" stroke="#C5CDD8"/></svg>
+    <div class="leg">
+      <span><i style="background:#149C3A"></i>80% ou mais</span>
+      <span><i style="background:#F9A825"></i>entre 50% e 80%</span>
+      <span><i style="background:#C62828"></i>abaixo de 50%</span>
+      <span>— — média do ano</span>
+    </div>
+  </div>` : ""}
+
+  ${porTipo.length > 0 ? `
+  <h2 class="sec">Desempenho por Tipo de Operação</h2>
+  <table>
+    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Horas trabalhadas</th><th>No prazo</th></tr></thead>
+    <tbody>${linhasTipo}</tbody>
+  </table>` : ""}
+
+  ${dados.length > 0 ? `
+  <h2 class="sec">Operações Realizadas</h2>
+  <table>
+    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume</th><th>Data</th><th>Tempo</th><th>Prazo</th></tr></thead>
+    <tbody>${linhasOps}</tbody>
+  </table>` : ""}
+
+  ${planejadas.length > 0 ? `
+  <h2 class="sec">Operações Programadas</h2>
+  <table>
+    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
+    <tbody>${linhasPlan}</tbody>
+  </table>
+  ${planejadas.length > 25 ? `<div class="note">Exibindo as 25 operações mais próximas de um total de ${planejadas.length} programadas.</div>` : ""}` : ""}
+
+  <div class="note">
+    <strong>Como lemos o prazo.</strong> Cada operação tem um tempo-alvo calculado a partir do volume e da
+    equipe alocada, com tolerância de ${TOLERANCIA_META_MIN} minutos. Uma operação é considerada "no prazo"
+    quando é concluída dentro desse tempo. Os horários vêm do registro feito pelo conferente no momento
+    da operação, com início e término marcados no próprio pátio.
+  </div>
+</main>
+
+<footer>
+  <div><strong style="display:block;font-weight:600;margin-bottom:2px">Superior Transportes</strong>Recebimento &amp; Expedição · Gestão Operacional</div>
+  <div class="r">Documento gerado em ${esc(emissao)}<br>Acompanhamento técnico: SBS Solution</div>
+</footer>
+</body></html>`;
+}
+
+/* ============================================================
    GESTOR — ABA 4: PARÂMETROS
    ============================================================ */
 function Parametros({ params, persistParams, persistOps, ops }) {
-  const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [], conferentes: params.conferentes || [] });
+  const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
+    conferentes: params.conferentes || [], gestores: params.gestores || [] });
   const [novoCliente, setNovoCliente] = useState("");
   const [salvo, setSalvo] = useState(false);
+  /* seções recolhidas por padrão — a tela é longa demais com tudo aberto */
+  const [aberta, setAberta] = useState(null);   // "conferentes" | "gestores" | "tipos" | null
+  const toggle = (k) => setAberta(a => a === k ? null : k);
+  /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
+  const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
   const setV = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setSalvo(false); };
   const setTipo = (id, k, v) => { setDraft(d => ({ ...d, tipos: d.tipos.map(t => t.id === id ? { ...t, [k]: v } : t) })); setSalvo(false); };
   const addCliente = () => {
@@ -3357,7 +3884,40 @@ function Parametros({ params, persistParams, persistOps, ops }) {
   const delConferente = (id) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).filter(c => c.id !== id) })); setSalvo(false); };
   const setConfPin = (id, pin) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).map(c => c.id === id ? { ...c, pin } : c) })); setSalvo(false); };
 
-  const addTipo = () => setDraft(d => ({ ...d, tipos: [...d.tipos, { id: uid(), label: "Nova operação", pessoas: 4, metaHoras: 3, icon: "box", modalidade: "manual" }] }));
+  /* --- gestores ---
+     Mesma mecânica dos conferentes. O PIN precisa ser único no app inteiro:
+     um PIN repetido entre gestor e conferente tornaria o acesso ambíguo. */
+  const [novoGestor, setNovoGestor] = useState({ nome: "", pin: "" });
+  const [erroGestor, setErroGestor] = useState("");
+  const pinEmUso = (pin, exceto) => {
+    const g = (draft.gestores || []).some(x => x.pin === pin && x.id !== exceto);
+    const c = (draft.conferentes || []).some(x => x.pin === pin && x.id !== exceto);
+    return g || c;
+  };
+  const addGestor = () => {
+    const nome = novoGestor.nome.trim(), pin = novoGestor.pin.trim();
+    if (!nome) return setErroGestor("Informe o nome do gestor.");
+    if (!/^\d{4,6}$/.test(pin)) return setErroGestor("O PIN deve ter de 4 a 6 dígitos numéricos.");
+    if ((draft.gestores || []).some(g => g.nome.toLowerCase() === nome.toLowerCase())) return setErroGestor("Já existe um gestor com esse nome.");
+    if (pinEmUso(pin)) return setErroGestor("Este PIN já está em uso por outro gestor ou conferente.");
+    setDraft(d => ({ ...d, gestores: [...(d.gestores || []), { id: uid(), nome, pin }] }));
+    setNovoGestor({ nome: "", pin: "" }); setErroGestor(""); setSalvo(false);
+  };
+  const delGestor = (id) => {
+    /* nunca deixar a lista vazia sem aviso: sem gestor cadastrado o app
+       volta a aceitar o PIN de emergência, o que surpreende quem removeu */
+    setDraft(d => ({ ...d, gestores: (d.gestores || []).filter(g => g.id !== id) }));
+    setSalvo(false);
+  };
+  const setGestorPin = (id, pin) => { setDraft(d => ({ ...d, gestores: (d.gestores || []).map(g => g.id === id ? { ...g, pin } : g) })); setSalvo(false); };
+
+  /* devolve o id para o chamador abrir o modal já no tipo recém-criado */
+  const addTipo = () => {
+    const id = uid();
+    setDraft(d => ({ ...d, tipos: [...d.tipos, { id, label: "Nova operação", pessoas: 4, metaHoras: 3, icon: "box", modalidade: "manual" }] }));
+    setSalvo(false);
+    return id;
+  };
   const delTipo = (id) => setDraft(d => ({ ...d, tipos: d.tipos.filter(t => t.id !== id) }));
 
   /* Calibragem: veio do Dashboard para cá porque a conclusão dela é sempre
@@ -3377,6 +3937,8 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       metaDinamica: draft.metaDinamica !== false,
       conferentes: (draft.conferentes || []).filter(c => c.nome && c.pin)
         .map(c => ({ id: c.id || uid(), nome: c.nome.trim(), pin: c.pin.toString().trim() })),
+      gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
+        .map(g => ({ id: g.id || uid(), nome: g.nome.trim(), pin: g.pin.toString().trim() })),
       tipos: draft.tipos.map(t => ({ ...t, label: t.label.trim() || "Operação",
         modalidade: t.modalidade === "paletizado" ? "paletizado" : "manual",
         pessoas: Math.max(1, parseInt(t.pessoas, 10) || 1),
@@ -3404,9 +3966,6 @@ function Parametros({ params, persistParams, persistOps, ops }) {
             <input style={styles.input} type="number" min="0" step="10"
               value={draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior}
               onChange={e => setV("bonusRateio", e.target.value)} />
-          </Field>
-          <Field label="PIN de acesso do Gestor">
-            <input style={styles.input} value={draft.pinGestor} onChange={e => setV("pinGestor", e.target.value)} placeholder="1234" />
           </Field>
         </div>
         <div style={{ ...styles.infoBox, marginTop: 14 }}>
@@ -3457,13 +4016,17 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </div>
       </div>
 
-      <SectionTitle icon={HardHat}>Conferentes <Badge>{(draft.conferentes || []).length}</Badge></SectionTitle>
+      <SectionTitle icon={Lock}>Acessos ao App</SectionTitle>
       <p style={styles.helper}>
-        Cada conferente entra com o próprio PIN. Quem iniciou e quem finalizou cada operação
-        fica registrado — útil quando for preciso apurar um desvio de tempo.
-        Sem nenhum cadastro, o acesso do conferente segue aberto.
+        Cada pessoa entra com o próprio PIN. Quem iniciou e quem finalizou cada operação fica registrado —
+        é o que permite apurar um desvio de tempo com a pessoa certa. Clique para abrir cada lista.
       </p>
-      <div style={styles.card}>
+
+      <Sanfona titulo="Conferentes" icone={HardHat} cor={C.supVerde}
+        contagem={(draft.conferentes || []).length}
+        sub="Registram início e fim das operações no celular"
+        resumo={(draft.conferentes || []).map(c => c.nome).join(" · ")}
+        aberto={aberta === "conferentes"} onToggle={() => toggle("conferentes")}>
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
           <Field label="Nome do conferente">
             <input style={styles.input} value={novoConf.nome}
@@ -3489,27 +4052,96 @@ function Parametros({ params, persistParams, persistOps, ops }) {
             Cadastre acima para identificar quem registra cada operação.
           </div>
         ) : (
-          <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8, marginTop: 16 }}>
             {(draft.conferentes || []).map(c => (
-              <div key={c.id} style={{ ...styles.opRow, padding: "10px 12px" }}>
-                <div style={{ ...styles.portaIcon, width: 34, height: 34, background: "#EAF6EE", flexShrink: 0 }}>
-                  <HardHat size={17} color={C.supVerde} strokeWidth={2.2} />
+              <div key={c.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
+                <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EAF6EE", flexShrink: 0 }}>
+                  <HardHat size={15} color={C.supVerde} strokeWidth={2.2} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13.5, color: C.navy }}>{c.nome}</div>
-                  <div style={{ fontSize: 11, color: C.prata, marginTop: 1 }}>Acessa o app do conferente com este PIN</div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
+                    color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nome}</div>
                 </div>
-                <input style={{ ...styles.input, width: 96, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 2, padding: "7px 8px" }}
+                <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
                   inputMode="numeric" maxLength={6} value={c.pin}
                   onChange={e => setConfPin(c.id, e.target.value.replace(/\D/g, ""))} />
                 <button style={styles.iconBtnDanger} title="Remover conferente" onClick={() => delConferente(c.id)}>
-                  <Trash2 size={15} />
+                  <Trash2 size={14} />
                 </button>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </Sanfona>
+
+      <Sanfona titulo="Gestores" icone={Briefcase} cor={C.navy2}
+        contagem={(draft.gestores || []).length}
+        sub="Acessam o painel completo: custos, metas, rateio e relatórios"
+        resumo={(draft.gestores || []).map(g => g.nome).join(" · ")}
+        aberto={aberta === "gestores"} onToggle={() => toggle("gestores")}>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <Field label="Nome do gestor">
+            <input style={styles.input} value={novoGestor.nome}
+              onChange={e => { setNovoGestor(v => ({ ...v, nome: e.target.value })); setErroGestor(""); }}
+              onKeyDown={e => e.key === "Enter" && addGestor()}
+              placeholder="Ex.: Pablo Bona" />
+          </Field>
+          <Field label="PIN (4 a 6 dígitos)">
+            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+              inputMode="numeric" maxLength={6} value={novoGestor.pin}
+              onChange={e => { setNovoGestor(v => ({ ...v, pin: e.target.value.replace(/\D/g, "") })); setErroGestor(""); }}
+              onKeyDown={e => e.key === "Enter" && addGestor()}
+              placeholder="0000" />
+          </Field>
+          <button style={styles.btnPrimary} onClick={addGestor}><Plus size={15} /> Adicionar</button>
+        </div>
+
+        {erroGestor && <div style={styles.erro}><AlertTriangle size={15} /> {erroGestor}</div>}
+
+        {(draft.gestores || []).length === 0 ? (
+          <div style={{ ...styles.infoBox, marginTop: 14, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
+            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+            Nenhum gestor cadastrado — o app ainda aceita o <strong>PIN de emergência</strong> abaixo.
+            Cadastre os gestores para que cada um tenha o seu e o nome apareça no painel.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8, marginTop: 16 }}>
+              {(draft.gestores || []).map(g => (
+                <div key={g.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
+                  <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EEF2F8", flexShrink: 0 }}>
+                    <Briefcase size={15} color={C.navy2} strokeWidth={2.2} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
+                      color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.nome}</div>
+                  </div>
+                  <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
+                    inputMode="numeric" maxLength={6} value={g.pin}
+                    onChange={e => setGestorPin(g.id, e.target.value.replace(/\D/g, ""))} />
+                  <button style={styles.iconBtnDanger} title="Remover gestor" onClick={() => delGestor(g.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...styles.infoBox, marginTop: 14, fontSize: 12 }}>
+              Com gestores cadastrados, o PIN de emergência deixa de funcionar — só estes PINs entram no painel.
+              Se remover todos, o PIN de emergência volta a valer.
+            </div>
+          </>
+        )}
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+          <Field label="PIN de emergência (só vale sem gestor cadastrado)">
+            <input style={{ ...styles.input, maxWidth: 200, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+              value={draft.pinGestor} onChange={e => setV("pinGestor", e.target.value)} placeholder="1234" />
+          </Field>
+          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.5 }}>
+            Serve para recuperar o acesso numa instalação nova ou caso a lista de gestores seja apagada.
+          </div>
+        </div>
+      </Sanfona>
 
       <SectionTitle icon={Truck}>Tipos de Operação e Linha de Base</SectionTitle>
       <p style={styles.helper}>
@@ -3534,25 +4166,108 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </label>
       </div>
 
-      <div style={{ display: "grid", gap: 12 }}>
+      {/* Cards compactos: cada tipo mostra só o essencial. O formulário
+          completo abre em modal, para a lista não virar uma parede de campos. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(215px,1fr))", gap: 12 }}>
         {draft.tipos.map(t => {
           const prod = produtividadeBase({
             baseVolume: parseFloat(t.baseVolume) || 0,
             basePessoas: parseFloat(t.basePessoas) || 0,
             baseHoras: parseFloat(t.baseHoras) || 0
           });
+          const pal = (t.modalidade || "manual") === "paletizado";
           return (
-          <div key={t.id} style={{ ...styles.card, padding: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 12, alignItems: "end" }}>
-              <Field label="Nome do tipo"><input style={styles.input} value={t.label} onChange={e => setTipo(t.id, "label", e.target.value)} /></Field>
-              {t.modalidade !== "paletizado" && (
-                <Field label="MdO terceirizada padrão"><input style={styles.input} type="number" min="1" value={t.pessoas} onChange={e => setTipo(t.id, "pessoas", e.target.value)} /></Field>
+            <button key={t.id} onClick={() => setTipoModal(t.id)}
+              style={{ ...styles.card, padding: "14px 15px", textAlign: "left", cursor: "pointer",
+                font: "inherit", borderTop: `4px solid ${pal ? C.navy2 : C.supVerde}`,
+                display: "flex", flexDirection: "column", gap: 9 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <TipoIcon tipo={t} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13,
+                    color: C.navy, lineHeight: 1.25 }}>{t.label}</div>
+                  <span style={{ ...styles.pill, marginTop: 4,
+                    background: pal ? "#EEF2F8" : "#EAF6EE", color: pal ? C.navy2 : C.supVerde }}>
+                    {pal ? "Paletizado" : "Manual"}
+                  </span>
+                </div>
+              </div>
+              <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 8, display: "grid", gap: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: C.prata }}>Produtividade</span>
+                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: prod ? C.navy : C.laranjaEsc }}>
+                    {prod ? `${prod.toFixed(1)} un/${pal ? "h" : "p/h"}` : "—"}
+                  </strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: C.prata }}>Linha de base</span>
+                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>
+                    {t.baseVolume ? `${Number(t.baseVolume).toLocaleString("pt-BR")} un` : "—"}
+                    {!pal && t.basePessoas ? ` · ${t.basePessoas}p` : ""}
+                  </strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: C.prata }}>Tempo base</span>
+                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>
+                    {t.baseHoras ? hhmm(parseFloat(t.baseHoras)) : "—"}
+                  </strong>
+                </div>
+                {!pal && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                    <span style={{ color: C.prata }}>Ref. terceirizada</span>
+                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy2 }}>
+                      {brl((parseInt(t.pessoas, 10) || 0) * (parseFloat(draft.custoTerceirizada) || 0))}
+                    </strong>
+                  </div>
+                )}
+              </div>
+              {!prod && (
+                <div style={{ fontSize: 10.5, color: C.laranjaEsc, fontWeight: 700 }}>
+                  <AlertTriangle size={10} style={{ verticalAlign: -1 }} /> Linha de base incompleta
+                </div>
               )}
-              <Field label="Meta fixa (horas)"><input style={styles.input} type="number" min="0.1" step="0.5" value={t.metaHoras} onChange={e => setTipo(t.id, "metaHoras", e.target.value)} /></Field>
-              <button style={styles.iconBtnDanger} onClick={() => delTipo(t.id)} title="Remover tipo"><Trash2 size={15} /></button>
-            </div>
+              <div style={{ fontSize: 10.5, color: C.navy2, fontWeight: 700, marginTop: "auto" }}>
+                Clique para editar
+              </div>
+            </button>
+          );
+        })}
 
-            <div style={{ marginTop: 12 }}>
+        {/* card-botão de novo tipo, no mesmo grid */}
+        <button onClick={() => { const t = addTipo(); setTipoModal(t); }}
+          style={{ ...styles.card, padding: "14px 15px", cursor: "pointer", font: "inherit",
+            border: `2px dashed ${C.prataClaro}`, background: C.bgLeve, boxShadow: "none",
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            gap: 8, minHeight: 150, color: C.navy2 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: "#EEF2F8",
+            display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Plus size={22} color={C.navy2} strokeWidth={2.4} />
+          </div>
+          <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5 }}>
+            Novo tipo de operação
+          </span>
+        </button>
+      </div>
+
+      {/* ===== MODAL DE EDIÇÃO DO TIPO ===== */}
+      {tipoModal && (() => {
+        const t = draft.tipos.find(x => x.id === tipoModal);
+        if (!t) return null;
+        const pal = (t.modalidade || "manual") === "paletizado";
+        const prod = produtividadeBase({
+          baseVolume: parseFloat(t.baseVolume) || 0,
+          basePessoas: parseFloat(t.basePessoas) || 0,
+          baseHoras: parseFloat(t.baseHoras) || 0,
+          modalidade: t.modalidade
+        });
+        return (
+          <Modal titulo={t.label || "Novo tipo de operação"} onFechar={() => setTipoModal(null)} largura={620}>
+            <Field label="Nome do tipo" required>
+              <input style={styles.input} value={t.label} autoFocus
+                onChange={e => setTipo(t.id, "label", e.target.value)} placeholder="Ex.: Pneu de Passeio" />
+            </Field>
+
+            <div style={{ marginTop: 14 }}>
               <label style={styles.fieldLabel}>Modalidade</label>
               <div style={{ display: "flex", gap: 8 }}>
                 {[["manual", "Manual"], ["paletizado", "Paletizado"]].map(([v, lbl]) => (
@@ -3562,15 +4277,27 @@ function Parametros({ params, persistParams, persistOps, ops }) {
                   </button>
                 ))}
               </div>
-              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.4 }}>
-                {(t.modalidade || "manual") === "manual"
+              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.45 }}>
+                {!pal
                   ? "Tem MdO terceirizada de referência — o cadastro da operação mostra custo, bônus e economia."
                   : "Sem MdO alocada (carga já paletizada/unitizada) — o cadastro da operação só registra volume e SKU, sem cálculo de custo."}
               </div>
             </div>
 
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginTop: 14 }}>
+              {!pal && (
+                <Field label="MdO terceirizada padrão">
+                  <input style={styles.input} type="number" min="1" value={t.pessoas}
+                    onChange={e => setTipo(t.id, "pessoas", e.target.value)} />
+                </Field>
+              )}
+              <Field label="Meta fixa (horas)">
+                <input style={styles.input} type="number" min="0.1" step="0.5" value={t.metaHoras}
+                  onChange={e => setTipo(t.id, "metaHoras", e.target.value)} />
+              </Field>
+            </div>
 
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>
                 Linha de base — operação de referência
               </div>
@@ -3579,10 +4306,12 @@ function Parametros({ params, persistParams, persistOps, ops }) {
                   <input style={styles.input} type="number" min="0" value={t.baseVolume ?? ""}
                     onChange={e => setTipo(t.id, "baseVolume", e.target.value)} placeholder="Ex.: 1500" />
                 </Field>
-                <Field label="Pessoas">
-                  <input style={styles.input} type="number" min="1" value={t.basePessoas ?? ""}
-                    onChange={e => setTipo(t.id, "basePessoas", e.target.value)} placeholder="Ex.: 4" />
-                </Field>
+                {!pal && (
+                  <Field label="Pessoas">
+                    <input style={styles.input} type="number" min="1" value={t.basePessoas ?? ""}
+                      onChange={e => setTipo(t.id, "basePessoas", e.target.value)} placeholder="Ex.: 4" />
+                  </Field>
+                )}
                 <Field label="Tempo (horas)">
                   <input style={styles.input} type="number" min="0.1" step="0.25" value={t.baseHoras ?? ""}
                     onChange={e => setTipo(t.id, "baseHoras", e.target.value)} placeholder="Ex.: 3.5" />
@@ -3590,27 +4319,41 @@ function Parametros({ params, persistParams, persistOps, ops }) {
               </div>
               {prod ? (
                 <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12.5 }}>
-                  Produtividade: <strong style={{ color: C.navy }}>{prod.toFixed(1)} un/pessoa/hora</strong>{" "}
-                  ({minPorUnidade(prod).toFixed(2)} min por unidade).{" "}
-                  Uma operação de 800 un com 3 pessoas teria meta de <strong>{hhmm(800 / (3 * prod))}</strong>.
+                  Produtividade: <strong style={{ color: C.navy }}>{prod.toFixed(1)} un/{pal ? "hora" : "pessoa/hora"}</strong>{" "}
+                  ({minPorUnidade(prod).toFixed(2)} min por unidade).
+                  {!pal && <> Uma operação de 800 un com 3 pessoas teria meta de <strong>{hhmm(800 / (3 * prod))}</strong>.</>}
                 </div>
               ) : (
                 <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12, color: C.laranjaEsc }}>
-                  Preencha os três campos para o app calcular a produtividade deste tipo.
+                  Preencha os campos acima para o app calcular a produtividade deste tipo.
                 </div>
               )}
             </div>
 
-            {(t.modalidade || "manual") !== "paletizado" && (
-              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 10 }}>
-                Referência 100% terceirizada: <strong style={{ color: C.navy }}>{brl((parseInt(t.pessoas, 10) || 0) * (parseFloat(draft.custoTerceirizada) || 0))}</strong>
+            {!pal && (
+              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 12 }}>
+                Referência 100% terceirizada:{" "}
+                <strong style={{ color: C.navy }}>
+                  {brl((parseInt(t.pessoas, 10) || 0) * (parseFloat(draft.custoTerceirizada) || 0))}
+                </strong>
               </div>
             )}
-          </div>
-          );
-        })}
-      </div>
-      <button style={{ ...styles.btnGhost, marginTop: 12 }} onClick={addTipo}><Plus size={15} /> Adicionar tipo de operação</button>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20, flexWrap: "wrap", alignItems: "center" }}>
+              <button style={styles.btnPrimary} onClick={() => setTipoModal(null)}>
+                <CheckCircle2 size={16} /> Concluir
+              </button>
+              <button style={{ ...styles.btnGhost, color: C.vermelho, borderColor: "#F3C9C9" }}
+                onClick={() => { delTipo(t.id); setTipoModal(null); }}>
+                <Trash2 size={15} /> Remover tipo
+              </button>
+              <span style={{ fontSize: 11.5, color: C.prata, marginLeft: "auto" }}>
+                Lembre de <strong>Salvar parâmetros</strong> no fim da tela.
+              </span>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* ===== CALIBRAGEM DE METAS ===== */}
       <SectionTitle icon={Gauge}>Calibragem de Metas</SectionTitle>
@@ -3781,6 +4524,62 @@ function FontInject() {
     }
   `}</style>;
 }
+/* ---------- seção recolhível ----------
+   Parâmetros virou uma tela longa: conferentes, gestores e tipos ficavam
+   todos abertos e empurravam o botão de salvar para muito abaixo da dobra.
+   Cada bloco agora abre sob demanda. */
+function Sanfona({ titulo, sub, icone: Ic, cor, contagem, aberto, onToggle, resumo, children }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <button onClick={onToggle}
+        style={{ ...styles.card, padding: "13px 16px", width: "100%", textAlign: "left", cursor: "pointer",
+          borderLeft: `4px solid ${cor || C.navy}`, display: "flex", alignItems: "center", gap: 12,
+          flexWrap: "wrap", font: "inherit", borderRadius: aberto ? "10px 10px 0 0" : 10 }}>
+        {Ic && <Ic size={19} color={cor || C.navy} strokeWidth={2.3} />}
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy,
+            display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+            {titulo}
+            {contagem != null && <Badge>{contagem}</Badge>}
+          </div>
+          {sub && <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, fontWeight: 400 }}>{sub}</div>}
+        </div>
+        {resumo && !aberto && (
+          <span style={{ fontSize: 11.5, color: C.prata, maxWidth: 340, overflow: "hidden",
+            textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{resumo}</span>
+        )}
+        <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{aberto ? "▲" : "▼"}</span>
+      </button>
+      {aberto && (
+        <div style={{ ...styles.card, borderRadius: "0 0 10px 10px", borderTop: "none", boxShadow: "none" }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- modal genérico ---------- */
+function Modal({ titulo, onFechar, children, largura }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.55)", zIndex: 2500,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={onFechar}>
+      <div style={{ background: C.branco, borderRadius: 12, maxWidth: largura || 560, width: "100%",
+        maxHeight: "88vh", overflow: "auto", boxShadow: "0 10px 40px rgba(0,0,0,.3)" }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "16px 20px", borderBottom: `1px solid ${C.prataClaro}`, position: "sticky", top: 0, background: C.branco }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15.5, color: C.navy }}>{titulo}</div>
+          <button onClick={onFechar} style={{ border: "none", background: "transparent", fontSize: 24,
+            lineHeight: 1, color: C.prata, cursor: "pointer" }}>×</button>
+        </div>
+        <div style={{ padding: "18px 20px 20px" }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function SectionTitle({ children, icon: Ic }) {
   return <h2 style={styles.secTitle}>{Ic && <Ic size={19} strokeWidth={2.3} color={C.navy} />} {children}</h2>;
 }
@@ -4000,8 +4799,10 @@ function CardOpFeita({ op, c }) {
       ) : null}
       <div style={{ marginTop: 8, paddingTop: 7, borderTop: `1px dashed ${C.prataClaro}`,
         display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: cor, flexWrap: "wrap" }}>
+        {/* sem cifrão aqui: o painel fica exposto em TV no CD, então marca
+            apenas SE gerou bônus. O valor fica na aba Rateio. */}
         {naMeta
-          ? <><CheckCircle2 size={11} /> Na meta ({hhmm(c.metaHoras)}) · bônus {brl(c.bonusPago)}</>
+          ? <><CheckCircle2 size={11} /> Na meta ({hhmm(c.metaHoras)}){c.bonusPago > 0 ? " · com bônus" : ""}</>
           : <><AlertTriangle size={11} /> Fora da meta ({hhmm(c.metaHoras)}) · +{hhmm(dif)}</>}
       </div>
     </div>
