@@ -40,7 +40,14 @@ const SHARED = true; // dados visíveis a todos que usam este app
 
 const DEFAULT_PARAMS = {
   custoTerceirizada: 240,
+  /* bonusSuperior é o CUSTO do bônus para a Superior — é ele que entra no
+     custo real e, portanto, na economia apurada contra a terceirizada. */
   bonusSuperior: 200,
+  /* bonusRateio é quanto desse bônus chega de fato ao bolso da equipe e é
+     dividido entre os nomeados. A diferença para o custo fica com a empresa
+     (encargos e afins), então os dois números precisam existir separados:
+     usar 200 no rateio pagaria a mais; usar 120 no custo inflaria a economia. */
+  bonusRateio: 120,
   pinGestor: "1234",
   /* Cada conferente tem seu próprio PIN. Quem registrou a operação fica
      gravado no histórico — útil quando o gestor precisa apurar um desvio. */
@@ -144,8 +151,14 @@ function calcOp(op, params) {
   const referencia = paletizado ? 0 : pessoasRef * params.custoTerceirizada;
   const custoTerc = paletizado ? 0 : (op.qtdTerceirizada || 0) * params.custoTerceirizada;
   /* qtdSuperior = QUANTIDADE DE BÔNUS da operação (não headcount).
-     Ex.: 2 bônus x R$200 = R$400 no bolo, rateado depois entre os nomeados. */
+     Dois valores por bônus, propositalmente diferentes:
+     - bonusPotencial usa bonusSuperior (R$200) — é o CUSTO, entra na economia;
+     - distribuivelPotencial usa bonusRateio (R$120) — é o que a equipe recebe.
+     Registros/params antigos sem bonusRateio caem para bonusSuperior, que era
+     o comportamento anterior (custo e distribuição eram o mesmo número). */
   const bonusPotencial = paletizado ? 0 : (op.qtdSuperior || 0) * params.bonusSuperior;
+  const rateioUnit = params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior;
+  const distribuivelPotencial = paletizado ? 0 : (op.qtdSuperior || 0) * rateioUnit;
   /* A meta tem tolerância de TOLERANCIA_META_MIN minutos: um atraso pequeno
      (troca de doca, espera de empilhadeira) não deve derrubar o bônus da
      equipe. O prazo efetivo é metaHoras + tolerância. */
@@ -156,6 +169,8 @@ function calcOp(op, params) {
     cumpriuMeta = tempoReal <= metaComTolerancia;
   }
   const bonusPago = cumpriuMeta === true ? bonusPotencial : 0;
+  /* o que vai para o rateio entre os colaboradores — menor que o custo */
+  const bonusDistribuido = cumpriuMeta === true ? distribuivelPotencial : 0;
   const custoReal = custoTerc + bonusPago;
   const economia = referencia - custoReal;
   /* rateio: divide o bônus pago igualmente entre os colaboradores nomeados.
@@ -167,7 +182,8 @@ function calcOp(op, params) {
   const nomeados = Array.isArray(op.colaboradores) ? op.colaboradores.filter(Boolean) : [];
   const alvoRateio = op.qtdPessoasRateio > 0 ? op.qtdPessoasRateio
     : (op.qtdPessoasSuperior > 0 ? op.qtdPessoasSuperior : null);
-  const valorPorPessoa = (bonusPago > 0 && nomeados.length > 0) ? bonusPago / nomeados.length : 0;
+  /* divide o valor DISTRIBUÍDO (R$120/bônus), não o custo */
+  const valorPorPessoa = (bonusDistribuido > 0 && nomeados.length > 0) ? bonusDistribuido / nomeados.length : 0;
   /* produtividade realizada — base do aprendizado para recalibrar metas.
      Paletizado não tem headcount alocado, então não há produtividade a medir. */
   const pessoas = paletizado ? 0 : pessoasDaOperacao(op, tipo);
@@ -177,8 +193,9 @@ function calcOp(op, params) {
     ? ((tempoReal && op.volume) ? op.volume / tempoReal : null)
     : ((tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null);
   return { tipo, paletizado, pessoasRef, metaHoras, metaComTolerancia, meta, referencia, custoTerc, bonusPotencial, bonusPago,
+    bonusDistribuido, distribuivelPotencial, rateioUnit,
     custoReal, economia, tempoReal, cumpriuMeta, nomeados, valorPorPessoa, pessoas, prodReal, alvoRateio,
-    rateioPendente: bonusPago > 0 && nomeados.length === 0,
+    rateioPendente: bonusDistribuido > 0 && nomeados.length === 0,
     totalPessoas: pessoas };
 }
 
@@ -312,6 +329,19 @@ const rotuloDia = (ts) => {
   if (d === -1) return "Ontem";
   return new Date(ts).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
 };
+/* "qui., 30/07" — sempre com dia da semana, sem rótulo relativo */
+const dataSemana = (ts) => new Date(ts)
+  .toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
+/* dia da semana + data + rótulo relativo, para os cards de programação:
+   "qui., 30/07 · Hoje" ou "ter., 28/07 · Atrasada 2 dias" */
+function dataProgramada(ts) {
+  const d = diasAte(ts);
+  const base = dataSemana(ts);
+  if (d === 0) return { texto: `${base} · Hoje`, atrasada: false, dias: 0 };
+  if (d === 1) return { texto: `${base} · Amanhã`, atrasada: false, dias: 0 };
+  if (d < 0) return { texto: `${base} · Atrasada ${-d} dia${d === -1 ? "" : "s"}`, atrasada: true, dias: -d };
+  return { texto: `${base} · em ${d} dias`, atrasada: false, dias: 0 };
+}
 /* input date <-> timestamp, sem escorregar de fuso */
 const dataParaInput = (ts) => {
   if (ts == null) return "";
@@ -369,6 +399,9 @@ export default function App() {
       if (p?.value) {
         const parsed = JSON.parse(p.value);
         if (!Array.isArray(parsed.clientes)) parsed.clientes = DEFAULT_PARAMS.clientes;
+        /* params gravados antes da separação custo × distribuído não têm
+           bonusRateio — adota o padrão para o rateio não pagar o valor cheio */
+        if (parsed.bonusRateio == null) parsed.bonusRateio = DEFAULT_PARAMS.bonusRateio;
         setParams(parsed);
       }
     } catch (e) {}
@@ -1086,10 +1119,12 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
                 Headcount real — entra no cálculo da meta e do dimensionamento.
               </div>
             </Field>
-            <Field label={`Qtd. de BÔNUS da operação (${brl(params.bonusSuperior)} cada)`}>
+            <Field label="Qtd. de BÔNUS da operação">
               <input style={styles.input} type="number" min="0" value={form.qtdSuperior} onChange={e => set("qtdSuperior", e.target.value)} placeholder="0" />
               <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
-                Valor total a ser rateado entre os colaboradores da Superior. Os nomes são definidos depois, na aba Rateio.
+                Custo de {brl(params.bonusSuperior)} cada, dos quais{" "}
+                {brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)} são rateados entre os
+                colaboradores. Os nomes são definidos depois, na aba Rateio.
               </div>
             </Field>
             {parseInt(form.qtdSuperior || 0, 10) > 0 && (
@@ -1256,24 +1291,25 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
 /* ============================================================
    GESTOR — ABA 2: ACOMPANHAMENTO (status ao vivo)
    ============================================================ */
-function Acompanhamento({ ops, params, now }) {
-  /* pendentes ordenadas pela data planejada — a próxima a rodar aparece primeiro */
-  const pendentes = ops.filter(o => o.status === "pendente")
-    .sort((a, b) => diaPlanejado(a) - diaPlanejado(b));
-  const andamento = ops.filter(o => o.status === "em_andamento");
-  /* últimas 72h, mais recentes primeiro — histórico completo fica em Relatórios */
-  const concluidas = ops
-    .filter(o => o.status === "concluida" && dentro72h(o.fim))
-    .sort((a, b) => b.fim - a.fim);
-  const ocultas = ops.filter(o => o.status === "concluida" && !dentro72h(o.fim)).length;
-
-  const Coluna = ({ titulo, lista, cor, icone: Ic, render, rodape }) => (
+/* ---------- coluna do quadro de acompanhamento ----------
+   Precisa viver FORA de Acompanhamento. Enquanto era declarada dentro do
+   componente, cada tique do relógio (1s) criava um tipo de componente novo:
+   o React desmontava a coluna inteira e remontava, e a barra de rolagem
+   voltava ao topo no meio da leitura. */
+function Coluna({ titulo, lista, cor, icone: Ic, render, rodape, alerta }) {
+  return (
     <div style={{ ...styles.card, padding: 0, overflow: "hidden", borderTop: `4px solid ${cor}`, alignSelf: "start" }}>
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.prataClaro}`, display: "flex", alignItems: "center", gap: 8, background: C.bgLeve }}>
         <Ic size={17} color={cor} strokeWidth={2.3} />
         <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, textTransform: "uppercase" }}>{titulo}</span>
         <span style={{ marginLeft: "auto", fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: cor }}>{lista.length}</span>
       </div>
+      {alerta && (
+        <div style={{ padding: "8px 16px", background: "#FFEBEE", borderBottom: `1px solid ${C.prataClaro}`,
+          fontSize: 11.5, color: C.vermelho, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+          <AlertTriangle size={12} /> {alerta}
+        </div>
+      )}
       <div style={{
         padding: 12, display: "grid", gap: 10, maxHeight: 460, overflowY: "auto",
         overscrollBehavior: "contain", WebkitOverflowScrolling: "touch"
@@ -1289,6 +1325,27 @@ function Acompanhamento({ ops, params, now }) {
       )}
     </div>
   );
+}
+
+function Acompanhamento({ ops, params, now }) {
+  const hoje = inicioDoDia(Date.now());
+
+  /* Pendentes: só o dia corrente e o que já venceu sem rodar. O que está
+     programado para depois fica no Forecast do Dashboard — aqui só entra o
+     que exige decisão hoje. Atrasadas primeiro, da mais velha para a mais
+     nova, porque são as que travam a operação. */
+  const pendentes = ops
+    .filter(o => o.status === "pendente" && diaPlanejado(o) <= hoje)
+    .sort((a, b) => diaPlanejado(a) - diaPlanejado(b));
+  const atrasadas = pendentes.filter(o => diaPlanejado(o) < hoje).length;
+
+  const andamento = ops.filter(o => o.status === "em_andamento");
+
+  /* Finalizadas: apenas as do dia corrente — o histórico fica em Relatórios */
+  const concluidas = ops
+    .filter(o => o.status === "concluida" && ehHoje(o.fim))
+    .sort((a, b) => b.fim - a.fim);
+  const ocultas = ops.filter(o => o.status === "concluida" && !ehHoje(o.fim)).length;
 
   return (
     <div>
@@ -1298,18 +1355,22 @@ function Acompanhamento({ ops, params, now }) {
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(290px,1fr))", gap: 16 }}>
-        <Coluna titulo="Pendentes" lista={pendentes} cor={C.prata} icone={Clock} render={op => {
+        <Coluna titulo="Pendentes · hoje" lista={pendentes} cor={C.prata} icone={Clock}
+          alerta={atrasadas > 0 ? `${atrasadas} programada${atrasadas > 1 ? "s" : ""} para dias anteriores e ainda não iniciada${atrasadas > 1 ? "s" : ""}` : null}
+          render={op => {
           const c = calcOp(op, params);
+          const prog = dataProgramada(diaPlanejado(op));
           return (
-            <div key={op.id} style={styles.miniCard}>
+            <div key={op.id} style={{ ...styles.miniCard,
+              ...(prog.atrasada ? { borderLeft: `3px solid ${C.vermelho}`, background: "#FFF5F5" } : {}) }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                 <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13.5, color: C.navy }}>{op.ref}</strong>
                 <DirTag dir={op.direcao} />
               </div>
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente}</div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>{c.tipo?.label} · {op.qtdTerceirizada}T + {op.qtdSuperior}B · meta {hhmm(c.metaHoras)}</div>
-              <div style={{ fontSize: 11, color: C.navy2, marginTop: 3, fontWeight: 700 }}>
-                <Calendar size={11} style={{ verticalAlign: -1 }} /> Planejada: {rotuloDia(diaPlanejado(op))}
+              <div style={{ fontSize: 11, marginTop: 3, fontWeight: 700, color: prog.atrasada ? C.vermelho : C.navy2 }}>
+                <Calendar size={11} style={{ verticalAlign: -1 }} /> {prog.texto}
               </div>
             </div>
           );
@@ -1333,6 +1394,11 @@ function Acompanhamento({ ops, params, now }) {
                   style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: cor }}>{hhmm(el)}</span>
               </div>
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente} · {op.qtdTerceirizada}T + {op.qtdSuperior}B</div>
+              {/* início sempre visível: antes só aparecia quando a operação
+                  estava dentro da meta, justo o caso em que menos importa */}
+              <div style={{ fontSize: 11, color: C.texto, marginTop: 4, fontFamily: "'Roboto Mono',monospace" }}>
+                <Play size={10} style={{ verticalAlign: -1 }} /> Início {dataSemana(op.inicio)} às {hora(op.inicio)}
+              </div>
               <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5,
                 fontSize: 11.5, fontWeight: 700, color: op.conferenteInicio ? C.navy2 : C.prata }}>
                 <HardHat size={12} strokeWidth={2.3} />
@@ -1342,16 +1408,16 @@ function Acompanhamento({ ops, params, now }) {
                 <div style={{ width: `${pct}%`, height: "100%", background: cor, transition: "width .5s" }} />
               </div>
               <div style={{ fontSize: 10.5, color: st === "ok" ? C.prata : cor, marginTop: 4, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
-                {st === "estourou" && <><AlertTriangle size={11} /> Meta {hhmm(c.metaHoras)} ultrapassada em {hhmm(el - c.metaHoras)}</>}
-                {st === "atencao" && <><AlertTriangle size={11} /> Faltam {hhmm(restante)} para a meta</>}
-                {st === "ok" && <>Meta {hhmm(c.metaHoras)} · início {fmtDT(op.inicio)}</>}
+                {st === "estourou" && <><AlertTriangle size={11} /> Meta {hhmm(c.metaHoras)} ultrapassada em {hhmm(el - c.metaComTolerancia)}</>}
+                {st === "atencao" && <><AlertTriangle size={11} /> Faltam {hhmm(Math.max(0, restante))} para a meta</>}
+                {st === "ok" && <>Meta {hhmm(c.metaHoras)} · {Math.round(pct)}% consumido</>}
               </div>
             </div>
           );
         }} />
 
-        <Coluna titulo="Finalizadas · últimas 72h" lista={concluidas} cor={C.verde} icone={CheckCircle2}
-          rodape={ocultas > 0 ? `+${plOp(ocultas)} anterior${ocultas > 1 ? "es" : ""} — veja em Relatórios` : null}
+        <Coluna titulo="Finalizadas · hoje" lista={concluidas} cor={C.verde} icone={CheckCircle2}
+          rodape={ocultas > 0 ? `+${plOp(ocultas)} de dias anteriores — veja em Relatórios` : null}
           render={op => {
           const c = calcOp(op, params);
           return (
@@ -1389,10 +1455,87 @@ function Acompanhamento({ ops, params, now }) {
    O valor do bolo é dividido igualmente entre os nomeados.
    Gera relatório por colaborador para envio ao RH.
    ============================================================ */
+/* Card de nomeação de participantes. Fora do componente pai de propósito —
+   declarado dentro, cada re-render recriaria o tipo e o React remontaria a
+   lista inteira (mesmo problema que zerava o scroll em Acompanhamento). */
+function CardRateio({ op, c, equipe, params, onToggle }) {
+  return (
+    <div style={{ ...styles.card, padding: 14,
+      background: c.rateioPendente ? "#FFFBF5" : "#F6FBF7",
+      borderLeft: `4px solid ${c.rateioPendente ? C.laranja : C.supVerde}` }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <TipoIcon tipo={c.tipo} />
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{op.ref}</div>
+          <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente} · {c.tipo?.label}</div>
+          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
+            <CheckCircle2 size={11} style={{ verticalAlign: -1 }} /> Finalizada {dataSemana(op.fim)} às {hora(op.fim)}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 10.5, color: C.prata, fontWeight: 700, textTransform: "uppercase" }}>A distribuir</div>
+          <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: C.supVerde }}>{brl(c.bonusDistribuido)}</div>
+          <div style={{ fontSize: 11, color: C.prata }}>{op.qtdSuperior} bônus × {brl(c.rateioUnit)}</div>
+          {c.bonusPago !== c.bonusDistribuido && (
+            <div style={{ fontSize: 10, color: C.prata, marginTop: 2 }}>custo {brl(c.bonusPago)}</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <label style={styles.fieldLabel}>
+          Quem participou desta operação?
+          {c.alvoRateio != null && (
+            <span style={{ fontWeight: 400, color: C.prata, textTransform: "none", letterSpacing: 0 }}>
+              {" "}— {c.nomeados.length} de até {c.alvoRateio}
+            </span>
+          )}
+        </label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+          {equipe.map(nome => {
+            const marcado = (op.colaboradores || []).includes(nome);
+            const limiteAtingido = c.alvoRateio != null && c.nomeados.length >= c.alvoRateio;
+            const desabilitado = !marcado && limiteAtingido;
+            return (
+              <button key={nome} onClick={() => onToggle(op, nome)} disabled={desabilitado}
+                style={{ ...styles.chip, ...(marcado ? { background: C.supVerde, color: C.branco, borderColor: C.supVerde } : {}),
+                  ...(desabilitado ? { opacity: .4, cursor: "not-allowed" } : {}) }}>
+                {marcado && <CheckCircle2 size={12} style={{ verticalAlign: -2, marginRight: 4 }} />}
+                {nome}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {c.nomeados.length > 0 ? (
+        <div style={{ ...styles.infoBox, marginTop: 12, background: "#EAF6EE", border: `1px solid ${C.supVerde}` }}>
+          <strong>{brl(c.bonusDistribuido)}</strong> dividido entre <strong>{c.nomeados.length}</strong> {c.nomeados.length > 1 ? "colaboradores" : "colaborador"} ={" "}
+          <strong style={{ color: C.supVerde }}>{brl(c.valorPorPessoa)}</strong> para cada
+          {c.alvoRateio != null && c.nomeados.length < c.alvoRateio && (
+            <div style={{ fontSize: 11.5, color: C.prata, fontWeight: 400, marginTop: 4 }}>
+              Programado para até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""} — ainda pode nomear mais {c.alvoRateio - c.nomeados.length}, se quiser.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ ...styles.infoBox, marginTop: 12, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
+          Nenhum participante marcado — {brl(c.bonusDistribuido)} aguardando nomeação
+          {c.alvoRateio != null && <> (até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""})</>}.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Rateio({ ops, params, persistOps, persistParams }) {
   const [novoNome, setNovoNome] = useState("");
   const [msg, setMsg] = useState("");
   const [mesFiltro, setMesFiltro] = useState(mesAtual());
+  /* já rateados ficam recolhidos: o que exige ação é a fila de pendentes */
+  const [verRateados, setVerRateados] = useState(false);
+  /* dentro dos rateados, mostra 72h por padrão e abre o período todo sob demanda */
+  const [rateadosTodos, setRateadosTodos] = useState(false);
 
   const equipe = params.equipe || [];
 
@@ -1428,7 +1571,18 @@ function Rateio({ ops, params, persistOps, persistParams }) {
     .sort((a, b) => b.op.fim - a.op.fim)
   , [ops, params, mesFiltro]);
 
-  const pendentes = comBonus.filter(x => x.c.rateioPendente);
+  /* Pendentes primeiro, da mais antiga para a mais recente: quem finalizou há
+     mais tempo é quem está esperando o bônus há mais tempo. */
+  const pendentes = useMemo(() =>
+    comBonus.filter(x => x.c.rateioPendente).sort((a, b) => a.op.fim - b.op.fim)
+  , [comBonus]);
+  /* Já rateados: histórico, do mais recente para o mais antigo. Por padrão só
+     as últimas 72h — o resto entra sob demanda, para ajuste pontual. */
+  const rateados = useMemo(() =>
+    comBonus.filter(x => !x.c.rateioPendente).sort((a, b) => b.op.fim - a.op.fim)
+  , [comBonus]);
+  const rateadosVisiveis = rateadosTodos ? rateados : rateados.filter(x => dentro72h(x.op.fim));
+  const rateadosOcultos = rateados.length - rateadosVisiveis.length;
 
   /* consolidado por colaborador */
   const porColaborador = useMemo(() => {
@@ -1439,7 +1593,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
         mapa[nome].total += c.valorPorPessoa;
         mapa[nome].operacoes.push({
           ref: op.ref, cliente: op.cliente, tipo: c.tipo?.label,
-          fim: op.fim, bolo: c.bonusPago, divisao: c.nomeados.length, valor: c.valorPorPessoa
+          fim: op.fim, bolo: c.bonusDistribuido, divisao: c.nomeados.length, valor: c.valorPorPessoa
         });
       });
     });
@@ -1447,7 +1601,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
   }, [comBonus]);
 
   const totalRateado = porColaborador.reduce((s, x) => s + x.total, 0);
-  const totalPendente = pendentes.reduce((s, x) => s + x.c.bonusPago, 0);
+  const totalPendente = pendentes.reduce((s, x) => s + x.c.bonusDistribuido, 0);
 
   const mesesDisponiveis = useMemo(() => {
     const set = new Set(ops.filter(o => o.status === "concluida" && o.fim).map(o => mesDe(o.fim)));
@@ -1475,7 +1629,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       "Cliente": o.cliente,
       "Tipo": o.tipo,
       "Data Conclusão": new Date(o.fim).toLocaleString("pt-BR"),
-      "Bônus da Operação (R$)": +o.bolo.toFixed(2),
+      "Valor Distribuído na Operação (R$)": +o.bolo.toFixed(2),
       "Dividido entre": o.divisao,
       "Valor ao Colaborador (R$)": +o.valor.toFixed(2)
     })));
@@ -1488,33 +1642,6 @@ function Rateio({ ops, params, persistOps, persistParams }) {
 
   return (
     <div>
-      <SectionTitle icon={Users}>Cadastro da Equipe Superior <Badge>{equipe.length}</Badge></SectionTitle>
-      <p style={styles.helper}>
-        Cadastre os colaboradores da Superior. Depois, em cada operação que gerou bônus, marque quem participou —
-        o valor é dividido igualmente entre os marcados.
-      </p>
-      <div style={styles.card}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          <input style={{ ...styles.input, flex: 1, minWidth: 200 }} value={novoNome}
-            onChange={e => setNovoNome(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && addColaborador()}
-            placeholder="Nome do colaborador…" />
-          <button style={styles.btnPrimary} onClick={addColaborador}><Plus size={16} /> Adicionar</button>
-        </div>
-        {equipe.length === 0 ? (
-          <div style={styles.infoBox}>Nenhum colaborador cadastrado. Adicione os nomes acima para começar o rateio.</div>
-        ) : (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {equipe.map(nome => (
-              <span key={nome} style={styles.clienteChip}>
-                {nome}
-                <button style={styles.chipX} onClick={() => delColaborador(nome)} title="Remover">×</button>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
       <SectionTitle icon={Calendar}>Período de Apuração</SectionTitle>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 18 }}>
         <Filter size={15} color={C.prata} />
@@ -1527,7 +1654,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       </div>
 
       <div style={styles.kpiGrid}>
-        <Kpi label="Bônus Rateado" valor={brl(totalRateado)} nota={`${porColaborador.length} colaborador${porColaborador.length !== 1 ? "es" : ""}`} icon={Award} highlight color={C.supVerde} />
+        <Kpi label="Bônus Rateado" valor={brl(totalRateado)} nota={`${porColaborador.length} colaborador${porColaborador.length !== 1 ? "es" : ""} · ${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)} por bônus`} icon={Award} highlight color={C.supVerde} />
         <Kpi label="Operações com Bônus" valor={comBonus.length} nota="Concluídas na meta" icon={CheckCircle2} color={C.navy} />
         <Kpi label="Aguardando Nomeação" valor={brl(totalPendente)} nota={`${plOp(pendentes.length)} sem participantes`} icon={AlertTriangle}
           color={pendentes.length > 0 ? C.laranja : C.prata} />
@@ -1536,77 +1663,92 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       {pendentes.length > 0 && (
         <div style={styles.alertBox}>
           <AlertTriangle size={16} />
-          <span><strong>{plOp(pendentes.length)}</strong> gerou bônus mas ainda não tem participantes nomeados. Marque abaixo para liberar o rateio.</span>
+          <span>
+            <strong>{plOp(pendentes.length)}</strong> {pendentes.length === 1 ? "gerou" : "geraram"} bônus mas ainda
+            {pendentes.length === 1 ? " não tem" : " não têm"} participantes nomeados. Marque abaixo para liberar o rateio.
+          </span>
         </div>
       )}
 
-      <SectionTitle icon={ClipboardList}>Nomear Participantes por Operação <Badge>{comBonus.length}</Badge></SectionTitle>
-      {comBonus.length === 0 ? (
-        <EmptyState text="Nenhuma operação com bônus neste período." />
-      ) : equipe.length === 0 ? (
-        <EmptyState text="Cadastre a equipe acima para poder nomear os participantes." />
+      {/* ===== FILA DE RATEIO — o que exige ação ===== */}
+      <SectionTitle icon={ClipboardList}>
+        Aguardando Rateio <Badge>{pendentes.length}</Badge>
+      </SectionTitle>
+      {equipe.length === 0 ? (
+        <EmptyState text="Cadastre a equipe no fim desta tela para poder nomear os participantes." />
+      ) : pendentes.length === 0 ? (
+        <div style={{ ...styles.infoBox, background: "#EAF6EE", border: `1px solid ${C.supVerde}`, marginBottom: 8 }}>
+          <CheckCircle2 size={15} style={{ verticalAlign: -3, marginRight: 6, color: C.supVerde }} />
+          Nenhuma operação aguardando nomeação neste período — todo o bônus já foi rateado.
+        </div>
       ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          {comBonus.map(({ op, c }) => (
-            <div key={op.id} style={{ ...styles.card, padding: 14, borderLeft: `4px solid ${c.rateioPendente ? C.laranja : C.supVerde}` }}>
-              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                <TipoIcon tipo={c.tipo} />
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{op.ref}</div>
-                  <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente} · {c.tipo?.label} · {fmtDT(op.fim)}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 10.5, color: C.prata, fontWeight: 700, textTransform: "uppercase" }}>Bônus da operação</div>
-                  <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: C.supVerde }}>{brl(c.bonusPago)}</div>
-                  <div style={{ fontSize: 11, color: C.prata }}>{op.qtdSuperior} bônus × {brl(params.bonusSuperior)}</div>
-                </div>
-              </div>
+        <>
+          <p style={styles.helper}>
+            Da mais antiga para a mais recente — quem finalizou primeiro está esperando o bônus há mais tempo.
+          </p>
+          <div style={{ display: "grid", gap: 12 }}>
+            {pendentes.map(({ op, c }) => (
+              <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
+            ))}
+          </div>
+        </>
+      )}
 
-              <div style={{ marginTop: 12 }}>
-                <label style={styles.fieldLabel}>
-                  Quem participou desta operação?
-                  {c.alvoRateio != null && (
-                    <span style={{ fontWeight: 400, color: C.prata, textTransform: "none", letterSpacing: 0 }}>
-                      {" "}— {c.nomeados.length} de até {c.alvoRateio}
-                    </span>
-                  )}
-                </label>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
-                  {equipe.map(nome => {
-                    const marcado = (op.colaboradores || []).includes(nome);
-                    const limiteAtingido = c.alvoRateio != null && c.nomeados.length >= c.alvoRateio;
-                    const desabilitado = !marcado && limiteAtingido;
-                    return (
-                      <button key={nome} onClick={() => toggleParticipante(op, nome)} disabled={desabilitado}
-                        style={{ ...styles.chip, ...(marcado ? { background: C.supVerde, color: C.branco, borderColor: C.supVerde } : {}),
-                          ...(desabilitado ? { opacity: .4, cursor: "not-allowed" } : {}) }}>
-                        {marcado && <CheckCircle2 size={12} style={{ verticalAlign: -2, marginRight: 4 }} />}
-                        {nome}
-                      </button>
-                    );
-                  })}
-                </div>
+      {/* ===== JÁ RATEADAS — recolhido, abre sob demanda para ajuste ===== */}
+      {rateados.length > 0 && (
+        <>
+          <SectionTitle icon={CheckCircle2}>
+            Já Rateadas <Badge>{rateados.length}</Badge>
+          </SectionTitle>
+          <button onClick={() => setVerRateados(v => !v)}
+            style={{ ...styles.card, padding: "13px 16px", width: "100%", textAlign: "left", cursor: "pointer",
+              border: `1px solid ${C.prataClaro}`, borderLeft: `4px solid ${C.supVerde}`,
+              display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", font: "inherit" }}>
+            <CheckCircle2 size={20} color={C.supVerde} strokeWidth={2.2} />
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>
+                {rateados.length} operaç{rateados.length === 1 ? "ão" : "ões"} já rateada{rateados.length === 1 ? "" : "s"}
               </div>
+              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
+                {verRateados ? "Clique para recolher" : "Clique para abrir e corrigir a nomeação de alguma delas"}
+              </div>
+            </div>
+            <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: C.supVerde }}>
+              {brl(rateados.reduce((s, x) => s + x.c.bonusDistribuido, 0))}
+            </span>
+            <span style={{ fontSize: 18, color: C.prata, lineHeight: 1 }}>{verRateados ? "▲" : "▼"}</span>
+          </button>
 
-              {c.nomeados.length > 0 ? (
-                <div style={{ ...styles.infoBox, marginTop: 12, background: "#EAF6EE", border: `1px solid ${C.supVerde}` }}>
-                  <strong>{brl(c.bonusPago)}</strong> dividido entre <strong>{c.nomeados.length}</strong> {c.nomeados.length > 1 ? "colaboradores" : "colaborador"} ={" "}
-                  <strong style={{ color: C.supVerde }}>{brl(c.valorPorPessoa)}</strong> para cada
-                  {c.alvoRateio != null && c.nomeados.length < c.alvoRateio && (
-                    <div style={{ fontSize: 11.5, color: C.prata, fontWeight: 400, marginTop: 4 }}>
-                      Programado para até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""} — ainda pode nomear mais {c.alvoRateio - c.nomeados.length}, se quiser.
-                    </div>
-                  )}
-                </div>
+          {verRateados && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ ...styles.infoBox, marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <Clock size={14} color={C.navy2} />
+                <span style={{ flex: 1, minWidth: 200 }}>
+                  {rateadosTodos
+                    ? <>Exibindo <strong>todas as {rateados.length}</strong> operações rateadas de {nomeMes(mesFiltro)}.</>
+                    : <>Exibindo as <strong>últimas 72h</strong> ({rateadosVisiveis.length} de {rateados.length}).</>}
+                </span>
+                {(rateadosOcultos > 0 || rateadosTodos) && (
+                  <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
+                    onClick={() => setRateadosTodos(v => !v)}>
+                    {rateadosTodos
+                      ? "Voltar para as últimas 72h"
+                      : `Ver as ${rateadosOcultos} anteriores a 72h`}
+                  </button>
+                )}
+              </div>
+              {rateadosVisiveis.length === 0 ? (
+                <EmptyState text="Nenhuma operação rateada nas últimas 72h. Use o botão acima para ver as anteriores." />
               ) : (
-                <div style={{ ...styles.infoBox, marginTop: 12, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
-                  Nenhum participante marcado — o bônus de {brl(c.bonusPago)} está aguardando nomeação
-                  {c.alvoRateio != null && <> (até {c.alvoRateio} pessoa{c.alvoRateio > 1 ? "s" : ""})</>}.
+                <div style={{ display: "grid", gap: 12 }}>
+                  {rateadosVisiveis.map(({ op, c }) => (
+                    <CardRateio key={op.id} op={op} c={c} equipe={equipe} params={params} onToggle={toggleParticipante} />
+                  ))}
                 </div>
               )}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       <SectionTitle icon={Award}>Consolidado por Colaborador — {nomeMes(mesFiltro)}</SectionTitle>
@@ -1647,6 +1789,35 @@ function Rateio({ ops, params, persistOps, persistParams }) {
           </div>
         </>
       )}
+
+      {/* ===== CADASTRO DA EQUIPE — no fim, é manutenção esporádica =====
+         Ficava no topo e empurrava a fila de rateio para baixo da dobra,
+         embora só seja mexido quando alguém entra ou sai da equipe. */}
+      <SectionTitle icon={Users}>Cadastro da Equipe Superior <Badge>{equipe.length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        Os nomes cadastrados aqui são os que aparecem para marcação em cada operação com bônus.
+      </p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          <input style={{ ...styles.input, flex: 1, minWidth: 200 }} value={novoNome}
+            onChange={e => setNovoNome(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && addColaborador()}
+            placeholder="Nome do colaborador…" />
+          <button style={styles.btnPrimary} onClick={addColaborador}><Plus size={16} /> Adicionar</button>
+        </div>
+        {equipe.length === 0 ? (
+          <div style={styles.infoBox}>Nenhum colaborador cadastrado. Adicione os nomes acima para começar o rateio.</div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {equipe.map(nome => (
+              <span key={nome} style={styles.clienteChip}>
+                {nome}
+                <button style={styles.chipX} onClick={() => delColaborador(nome)} title="Remover">×</button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1795,8 +1966,20 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
      — são justamente as operações que o gestor pode precisar replanejar.
      Digitando na busca, procura em todo o histórico. */
   const buscando = busca.trim().length > 0;
+  /* Ordena pela data DA OPERAÇÃO — realizada quando existe, prevista quando
+     ainda não rodou. Não usa a data de cadastro nem a de replanejamento:
+     o gestor procura o registro pelo dia em que a carga andou.
+     O que já aconteceu vem primeiro, do mais recente para o mais antigo —
+     é o que se corrige nesta tela. O que ainda vai acontecer fica no fim,
+     do mais próximo para o mais distante; ordenar tudo junto em ordem
+     decrescente jogava as programadas de agosto para o topo. */
   const refData = (o) => o.fim || o.inicio || diaPlanejado(o);
-  const todas = ops.slice().sort((a, b) => refData(b) - refData(a));
+  const futura = (o) => o.status === "pendente" && diaPlanejado(o) > inicioDoDia(Date.now());
+  const todas = ops.slice().sort((a, b) => {
+    const fa = futura(a), fb = futura(b);
+    if (fa !== fb) return fa ? 1 : -1;
+    return fa ? refData(a) - refData(b) : refData(b) - refData(a);
+  });
   const relevante = (o) => dentro72h(refData(o)) || diaPlanejado(o) >= inicioDoDia(Date.now());
   const recentes = todas.filter(relevante);
   const lista = buscando
@@ -1845,8 +2028,17 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
             const c = calcOp(op, params);
             const emEdicao = editId === op.id;
             const temAjuste = (op.ajustes || []).length > 0;
+            /* fundo por status: verde claro concluída, amarelo claro em
+               andamento, pendente neutra — dá para varrer a lista sem ler */
+            const fundo = op.status === "concluida" ? "#F6FBF7"
+              : op.status === "em_andamento" ? "#FFFBF0"
+              : op.status === "cancelada" ? "#FBF7F7" : C.branco;
+            const barra = emEdicao ? C.laranja
+              : op.status === "concluida" ? C.verde
+              : op.status === "em_andamento" ? C.amarelo
+              : op.status === "cancelada" ? C.vermelho : C.prataClaro;
             return (
-              <div key={op.id} style={{ ...styles.card, padding: 14, borderLeft: emEdicao ? `4px solid ${C.laranja}` : `4px solid ${C.prataClaro}` }}>
+              <div key={op.id} style={{ ...styles.card, padding: 14, background: fundo, borderLeft: `4px solid ${barra}` }}>
                 <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                   <TipoIcon tipo={c.tipo} />
                   <div style={{ flex: 1, minWidth: 200 }}>
@@ -1857,7 +2049,10 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                     </div>
                     <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente} · {c.tipo?.label}</div>
                     <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
-                      <Calendar size={11} style={{ verticalAlign: -1 }} /> Planejada: {rotuloDia(diaPlanejado(op))}
+                      <Calendar size={11} style={{ verticalAlign: -1 }} />{" "}
+                      {op.status === "concluida" || op.status === "em_andamento"
+                        ? <>Operação: {dataSemana(op.inicio || diaPlanejado(op))}</>
+                        : <>Programada: {dataProgramada(diaPlanejado(op)).texto}</>}
                     </div>
                     {(op.conferenteInicio || op.conferenteFim) && (
                       <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>
@@ -2408,7 +2603,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
           rodape="Referência 100% terceirizada menos o custo real" />
 
         <KpiDuplo
-          label="Bônus" icon={Award} color={C.supVerde}
+          label="Bônus (custo)" icon={Award} color={C.supVerde}
           hojeValor={brl(aggDia.bonusPago)}
           hojeNota={aggDia.n ? `${plOp(aggDia.noPrazo)} na meta` : "Sem operações hoje"}
           hojeCor={C.supVerde}
@@ -2416,7 +2611,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
           mesNota={aggMes.bonusPerdido > 0 ? `Não pago: ${brl(aggMes.bonusPerdido)}` : "Nenhum bônus perdido"}
           mesCor={C.supVerde}
           variacao={variacao(aggMes.bonusPago, aggMesAnt.bonusPago)} melhorMaior
-          rodape={`${plOp(foraMeta.length)} fora da meta no mês`} />
+          rodape={`Custo lançado na economia (${brl(params.bonusSuperior)}/bônus). O valor distribuído à equipe (${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)}/bônus) fica na aba Rateio.`} />
       </div>
 
       {/* ===== EVOLUÇÃO — PERFORMANCE E ECONOMIA LADO A LADO ===== */}
@@ -2678,7 +2873,7 @@ function Relatorios({ ops, params }) {
       ["ANÁLISE DE CUSTO", "", ""],
       ["Referência — 100% terceirizada (R$)", +agg.referencia.toFixed(2), "Cenário base de comparação"],
       ["Custo terceirizada utilizada (R$)", +agg.custoTerc.toFixed(2), `${agg.diariasTerc} diárias x ${brl(params.custoTerceirizada)}`],
-      ["Bônus pago à equipe Superior (R$)", +agg.bonusPago.toFixed(2), "Somente operações dentro da meta"],
+      ["Custo de bônus da equipe Superior (R$)", +agg.bonusPago.toFixed(2), `Somente operações dentro da meta · ${brl(params.bonusSuperior)} por bônus`],
       ["Custo real desembolsado (R$)", +agg.custoReal.toFixed(2), "Terceirizada + bônus"],
       ["ECONOMIA GERADA (R$)", +agg.economia.toFixed(2), "Referência menos custo real"],
       ["Economia (%)", +agg.economiaPct.toFixed(2), "Percentual sobre a referência"],
@@ -3175,6 +3370,7 @@ function Parametros({ params, persistParams, persistOps, ops }) {
     const clean = {
       custoTerceirizada: Math.max(0, parseFloat(draft.custoTerceirizada) || 0),
       bonusSuperior: Math.max(0, parseFloat(draft.bonusSuperior) || 0),
+      bonusRateio: Math.max(0, parseFloat(draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior) || 0),
       pinGestor: (draft.pinGestor || "1234").toString().trim() || "1234",
       clientes: (draft.clientes || []).map(c => c.trim()).filter(Boolean),
       equipe: (draft.equipe || params.equipe || []).map(c => c.trim()).filter(Boolean),
@@ -3201,15 +3397,38 @@ function Parametros({ params, persistParams, persistOps, ops }) {
           <Field label="Custo por diária — TERCEIRIZADA (R$)">
             <input style={styles.input} type="number" min="0" step="10" value={draft.custoTerceirizada} onChange={e => setV("custoTerceirizada", e.target.value)} />
           </Field>
-          <Field label="Bônus por diária — SUPERIOR (R$)">
+          <Field label="Bônus — CUSTO por diária (R$)">
             <input style={styles.input} type="number" min="0" step="10" value={draft.bonusSuperior} onChange={e => setV("bonusSuperior", e.target.value)} />
+          </Field>
+          <Field label="Bônus — VALOR DISTRIBUÍDO por diária (R$)">
+            <input style={styles.input} type="number" min="0" step="10"
+              value={draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior}
+              onChange={e => setV("bonusRateio", e.target.value)} />
           </Field>
           <Field label="PIN de acesso do Gestor">
             <input style={styles.input} value={draft.pinGestor} onChange={e => setV("pinGestor", e.target.value)} placeholder="1234" />
           </Field>
         </div>
         <div style={{ ...styles.infoBox, marginTop: 14 }}>
-          A <strong>referência de comparação</strong> é sempre o cenário 100% terceirizada, usando o nº padrão de pessoas de cada tipo. O <strong>bônus</strong> da Superior só é considerado quando a operação cumpre a meta de tempo.
+          A <strong>referência de comparação</strong> é sempre o cenário 100% terceirizada, usando o nº padrão de
+          pessoas de cada tipo. O <strong>bônus</strong> da Superior só é considerado quando a operação cumpre a meta.
+          <div style={{ marginTop: 8 }}>
+            Os dois valores de bônus são propositalmente diferentes: o <strong>custo</strong> é o que a Superior
+            desembolsa e entra no cálculo de economia; o <strong>valor distribuído</strong> é o que a equipe recebe
+            e é dividido entre os nomeados na aba Rateio.
+            {(() => {
+              const custo = parseFloat(draft.bonusSuperior) || 0;
+              const dist = parseFloat(draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior) || 0;
+              if (dist > custo) return <div style={{ marginTop: 6, color: C.laranjaEsc, fontWeight: 600 }}>
+                Atenção: o valor distribuído está maior que o custo. Confira os campos.
+              </div>;
+              if (dist < custo) return <div style={{ marginTop: 6 }}>
+                Hoje: custo <strong>{brl(custo)}</strong> por bônus, dos quais <strong>{brl(dist)}</strong> vão para
+                a equipe — diferença de <strong>{brl(custo - dist)}</strong> retida pela empresa.
+              </div>;
+              return null;
+            })()}
+          </div>
         </div>
       </div>
 
