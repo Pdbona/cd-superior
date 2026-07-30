@@ -911,7 +911,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
-        {tab === "relatorios" && <Relatorios ops={ops} params={params} />}
+        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
       </main>
 
@@ -2942,7 +2942,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
 }
 
 
-function Relatorios({ ops, params }) {
+function Relatorios({ ops, params, diasTerc }) {
   const hoje = new Date();
   const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
   const toISO = (d) => d.toISOString().slice(0, 10);
@@ -3034,6 +3034,7 @@ function Relatorios({ ops, params }) {
     return { ano, n, volume, horas,
       noPrazoPct: n ? (noPrazo / n) * 100 : 0,
       volumeMedio: n ? volume / n : 0,
+      horasMedia: n ? horas / n : 0,
       unPorHora: horas ? volume / horas : 0 };
   }, [ops, params, cliFiltro]);
 
@@ -3083,6 +3084,65 @@ function Relatorios({ ops, params }) {
     });
     return Object.values(m).sort((a, b) => b.volume - a.volume);
   }, [planejadas]);
+
+  /* ---------- base do relatório ao prestador de serviço ----------
+     Fecha por DIA, que é como a mão de obra é contratada e faturada.
+     Ignora o filtro de cliente de propósito: a diária é do dia, não do
+     cliente — a mesma pessoa pode ter atendido clientes diferentes.
+     A quantidade de MdO vem de diasTerc (o que foi efetivamente
+     contratado no dia), não da soma por operação: somar por operação
+     contaria duas vezes quem trabalhou em duas cargas no mesmo dia. */
+  const prestadorDiario = useMemo(() => {
+    const ini = inicioDoDia(new Date(de + "T00:00:00").getTime());
+    const fim = inicioDoDia(new Date(ate + "T00:00:00").getTime());
+    const m = {};
+    const garante = (ts) => {
+      if (!m[ts]) m[ts] = {
+        ts,
+        rotulo: new Date(ts).toLocaleDateString("pt-BR"),
+        diaSemana: new Date(ts).toLocaleDateString("pt-BR", { weekday: "long" }),
+        mdo: null, somaTerc: 0, bonusQtd: 0, bonusValor: 0, ops: []
+      };
+      return m[ts];
+    };
+
+    ops.filter(o => o.status !== "cancelada").forEach(o => {
+      const ts = diaPlanejado(o);
+      if (ts < ini || ts > fim) return;
+      const c = calcOp(o, params);
+      const d = garante(ts);
+      const qtdBonus = c.cumpriuMeta === true ? (o.qtdSuperior || 0) : 0;
+      /* Este relatório é para a prestadora: o valor de bônus aqui é o CUSTO
+         (bonusPago, R$200/bônus), não o distribuído (R$120) que aparece na
+         aba Rateio — são documentos para públicos diferentes. */
+      d.ops.push({
+        ref: o.ref, cliente: o.cliente || "—", tipo: c.tipo?.label || "—",
+        direcao: o.direcao === "recebimento" ? "Recebimento" : "Expedição",
+        volume: o.volume || 0, status: o.status,
+        terc: o.qtdTerceirizada || 0, qtdBonus, valorBonus: c.bonusPago
+      });
+      d.somaTerc += o.qtdTerceirizada || 0;
+      d.bonusQtd += qtdBonus;
+      d.bonusValor += c.bonusPago;
+    });
+
+    Object.keys(diasTerc || {}).forEach(k => {
+      const ts = Number(k);
+      if (ts < ini || ts > fim) return;
+      garante(ts).mdo = (diasTerc[k] || {}).qtd || 0;
+    });
+
+    return Object.values(m).sort((a, b) => a.ts - b.ts);
+  }, [ops, params, diasTerc, de, ate]);
+
+  const prestadorTotais = useMemo(() => prestadorDiario.reduce((s, d) => ({
+    dias: s.dias + 1,
+    mdo: s.mdo + (d.mdo != null ? d.mdo : 0),
+    semCadastro: s.semCadastro + (d.mdo == null && d.ops.length > 0 ? 1 : 0),
+    bonusQtd: s.bonusQtd + d.bonusQtd,
+    bonusValor: s.bonusValor + d.bonusValor,
+    ops: s.ops + d.ops.length
+  }), { dias: 0, mdo: 0, semCadastro: 0, bonusQtd: 0, bonusValor: 0, ops: 0 }), [prestadorDiario]);
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
 
@@ -3223,6 +3283,25 @@ function Relatorios({ ops, params }) {
     modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario,
     porTipo, planoPorTipo, de, ate, cliFiltro
   });
+
+  /* ---------- RELATÓRIO AO PRESTADOR DE SERVIÇO ---------- */
+  const entregarPrestador = (acao) => {
+    if (prestadorDiario.length === 0) return flash("Nenhum dia com operação ou mão de obra no período selecionado.");
+    const html = montarHTMLPrestador({ linhas: prestadorDiario, totais: prestadorTotais, params, de, ate });
+    if (acao === "preview") {
+      const w = window.open("", "_blank");
+      if (w) { w.document.write(html); w.document.close(); }
+      else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
+      return;
+    }
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `Superior_Prestador_${de}_a_${ate}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    flash("Relatório do prestador gerado — pode enviar para conferência.");
+  };
 
   const entregar = (modo, acao) => {
     const vazio = modo === "planejado" ? planejadas.length === 0 : dados.length === 0;
@@ -3375,6 +3454,45 @@ function Relatorios({ ops, params }) {
               <FileText size={15} /> Visualizar
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* ===== RELATÓRIO PARA O PRESTADOR DE SERVIÇO ===== */}
+      <SectionTitle icon={HardHat}>Relatório para o Prestador de Serviço</SectionTitle>
+      <p style={styles.helper}>
+        Fechamento diário para conferência com a prestadora: quantas pessoas foram demandadas em cada dia,
+        quais operações rodaram e quantos bônus foram gerados. A quantidade de mão de obra sai
+        <strong> sem valor</strong> — só o bônus tem valor no documento. Este relatório usa o período
+        selecionado acima e <strong>ignora o filtro de cliente</strong>, porque a diária é contratada por
+        dia e a mesma pessoa pode ter atendido clientes diferentes.
+      </p>
+      <div style={{ ...styles.card, borderTop: `4px solid ${C.navy2}` }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
+          <Previa label="Dias no período" valor={String(prestadorTotais.dias)} cor={C.navy} />
+          <Previa label="MdO demandada" valor={`${prestadorTotais.mdo} diárias`} cor={C.navy2} destaque />
+          <Previa label="Operações" valor={String(prestadorTotais.ops)} cor={C.prata} />
+          <Previa label="Bônus gerados" valor={String(prestadorTotais.bonusQtd)} cor={C.supVerde} />
+          <Previa label="Valor de bônus" valor={brl(prestadorTotais.bonusValor)} cor={C.supVerde} />
+        </div>
+
+        {prestadorTotais.semCadastro > 0 && (
+          <div style={{ ...styles.alertBox, marginTop: 14, marginBottom: 0 }}>
+            <AlertTriangle size={16} />
+            <span>
+              <strong>{prestadorTotais.semCadastro} dia{prestadorTotais.semCadastro > 1 ? "s" : ""}</strong> com
+              operação mas sem a quantidade de terceirizados cadastrada. Informe em Operações ou Ajustes —
+              no relatório esses dias saem marcados como "não informado".
+            </span>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+          <button style={{ ...styles.btnPrimary, background: C.navy2 }} onClick={() => entregarPrestador("download")}>
+            <Download size={17} strokeWidth={2.4} /> Baixar Relatório do Prestador
+          </button>
+          <button style={styles.btnGhost} onClick={() => entregarPrestador("preview")}>
+            <FileText size={15} /> Visualizar agora
+          </button>
         </div>
       </div>
 
@@ -3689,6 +3807,156 @@ footer .r{color:#8A9BB0;text-align:right}
 }
 
 /* ============================================================
+   RELATÓRIO AO PRESTADOR DE SERVIÇO
+   Documento de conferência do fechamento diário: quantas pessoas foram
+   demandadas por dia, o que rodou naquele dia e quanto de bônus foi gerado.
+   A MdO sai sem valor de propósito — a diária é preço de contrato entre as
+   partes e não precisa circular num anexo de conferência.
+   ============================================================ */
+function montarHTMLPrestador({ linhas, totais, params, de, ate }) {
+  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
+  const emissao = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const valorBonus = params.bonusSuperior;
+
+  const blocos = linhas.map(d => {
+    const listaOps = d.ops.length === 0
+      ? `<tr><td colspan="4" class="vazio">Sem operação registrada neste dia</td></tr>`
+      : d.ops.map(o => `<tr>
+          <td class="b">${esc(o.tipo)}</td>
+          <td>${esc(o.cliente)}</td>
+          <td>${esc(o.direcao)}</td>
+          <td class="m">${o.qtdBonus > 0 ? `${o.qtdBonus} bônus` : "—"}</td>
+        </tr>`).join("");
+    return `<div class="dia">
+      <div class="cab">
+        <div>
+          <span class="data">${esc(d.rotulo)}</span>
+          <span class="sem">${esc(d.diaSemana)}</span>
+        </div>
+        <div class="nums">
+          <span class="n">${d.mdo != null
+            ? `<b>${d.mdo}</b> ${d.mdo === 1 ? "pessoa" : "pessoas"}`
+            : `<i>MdO não informada</i>`}</span>
+          <span class="n"><b>${d.ops.length}</b> operaç${d.ops.length === 1 ? "ão" : "ões"}</span>
+          <span class="n bon">${d.bonusQtd > 0
+            ? `<b>${d.bonusQtd}</b> bônus · ${brl(d.bonusValor)}`
+            : `<span style="color:#8A9BB0">sem bônus no dia</span>`}</span>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Tipo de operação</th><th>Cliente</th><th>Fluxo</th><th>Bônus</th></tr></thead>
+        <tbody>${listaOps}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  const resumo = linhas.map(d => `<tr>
+    <td class="b">${esc(d.rotulo)}</td>
+    <td>${esc(d.diaSemana)}</td>
+    <td class="m">${d.mdo != null ? d.mdo : "<i>não informado</i>"}</td>
+    <td class="m">${d.ops.length}</td>
+    <td class="m">${d.bonusQtd || "—"}</td>
+    <td class="m v">${d.bonusValor > 0 ? brl(d.bonusValor) : "—"}</td></tr>`).join("");
+
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superior Transportes — Fechamento de Mão de Obra · ${esc(per)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@500;700&display=swap');
+  *{box-sizing:border-box} body{margin:0;background:#F7F9FB;color:#37474F;font-family:Roboto,sans-serif}
+  header{background:#1E3A5F;color:#fff;padding:24px 34px;display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}
+  header h1{font-family:Montserrat,sans-serif;font-size:20px;margin:0 0 4px;font-weight:800}
+  header .sub{font-size:12.5px;color:#C5CDD8}
+  .lg{border-radius:10px;overflow:hidden;padding:5px 8px;background:#fff;display:inline-flex;align-items:center}
+  .bar{height:5px;background:linear-gradient(90deg,#FF6B00 0 55%,#149C3A 55% 100%)}
+  main{max-width:900px;margin:0 auto;padding:26px 20px 44px}
+  h2{font-family:Montserrat,sans-serif;font-size:16px;font-weight:800;color:#1E3A5F;border-left:5px solid #1E3A5F;padding-left:10px;margin:30px 0 12px}
+  .tot{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+  .t{background:#fff;border:1px solid #E1E7EF;border-top:4px solid #2B4C7E;border-radius:9px;padding:14px 16px}
+  .t .l{font-family:Montserrat,sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;color:#2B4C7E;letter-spacing:.4px}
+  .t .v{font-family:Roboto Mono,monospace;font-size:24px;font-weight:700;color:#1E3A5F;margin-top:6px}
+  .t.g{border-top-color:#149C3A}.t.g .v{color:#149C3A}
+  table{width:100%;border-collapse:collapse;background:#fff;font-size:12.5px}
+  th{background:#2B4C7E;color:#fff;font-family:Montserrat,sans-serif;font-size:10px;text-transform:uppercase;padding:8px 10px;text-align:left;letter-spacing:.3px}
+  td{padding:8px 10px;border-bottom:1px solid #EDF1F6}
+  td.b{font-weight:700;color:#1E3A5F} td.m{font-family:Roboto Mono,monospace} td.v{color:#149C3A;font-weight:700}
+  td.vazio{color:#8A9BB0;font-style:italic;text-align:center}
+  .resumo{border:1px solid #E1E7EF;border-radius:9px;overflow:hidden}
+  .resumo tfoot td{background:#1E3A5F;color:#fff;font-weight:700;font-family:Montserrat,sans-serif;font-size:12px;border:none}
+  .dia{background:#fff;border:1px solid #E1E7EF;border-radius:9px;overflow:hidden;margin-bottom:14px}
+  .cab{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;background:#EEF2F8;border-bottom:1px solid #E1E7EF}
+  .data{font-family:Montserrat,sans-serif;font-weight:800;font-size:14.5px;color:#1E3A5F}
+  .sem{font-size:12px;color:#8A9BB0;margin-left:8px;text-transform:capitalize}
+  .nums{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:#37474F}
+  .nums b{font-family:Roboto Mono,monospace;font-size:15px;color:#1E3A5F}
+  .nums .bon b{color:#149C3A} .nums i{color:#C62828;font-style:normal;font-size:11px}
+  .note{background:#EEF2F8;border:1px solid #E1E7EF;border-radius:9px;padding:12px 15px;font-size:12px;color:#5C6B7E;line-height:1.6;margin-top:16px}
+  footer{background:#1E3A5F;color:#C5CDD8;padding:18px 34px;display:flex;justify-content:space-between;font-size:11.5px;flex-wrap:wrap;gap:10px}
+  @media print{body{background:#fff}header,footer,th,.resumo tfoot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}.dia{break-inside:avoid}}
+</style></head><body>
+<header>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="lg"><img src="${SBS_LOGO}" alt="SBS Solution" style="height:38px;display:block"></div>
+    <div>
+      <h1>Fechamento de Mão de Obra</h1>
+      <div class="sub">Período ${esc(per)} · Documento de conferência</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="text-align:right">
+      <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:15px">SUPERIOR TRANSPORTES</div>
+      <div class="sub">Recebimento &amp; Expedição</div>
+    </div>
+    <div class="lg" style="padding:5px 9px"><img src="${SUP_LOGO}" alt="Superior Transportes" style="height:24px;display:block"></div>
+  </div>
+</header>
+<div class="bar"></div>
+
+<main>
+  <div class="tot">
+    <div class="t"><div class="l">Mão de obra demandada</div><div class="v">${totais.mdo}</div></div>
+    <div class="t"><div class="l">Dias com registro</div><div class="v">${totais.dias}</div></div>
+    <div class="t"><div class="l">Operações atendidas</div><div class="v">${totais.ops}</div></div>
+    <div class="t g"><div class="l">Bônus gerados</div><div class="v">${totais.bonusQtd}</div></div>
+    <div class="t g"><div class="l">Valor total de bônus</div><div class="v" style="font-size:20px">${brl(totais.bonusValor)}</div></div>
+  </div>
+
+  <h2>Resumo por Dia</h2>
+  <div class="resumo">
+    <table>
+      <thead><tr><th>Data</th><th>Dia da semana</th><th>MdO demandada</th><th>Operações</th><th>Bônus</th><th>Valor de bônus</th></tr></thead>
+      <tbody>${resumo}</tbody>
+      <tfoot><tr>
+        <td colspan="2">TOTAL — ${esc(per)}</td>
+        <td class="m">${totais.mdo}</td>
+        <td class="m">${totais.ops}</td>
+        <td class="m">${totais.bonusQtd}</td>
+        <td class="m">${brl(totais.bonusValor)}</td>
+      </tr></tfoot>
+    </table>
+  </div>
+
+  <h2>Detalhamento por Dia</h2>
+  ${blocos}
+
+  <div class="note">
+    <strong>Como ler este documento.</strong> A <strong>mão de obra demandada</strong> é a quantidade de
+    pessoas solicitadas em cada dia, independentemente de quantas operações ela atendeu — quem trabalhou em
+    duas cargas no mesmo dia conta uma vez. O <strong>bônus</strong> é gerado por operação concluída dentro
+    do tempo acordado, no valor de ${brl(valorBonus)} por bônus, e os nomes dos participantes são definidos
+    em separado.${totais.semCadastro > 0 ? ` Há ${totais.semCadastro} dia(s) com operação cuja quantidade de pessoas não foi informada — assinalados como "não informado" e sujeitos a conferência.` : ""}
+  </div>
+</main>
+
+<footer>
+  <div><strong style="display:block;font-weight:600;margin-bottom:2px">Superior Transportes</strong>Gestão Operacional</div>
+  <div style="text-align:right">Documento gerado em ${esc(emissao)}<br>Acompanhamento técnico: SBS Solution</div>
+</footer>
+</body></html>`;
+}
+
+/* ============================================================
    RELATÓRIO AO CLIENTE — peça de apresentação da operação
    Deliberadamente SEM custo, bônus ou economia: esses números pertencem à
    relação da Superior com a terceirizada. Ao cliente interessam volume
@@ -3823,6 +4091,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
   header{background:#1E3A5F;color:#fff;padding:26px 40px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
   header h1{font-family:Montserrat,sans-serif;font-size:22px;margin:0 0 4px;font-weight:800;letter-spacing:.2px}
   header .sub{font-size:13px;color:#C5CDD8}
+  .lg{border-radius:11px;overflow:hidden;padding:6px 9px;background:#fff;display:inline-flex;align-items:center}
   .bar{height:5px;background:linear-gradient(90deg,#FF6B00 0 55%,#149C3A 55% 100%)}
   main{max-width:1040px;margin:0 auto;padding:30px 24px 50px}
   h2.sec{font-family:Montserrat,sans-serif;font-size:17px;font-weight:800;color:#1E3A5F;border-left:5px solid #1E3A5F;padding-left:11px;margin:34px 0 14px}
@@ -3857,15 +4126,21 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
   @media print{body{background:#fff}header,footer{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 <header>
-  <div>
-    <h1>${plano ? "Programação Operacional" : "Relatório Operacional"}</h1>
-    <div class="sub">${esc(alvo)} · ${plano
-      ? `Operações agendadas a partir de ${new Date().toLocaleDateString("pt-BR")}`
-      : `Período ${esc(per)}`}</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <div class="lg"><img src="${SBS_LOGO}" alt="SBS Solution" style="height:42px;display:block"></div>
+    <div>
+      <h1>${plano ? "Programação Operacional" : "Relatório Operacional"}</h1>
+      <div class="sub">${esc(alvo)} · ${plano
+        ? `Operações agendadas a partir de ${new Date().toLocaleDateString("pt-BR")}`
+        : `Período ${esc(per)}`}</div>
+    </div>
   </div>
-  <div style="text-align:right">
-    <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:16px">SUPERIOR TRANSPORTES</div>
-    <div class="sub">Recebimento &amp; Expedição</div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div style="text-align:right">
+      <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:16px">SUPERIOR TRANSPORTES</div>
+      <div class="sub">Recebimento &amp; Expedição</div>
+    </div>
+    <div class="lg" style="padding:6px 10px"><img src="${SUP_LOGO}" alt="Superior Transportes" style="height:27px;display:block"></div>
   </div>
 </header>
 <div class="bar"></div>
@@ -3885,7 +4160,7 @@ ${plano ? `<main>
     <div class="kpi"><div class="l">Operações Agendadas</div><div class="v">${planejadas.length}</div><div class="n">recebimentos e expedições</div></div>
     <div class="kpi"><div class="l">Dias com Operação</div><div class="v">${pd.length}</div><div class="n">${pd.length ? `${esc(primeiroDia)} a ${esc(ultimoDia)}` : "sem datas definidas"}</div></div>
     <div class="kpi hi"><div class="l">Volume Médio por Dia</div><div class="v">${nf(Math.round(pd.length ? volPlanejado / pd.length : 0))}</div><div class="n">unidades por dia de operação</div></div>
-    <div class="kpi"><div class="l">Horas Previstas</div><div class="v">${hhmm(planejadas.reduce((s, x) => s + (x.c.metaHoras || 0), 0))}</div><div class="n">tempo-alvo somado das operações</div></div>
+    <div class="kpi"><div class="l">Média de Horas</div><div class="v">${hhmm(mediaAnual.horasMedia)}</div><div class="n">${mediaAnual.n ? `por operação, nas ${mediaAnual.n} já realizadas em ${mediaAnual.ano}` : "sem operação realizada para referência"}</div></div>
   </div>
 
   <h2 class="sec">Referência de Entrega</h2>
