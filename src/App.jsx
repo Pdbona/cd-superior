@@ -4368,6 +4368,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
 
   const linhasPlan = planejadas.slice(0, 25).map(({ op, c }) => `<tr>
     <td class="b">${esc(op.ref)}</td>
+    <td>${esc(op.cliente)}</td>
     <td>${esc(op.idCliente || "—")}</td>
     <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
     <td>${esc(c.tipo?.label || "—")}</td>
@@ -4384,14 +4385,14 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
     <td class="m">${nf(Math.round(r.ops ? r.volume / r.ops : 0))}</td>
     <td class="m">${(r.ops ? (r.noPrazo / r.ops) * 100 : 0).toFixed(0)}%</td></tr>`).join("");
 
+  const tempoMedioPeriodo = agg.n ? agg.horasReais / agg.n : 0;
   const linhasPlanoTipo = (planoPorTipo || []).map(r => `<tr>
     <td class="b">${esc(r.tipo)}</td><td class="m">${r.ops}</td>
     <td class="m">${nf(r.volume)}</td>
     <td class="m">${nf(Math.round(r.ops ? r.volume / r.ops : 0))}</td>
-    <td class="m">${hhmm(r.horas)}</td></tr>`).join("");
+    <td class="m">${hhmm(tempoMedioPeriodo * r.ops)}</td></tr>`).join("");
 
   const volPlanejado = planejadas.reduce((s, x) => s + (x.op.volume || 0), 0);
-  const tempoMedioPeriodo = agg.n ? agg.horasReais / agg.n : 0;
   const volumeMedioPeriodo = agg.n ? agg.volume / agg.n : 0;
 
   /* --- gráfico do relatório de programação: volume previsto por dia --- */
@@ -4483,9 +4484,10 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
 <div class="bar"></div>
 
 ${plano ? `<main>
-  <div class="lead" style="border-left-color:#FF6B00">
-    Estão programadas <strong>${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"}</strong>
-    para ${esc(alvo)}, totalizando <strong>${nf(volPlanejado)} unidades</strong>
+  <div class="lead" style="border-left-color:#FF6B00;text-align:center">
+    <div style="font-size:16px;color:#1E3A5F;font-weight:800;margin-bottom:8px">${esc(alvo)}</div>
+    Estão programadas <strong>${planejadas.length} operaç${planejadas.length === 1 ? "ão" : "ões"}</strong>,
+    totalizando <strong>${nf(volPlanejado)} unidades</strong>
     distribuídas em <strong>${pd.length} dia${pd.length === 1 ? "" : "s"} de operação</strong>
     ${pd.length ? `, de ${esc(primeiroDia)} a ${esc(ultimoDia)}` : ""}.
     ${picoDia ? `O maior volume está previsto para <strong>${esc(picoDia.rotulo)}</strong>, com <strong>${nf(picoDia.volume)} unidades</strong> em ${picoDia.ops} operaç${picoDia.ops === 1 ? "ão" : "ões"}.` : ""}
@@ -4524,23 +4526,16 @@ ${plano ? `<main>
   ${linhasPlanoTipo ? `
   <h2 class="sec">Programação por Tipo de Operação</h2>
   <table>
-    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume previsto</th><th>Volume médio</th><th>Tempo-alvo total</th></tr></thead>
+    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume previsto</th><th>Volume médio</th><th>Tempo médio mês</th></tr></thead>
     <tbody>${linhasPlanoTipo}</tbody>
   </table>` : ""}
 
   <h2 class="sec">Operações Programadas</h2>
   <table>
-    <thead><tr><th>ID Superior</th><th>ID Cliente</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
+    <thead><tr><th>ID Superior</th><th>Cliente</th><th>ID Cliente</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
     <tbody>${linhasPlan}</tbody>
   </table>
   ${planejadas.length > 25 ? `<div class="note">Exibindo as 25 operações mais próximas de um total de ${planejadas.length} programadas.</div>` : ""}
-
-  <div class="note">
-    <strong>Sobre esta programação.</strong> As datas refletem o agendamento vigente no momento da emissão
-    deste documento e podem ser ajustadas de comum acordo. Os volumes são os informados no momento do
-    agendamento. O tempo-alvo de cada operação é calculado a partir do volume e da equipe prevista,
-    com tolerância de ${TOLERANCIA_META_MIN} minutos.
-  </div>
 </main>` : `<main>
   <div class="lead">
     No período de <strong>${esc(per)}</strong> a Superior Transportes executou
