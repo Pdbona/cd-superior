@@ -860,7 +860,6 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
     { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
     { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
     { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
-    { id: "auditoria", label: "Auditoria", sub: "Terceirizados & bônus", icon: ShieldCheck },
     { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
     { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
     { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings }
@@ -913,7 +912,6 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
-        {tab === "auditoria" && <Auditoria ops={ops} params={params} diasTerc={diasTerc} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
       </main>
 
@@ -3556,109 +3554,183 @@ function Relatorios({ ops, params, diasTerc }) {
           </table>
         </div>
       )}
+
+      {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
+      <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />
     </div>
   );
 }
 
 /* ============================================================
-   GESTOR — ABA: AUDITORIA (terceirizados & bônus por dia)
+   GESTOR — CARD "RAIO X DA MDO" (dentro da aba Relatórios)
+   Compara a MdO terceirizada de REFERÊNCIA — o padrão do tipo de operação
+   cadastrado em Parâmetros (ex.: Pneu de Passeio = 4 pessoas) — com o que
+   foi de fato REALIZADO no dia: terceirizados contratados (diasTerc) e
+   bônus pago à equipe própria. "Previsto" não é o que o gestor digitou na
+   operação (qtdTerceirizada) — é o cenário de referência do tipo, o mesmo
+   usado em calcOp como "referencia" (100% terceirizado, headcount padrão).
    ============================================================ */
-function Auditoria({ ops, params, diasTerc }) {
-  const [diaAberto, setDiaAberto] = useState(null); // ts do dia clicado no drill-down
+function RaioXMdO({ ops, params, diasTerc }) {
+  const hojeTs = inicioDoDia(Date.now());
+  const hoje = new Date();
+  const primeiroDiaMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  const toISO = (d) => d.toISOString().slice(0, 10);
 
-  /* Mês corrente, agrupado por dia planejado — mesma noção de "dia" usada
-     em diasTerc e calcDia, para bater com o que o gestor já registra ali.
-     Só operações concluídas: é o que já virou fato, auditável. */
-  const linhas = useMemo(() => {
-    const hoje = new Date();
-    const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).getTime();
-    const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 1).getTime() - 1;
-    const concluidasMes = ops.filter(o => o.status === "concluida"
-      && diaPlanejado(o) >= inicioMes && diaPlanejado(o) <= fimMes);
-    const dias = Array.from(new Set(concluidasMes.map(o => diaPlanejado(o))));
-    return dias.map(ts => {
-      const doDia = concluidasMes.filter(o => diaPlanejado(o) === ts);
-      const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
-      const tercProgramados = doDia.reduce((s, o) => s + (o.qtdTerceirizada || 0), 0);
-      const custoProgramado = tercProgramados * params.custoTerceirizada;
-      const tercChamados = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
-      const custoTerc = tercChamados * params.custoTerceirizada;
-      const qtdBonus = calcs.reduce((s, { op, c }) => s + (c.cumpriuMeta ? (op.qtdSuperior || 0) : 0), 0);
-      const rateioUnit = params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior;
-      const custoBonus = qtdBonus * params.bonusSuperior;
-      const custoTotalReal = custoTerc + custoBonus;
-      const economia = custoProgramado - custoTotalReal;
-      const distribuido = qtdBonus * rateioUnit;
-      return { ts, ops: calcs, nOps: doDia.length, tercProgramados, custoProgramado,
-        tercChamados, custoTerc, qtdBonus, custoBonus, custoTotalReal, economia, distribuido };
-    }).sort((a, b) => b.ts - a.ts);
-  }, [ops, params, diasTerc]);
+  const [de, setDe] = useState(toISO(primeiroDiaMes));
+  const [ate, setAte] = useState(toISO(hoje));
+  const [diaAberto, setDiaAberto] = useState(null);
+  const [msg, setMsg] = useState("");
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
 
-  const totais = useMemo(() => linhas.reduce((s, l) => ({
-    nOps: s.nOps + l.nOps, tercProgramados: s.tercProgramados + l.tercProgramados,
-    custoProgramado: s.custoProgramado + l.custoProgramado, tercChamados: s.tercChamados + l.tercChamados,
-    custoTerc: s.custoTerc + l.custoTerc, qtdBonus: s.qtdBonus + l.qtdBonus, custoBonus: s.custoBonus + l.custoBonus,
-    custoTotalReal: s.custoTotalReal + l.custoTotalReal, economia: s.economia + l.economia, distribuido: s.distribuido + l.distribuido
-  }), { nOps: 0, tercProgramados: 0, custoProgramado: 0, tercChamados: 0, custoTerc: 0, qtdBonus: 0, custoBonus: 0, custoTotalReal: 0, distribuido: 0, economia: 0 }),
-  [linhas]);
+  const construirLinha = (ts, doDia) => {
+    const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
+    const tercPrevistos = calcs.reduce((s, { c }) => s + (c.paletizado ? 0 : c.pessoasRef), 0);
+    const custoPrevisto = calcs.reduce((s, { c }) => s + c.referencia, 0);
+    const tercRealizado = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
+    const custoRealizado = tercRealizado * params.custoTerceirizada;
+    const qtdBonus = calcs.reduce((s, { op, c }) => s + (c.cumpriuMeta ? (op.qtdSuperior || 0) : 0), 0);
+    const rateioUnit = params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior;
+    const custoBonus = qtdBonus * params.bonusSuperior;
+    const custoTotalRealizado = custoRealizado + custoBonus;
+    const economia = custoPrevisto - custoTotalRealizado;
+    const distribuido = qtdBonus * rateioUnit;
+    return { ts, ops: calcs, nOps: doDia.length, tercPrevistos, custoPrevisto,
+      tercRealizado, custoRealizado, qtdBonus, custoBonus, custoTotalRealizado, economia, distribuido };
+  };
 
-  const diaSelecionado = diaAberto != null ? linhas.find(l => l.ts === diaAberto) : null;
+  const linhaHoje = useMemo(() =>
+    construirLinha(hojeTs, ops.filter(o => o.status === "concluida" && diaPlanejado(o) === hojeTs))
+  , [ops, params, diasTerc, hojeTs]);
 
-  return (
-    <div>
-      <SectionTitle icon={ShieldCheck}>Auditoria de Terceirizados &amp; Bônus <Badge>{new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</Badge></SectionTitle>
-      <p style={{ fontFamily: "'Roboto',sans-serif", fontSize: 12.5, color: C.prata, marginTop: -6, marginBottom: 16 }}>
-        Operações concluídas do mês atual, agrupadas por dia. Clique na quantidade de operações para ver o detalhe.
-      </p>
+  const linhasPeriodo = useMemo(() => {
+    const ini = inicioDoDia(new Date(de + "T00:00:00").getTime());
+    const fim = inicioDoDia(new Date(ate + "T00:00:00").getTime());
+    const concluidas = ops.filter(o => o.status === "concluida" && diaPlanejado(o) >= ini && diaPlanejado(o) <= fim);
+    const dias = Array.from(new Set(concluidas.map(o => diaPlanejado(o))));
+    return dias.map(ts => construirLinha(ts, concluidas.filter(o => diaPlanejado(o) === ts)))
+      .sort((a, b) => b.ts - a.ts);
+  }, [ops, params, diasTerc, de, ate]);
 
-      {linhas.length === 0 ? (
-        <EmptyState text="Nenhuma operação concluída neste mês ainda." />
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={styles.table}>
-            <thead>
-              <tr>{["Dia", "Operações", "Terc. Programados", "Custo Programado", "Terc. Chamados", "Custo Terceirizados",
-                "Qtd. Bônus", "Custo Bônus", "Custo Total Real", "Economia", "Distribuído"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-            </thead>
-            <tbody>
-              {linhas.map((l, i) => (
-                <tr key={l.ts} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
-                  <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{rotuloDia(l.ts)}</td>
-                  <td style={styles.td}>
-                    <button onClick={() => setDiaAberto(l.ts)} style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, border: "none", cursor: "pointer", fontFamily: "'Roboto Mono',monospace" }}>
-                      {plOp(l.nOps)}
-                    </button>
-                  </td>
-                  <td style={styles.tdMono}>{l.tercProgramados}</td>
-                  <td style={styles.tdMono}>{brl(l.custoProgramado)}</td>
-                  <td style={styles.tdMono}>{l.tercChamados}</td>
-                  <td style={styles.tdMono}>{brl(l.custoTerc)}</td>
-                  <td style={styles.tdMono}>{l.qtdBonus}</td>
-                  <td style={styles.tdMono}>{brl(l.custoBonus)}</td>
-                  <td style={{ ...styles.tdMono, fontWeight: 700 }}>{brl(l.custoTotalReal)}</td>
-                  <td style={{ ...styles.tdMono, fontWeight: 700, color: l.economia >= 0 ? C.verde : C.vermelho }}>{brl(l.economia)}</td>
-                  <td style={styles.tdMono}>{brl(l.distribuido)}</td>
-                </tr>
-              ))}
-            </tbody>
+  const somar = (linhas) => linhas.reduce((s, l) => ({
+    nOps: s.nOps + l.nOps, tercPrevistos: s.tercPrevistos + l.tercPrevistos, custoPrevisto: s.custoPrevisto + l.custoPrevisto,
+    tercRealizado: s.tercRealizado + l.tercRealizado, custoRealizado: s.custoRealizado + l.custoRealizado,
+    qtdBonus: s.qtdBonus + l.qtdBonus, custoBonus: s.custoBonus + l.custoBonus,
+    custoTotalRealizado: s.custoTotalRealizado + l.custoTotalRealizado, economia: s.economia + l.economia,
+    distribuido: s.distribuido + l.distribuido
+  }), { nOps: 0, tercPrevistos: 0, custoPrevisto: 0, tercRealizado: 0, custoRealizado: 0, qtdBonus: 0, custoBonus: 0, custoTotalRealizado: 0, economia: 0, distribuido: 0 });
+
+  const totaisPeriodo = useMemo(() => somar(linhasPeriodo), [linhasPeriodo]);
+
+  const diaSelecionado = diaAberto != null
+    ? [linhaHoje, ...linhasPeriodo].find(l => l.ts === diaAberto)
+    : null;
+
+  const gerarHTML = (acao) => {
+    const html = montarHTMLRaioX({ linhaHoje, linhasPeriodo, totaisPeriodo, params, de, ate });
+    if (acao === "preview") {
+      const w = window.open("", "_blank");
+      if (w) { w.document.write(html); w.document.close(); }
+      else flash("Bloqueio de pop-up impediu a visualização. Use o botão de download.");
+      return;
+    }
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `Superior_RaioX_MdO_${de}_a_${ate}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    flash("Raio X da MdO gerado em HTML.");
+  };
+
+  const colunas = ["Dia", "Operações", "Terc. Previstos", "Custo Previsto", "Terc. Realizado", "Custo Realizado",
+    "Qtd. Bônus", "Custo Bônus", "Custo Total Realizado", "Economia", "Distribuído"];
+
+  const Tabela = ({ linhas, totais }) => (
+    linhas.length === 0 ? (
+      <EmptyState text="Nenhuma operação concluída neste recorte." />
+    ) : (
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead><tr>{colunas.map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {linhas.map((l, i) => (
+              <tr key={l.ts} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{rotuloDia(l.ts)}</td>
+                <td style={styles.td}>
+                  <button onClick={() => setDiaAberto(l.ts)} style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, border: "none", cursor: "pointer", fontFamily: "'Roboto Mono',monospace" }}>
+                    {plOp(l.nOps)}
+                  </button>
+                </td>
+                <td style={styles.tdMono}>{l.tercPrevistos}</td>
+                <td style={styles.tdMono}>{brl(l.custoPrevisto)}</td>
+                <td style={styles.tdMono}>{l.tercRealizado}</td>
+                <td style={styles.tdMono}>{brl(l.custoRealizado)}</td>
+                <td style={styles.tdMono}>{l.qtdBonus}</td>
+                <td style={styles.tdMono}>{brl(l.custoBonus)}</td>
+                <td style={{ ...styles.tdMono, fontWeight: 700 }}>{brl(l.custoTotalRealizado)}</td>
+                <td style={{ ...styles.tdMono, fontWeight: 700, color: l.economia >= 0 ? C.verde : C.vermelho }}>{brl(l.economia)}</td>
+                <td style={styles.tdMono}>{brl(l.distribuido)}</td>
+              </tr>
+            ))}
+          </tbody>
+          {totais && (
             <tfoot>
               <tr style={{ background: C.navy, color: C.branco }}>
                 <td style={styles.tf}>TOTAL</td>
                 <td style={styles.tf}>{plOp(totais.nOps)}</td>
-                <td style={styles.tfMono}>{totais.tercProgramados}</td>
-                <td style={styles.tfMono}>{brl(totais.custoProgramado)}</td>
-                <td style={styles.tfMono}>{totais.tercChamados}</td>
-                <td style={styles.tfMono}>{brl(totais.custoTerc)}</td>
+                <td style={styles.tfMono}>{totais.tercPrevistos}</td>
+                <td style={styles.tfMono}>{brl(totais.custoPrevisto)}</td>
+                <td style={styles.tfMono}>{totais.tercRealizado}</td>
+                <td style={styles.tfMono}>{brl(totais.custoRealizado)}</td>
                 <td style={styles.tfMono}>{totais.qtdBonus}</td>
                 <td style={styles.tfMono}>{brl(totais.custoBonus)}</td>
-                <td style={styles.tfMono}>{brl(totais.custoTotalReal)}</td>
+                <td style={styles.tfMono}>{brl(totais.custoTotalRealizado)}</td>
                 <td style={{ ...styles.tfMono, color: "#FFD9BC" }}>{brl(totais.economia)}</td>
                 <td style={styles.tfMono}>{brl(totais.distribuido)}</td>
               </tr>
             </tfoot>
-          </table>
+          )}
+        </table>
+      </div>
+    )
+  );
+
+  return (
+    <div>
+      <SectionTitle icon={ShieldCheck}>Raio X da MdO</SectionTitle>
+      <p style={styles.helper}>
+        Compara a MdO terceirizada de <strong>referência</strong> — o padrão do tipo de operação cadastrado em
+        Parâmetros (ex.: Pneu de Passeio = 4 pessoas) — com o que foi de fato <strong>realizado</strong>: terceirizados
+        contratados no dia e bônus pago à equipe própria. Considera apenas operações concluídas. Clique na
+        quantidade de operações para ver o detalhe.
+      </p>
+
+      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, margin: "18px 0 10px" }}>
+        Hoje — {rotuloDia(hojeTs)}
+      </div>
+      <Tabela linhas={[linhaHoje]} totais={null} />
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, margin: "26px 0 10px" }}>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>
+          Período <span style={{ fontWeight: 500, color: C.prata, fontSize: 12 }}>(mês atual por padrão — ajuste as datas)</span>
         </div>
-      )}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="De"><input type="date" style={styles.input} value={de} onChange={e => setDe(e.target.value)} /></Field>
+          <Field label="Até"><input type="date" style={styles.input} value={ate} onChange={e => setAte(e.target.value)} /></Field>
+        </div>
+      </div>
+      <Tabela linhas={linhasPeriodo} totais={totaisPeriodo} />
+
+      {msg && <div style={{ ...styles.infoBox, marginTop: 14, borderColor: C.verde, background: "#E8F5E9", color: C.verde, fontWeight: 600 }}>{msg}</div>}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 18, flexWrap: "wrap" }}>
+        <button style={styles.btnPrimary} onClick={() => gerarHTML("download")}>
+          <Download size={17} strokeWidth={2.4} /> Baixar Raio X em HTML
+        </button>
+        <button style={styles.btnGhost} onClick={() => gerarHTML("preview")}>
+          <FileText size={15} /> Visualizar agora
+        </button>
+      </div>
 
       {diaSelecionado && (
         <Modal titulo={`Operações concluídas — ${rotuloDia(diaSelecionado.ts)}`} onFechar={() => setDiaAberto(null)} largura={820}>
@@ -3691,6 +3763,122 @@ function Auditoria({ ops, params, diasTerc }) {
       )}
     </div>
   );
+}
+
+/* ============================================================
+   GERADOR HTML — RAIO X DA MDO (arquivo standalone)
+   ============================================================ */
+function montarHTMLRaioX({ linhaHoje, linhasPeriodo, totaisPeriodo, params, de, ate }) {
+  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
+  const emissao = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  const linhaTabela = (l) => `<tr>
+    <td class="b">${esc(rotuloDia(l.ts))}</td>
+    <td class="m">${plOp(l.nOps)}</td>
+    <td class="m">${l.tercPrevistos}</td>
+    <td class="m">${brl(l.custoPrevisto)}</td>
+    <td class="m">${l.tercRealizado}</td>
+    <td class="m">${brl(l.custoRealizado)}</td>
+    <td class="m">${l.qtdBonus}</td>
+    <td class="m">${brl(l.custoBonus)}</td>
+    <td class="m">${brl(l.custoTotalRealizado)}</td>
+    <td class="m ${l.economia >= 0 ? "pos" : "neg"}">${brl(l.economia)}</td>
+    <td class="m">${brl(l.distribuido)}</td>
+  </tr>`;
+
+  const cabecalho = `<tr><th>Dia</th><th>Operações</th><th>Terc. Previstos</th><th>Custo Previsto</th>
+    <th>Terc. Realizado</th><th>Custo Realizado</th><th>Qtd. Bônus</th><th>Custo Bônus</th>
+    <th>Custo Total Realizado</th><th>Economia</th><th>Distribuído</th></tr>`;
+
+  const linhasPeriodoHTML = linhasPeriodo.length === 0
+    ? `<tr><td colspan="11" class="vazio">Nenhuma operação concluída neste recorte</td></tr>`
+    : linhasPeriodo.map(linhaTabela).join("");
+
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superior Transportes — Raio X da MdO · ${esc(per)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@500;700&display=swap');
+  *{box-sizing:border-box} body{margin:0;background:#F7F9FB;color:#37474F;font-family:Roboto,sans-serif}
+  header{background:#1E3A5F;color:#fff;padding:24px 34px;display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}
+  header h1{font-family:Montserrat,sans-serif;font-size:20px;margin:0 0 4px;font-weight:800}
+  header .sub{font-size:12.5px;color:#C5CDD8}
+  .lg{border-radius:10px;overflow:hidden;padding:5px 8px;background:#fff;display:inline-flex;align-items:center}
+  .bar{height:5px;background:linear-gradient(90deg,#FF6B00 0 55%,#149C3A 55% 100%)}
+  main{max-width:1080px;margin:0 auto;padding:26px 20px 44px}
+  h2{font-family:Montserrat,sans-serif;font-size:16px;font-weight:800;color:#1E3A5F;border-left:5px solid #1E3A5F;padding-left:10px;margin:30px 0 12px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #E1E7EF;border-radius:9px;overflow:hidden;font-size:12px}
+  th{background:#1E3A5F;color:#fff;font-family:Montserrat,sans-serif;font-size:9.5px;text-transform:uppercase;padding:8px 9px;text-align:left;letter-spacing:.3px;white-space:nowrap}
+  td{padding:8px 9px;border-bottom:1px solid #EDF1F6;white-space:nowrap}
+  td.b{font-weight:700;color:#1E3A5F} td.m{font-family:Roboto Mono,monospace}
+  td.pos{color:#2E7D32;font-weight:700} td.neg{color:#C62828;font-weight:700}
+  td.vazio{color:#8A9BB0;font-style:italic;text-align:center;white-space:normal}
+  tfoot td{background:#1E3A5F;color:#fff;font-weight:700}
+  tfoot td.pos, tfoot td.neg{color:#FFD9BC}
+  .note{background:#EEF2F8;border:1px solid #E1E7EF;border-radius:9px;padding:12px 15px;font-size:12px;color:#5C6B7E;line-height:1.6;margin-top:16px}
+  footer{background:#1E3A5F;color:#C5CDD8;padding:18px 34px;display:flex;justify-content:space-between;font-size:11.5px;flex-wrap:wrap;gap:10px}
+  @media print{body{background:#fff}header,footer,th,tfoot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<header>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="lg"><img src="${SBS_LOGO}" alt="SBS Solution" style="height:38px;display:block"></div>
+    <div>
+      <h1>Raio X da Mão de Obra</h1>
+      <div class="sub">Referência × Realizado — período ${esc(per)}</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="text-align:right">
+      <div style="font-family:Montserrat,sans-serif;font-weight:800;font-size:15px">SUPERIOR TRANSPORTES</div>
+      <div class="sub">Recebimento &amp; Expedição</div>
+    </div>
+    <div class="lg" style="padding:5px 9px"><img src="${SUP_LOGO}" alt="Superior Transportes" style="height:24px;display:block"></div>
+  </div>
+</header>
+<div class="bar"></div>
+
+<main>
+  <h2>Hoje — ${esc(rotuloDia(linhaHoje.ts))}</h2>
+  <table>
+    <thead>${cabecalho}</thead>
+    <tbody>${linhaTabela(linhaHoje)}</tbody>
+  </table>
+
+  <h2>Período — ${esc(per)}</h2>
+  <table>
+    <thead>${cabecalho}</thead>
+    <tbody>${linhasPeriodoHTML}</tbody>
+    <tfoot><tr>
+      <td>TOTAL</td>
+      <td class="m">${plOp(totaisPeriodo.nOps)}</td>
+      <td class="m">${totaisPeriodo.tercPrevistos}</td>
+      <td class="m">${brl(totaisPeriodo.custoPrevisto)}</td>
+      <td class="m">${totaisPeriodo.tercRealizado}</td>
+      <td class="m">${brl(totaisPeriodo.custoRealizado)}</td>
+      <td class="m">${totaisPeriodo.qtdBonus}</td>
+      <td class="m">${brl(totaisPeriodo.custoBonus)}</td>
+      <td class="m">${brl(totaisPeriodo.custoTotalRealizado)}</td>
+      <td class="m ${totaisPeriodo.economia >= 0 ? "pos" : "neg"}">${brl(totaisPeriodo.economia)}</td>
+      <td class="m">${brl(totaisPeriodo.distribuido)}</td>
+    </tr></tfoot>
+  </table>
+
+  <div class="note">
+    <strong>Como ler este documento.</strong> <strong>Previsto</strong> é o cenário de referência: o padrão de
+    pessoas terceirizadas cadastrado para cada tipo de operação em Parâmetros, aplicado às operações concluídas
+    do recorte — não é a quantidade informada no cadastro da operação. <strong>Realizado</strong> é o que de fato
+    foi contratado no dia (independente de quantas operações rodaram nele) mais o bônus pago à equipe própria,
+    concedido apenas quando a operação é concluída dentro da meta de tempo. A <strong>economia</strong> é a
+    diferença entre o custo previsto e o custo total realizado.
+  </div>
+</main>
+
+<footer>
+  <div><strong style="display:block;font-weight:600;margin-bottom:2px">Superior Transportes</strong>Gestão Operacional</div>
+  <div style="text-align:right">Documento gerado em ${esc(emissao)}<br>Acompanhamento técnico: SBS Solution</div>
+</footer>
+</body></html>`;
 }
 
 /* ============================================================
