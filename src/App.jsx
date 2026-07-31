@@ -1921,7 +1921,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
             </button>
             {msg && <span style={{ marginLeft: 12, fontSize: 12.5, color: C.verde, fontWeight: 600 }}>{msg}</span>}
           </div>
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={styles.table}>
               <thead>
                 <tr>{["Colaborador", "Operações", "Detalhe", "Valor a Receber"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -2424,6 +2424,9 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
    ============================================================ */
 function Dashboard({ ops, params, now, diasTerc }) {
   const [diaSel, setDiaSel] = useState(null);
+  /* drill-down dos gráficos de Evolução Diária: clicar numa coluna ou ponto
+     abre o detalhe das operações daquele dia específico */
+  const [diaEvolucao, setDiaEvolucao] = useState(null);
   const concluidas = useMemo(() =>
     ops.filter(o => o.status === "concluida")
       .map(o => ({ op: o, c: calcOp(o, params) }))
@@ -2503,6 +2506,17 @@ function Dashboard({ ops, params, now, diasTerc }) {
         Aderencia: d.ops ? Math.round((d.naMeta / d.ops) * 100) : 0,
         AderenciaAcum: accOps ? Math.round((accMeta / accOps) * 100) : 0 };
     });
+  }, [doMes]);
+
+  /* operações concluídas de cada dia do mês, indexadas por ts — alimenta o
+     modal de drill-down aberto ao clicar numa coluna/ponto da Evolução Diária */
+  const opsPorDiaEvolucao = useMemo(() => {
+    const mapa = {};
+    doMes.forEach(({ op, c }) => {
+      const ts = inicioDoDia(op.fim);
+      (mapa[ts] = mapa[ts] || []).push({ op, c });
+    });
+    return mapa;
   }, [doMes]);
 
   /* ---- visão POR DIA (nova) ----
@@ -2785,6 +2799,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
       {evolucaoDiaria.length > 0 && (
         <>
           <SectionTitle icon={Activity}>Evolução Diária — {nomeMes(mAtual)}</SectionTitle>
+          <p style={styles.helper}>Clique numa coluna ou num ponto do gráfico para ver as operações daquele dia.</p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(400px,1fr))", gap: 14, marginBottom: 22 }}>
             <div style={styles.chartCard}>
               <div style={styles.chartTitle}>Performance — aderência à meta</div>
@@ -2797,11 +2812,14 @@ function Dashboard({ ops, params, now, diasTerc }) {
                   <Tooltip contentStyle={tooltipStyle}
                     formatter={(v, n) => n === "Operações" ? [v, n] : [`${v}%`, n]} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar yAxisId="ops" dataKey="Operacoes" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Operações" />
+                  <Bar yAxisId="ops" dataKey="Operacoes" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Operações"
+                    cursor="pointer" onClick={(data) => setDiaEvolucao(data.payload)} />
                   <Line yAxisId="pct" type="monotone" dataKey="Aderencia" stroke={C.navy2} strokeWidth={2}
-                    dot={{ r: 3, fill: C.navy2 }} name="Aderência do dia" />
+                    dot={(p) => <DotClicavel key={`ad-${p.payload.ts}`} {...p} r={3} fill={C.navy2} onSelecionar={setDiaEvolucao} />}
+                    name="Aderência do dia" />
                   <Line yAxisId="pct" type="monotone" dataKey="AderenciaAcum" stroke={C.supVerde} strokeWidth={3}
-                    dot={{ r: 4, fill: C.supVerde }} name="Aderência acumulada" />
+                    dot={(p) => <DotClicavel key={`aa-${p.payload.ts}`} {...p} r={4} fill={C.supVerde} onSelecionar={setDiaEvolucao} />}
+                    name="Aderência acumulada" />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2815,14 +2833,50 @@ function Dashboard({ ops, params, now, diasTerc }) {
                   <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
                   <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="Economia" fill={C.prata} radius={[4, 4, 0, 0]} name="Economia do dia" />
+                  <Bar dataKey="Economia" fill={C.prata} radius={[4, 4, 0, 0]} name="Economia do dia"
+                    cursor="pointer" onClick={(data) => setDiaEvolucao(data.payload)} />
                   <Line type="monotone" dataKey="Acumulado" stroke={C.laranja} strokeWidth={3}
-                    dot={{ r: 4, fill: C.laranja }} name="Saving acumulado" />
+                    dot={(p) => <DotClicavel key={`ac-${p.payload.ts}`} {...p} r={4} fill={C.laranja} onSelecionar={setDiaEvolucao} />}
+                    name="Saving acumulado" />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
           </div>
         </>
+      )}
+
+      {diaEvolucao && (
+        <Modal titulo={`Operações concluídas — ${diaEvolucao.dia}`} onFechar={() => setDiaEvolucao(null)} largura={820}>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 12.5, color: C.prata }}>
+            <span><strong style={{ color: C.navy }}>{diaEvolucao.Operacoes}</strong> {plOp(diaEvolucao.Operacoes)}</span>
+            <span><strong style={{ color: corAderencia(diaEvolucao.Aderencia) }}>{diaEvolucao.Aderencia}%</strong> aderência do dia</span>
+            <span><strong style={{ color: C.laranja }}>{brl(diaEvolucao.Economia)}</strong> economia do dia</span>
+          </div>
+          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+            <table style={{ ...styles.table, minWidth: 640 }}>
+              <thead>
+                <tr>{["ID Superior", "Cliente", "Tipo", "Fluxo", "Concluída em", "Economia", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {(opsPorDiaEvolucao[diaEvolucao.ts] || []).map(({ op, c }, i) => (
+                  <tr key={op.id} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                    <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{op.ref}</td>
+                    <td style={styles.td}>{op.cliente}</td>
+                    <td style={styles.td}>{c.tipo?.label || "—"}</td>
+                    <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                    <td style={styles.td}>{fmtDT(op.fim)}</td>
+                    <td style={{ ...styles.tdMono, fontWeight: 700, color: c.economia >= 0 ? C.verde : C.vermelho }}>{brl(c.economia)}</td>
+                    <td style={styles.td}>
+                      <span style={{ ...styles.pill, background: c.cumpriuMeta ? "#E8F5E9" : "#FFEBEE", color: c.cumpriuMeta ? C.verde : C.vermelho }}>
+                        {c.cumpriuMeta ? "No prazo" : "Atrasada"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
       )}
 
       {/* ===== FECHAMENTO DO MÊS — números de apoio ===== */}
@@ -3513,7 +3567,7 @@ function Relatorios({ ops, params, diasTerc }) {
       {porCliente.length === 0 ? (
         <EmptyState text="Nenhuma operação concluída no período selecionado." />
       ) : (
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
           <table style={{ ...styles.table, minWidth: 780 }}>
             <thead>
               <tr>{["Cliente", "Ops", "Volume", "Horas", "Referência", "Custo Real", "Economia", "Aderência"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -3584,7 +3638,11 @@ function RaioXMdO({ ops, params, diasTerc }) {
 
   const construirLinha = (ts, doDia) => {
     const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
-    const tercPrevistos = calcs.reduce((s, { c }) => s + (c.paletizado ? 0 : c.pessoasRef), 0);
+    const tercPrevistos = calcs.reduce((s, { op, c }) => {
+      if (c.paletizado) return s;
+      const qtd = op.qtdTerceirizada || 0;
+      return s + qtd;
+    }, 0);
     const custoPrevisto = calcs.reduce((s, { c }) => s + c.referencia, 0);
     const tercRealizado = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
     const custoRealizado = tercRealizado * params.custoTerceirizada;
@@ -3649,7 +3707,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
     linhas.length === 0 ? (
       <EmptyState text="Nenhuma operação concluída neste recorte." />
     ) : (
-      <div style={{ overflowX: "auto" }}>
+      <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
         <table style={styles.table}>
           <thead><tr>{colunas.map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
           <tbody>
@@ -3734,7 +3792,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
 
       {diaSelecionado && (
         <Modal titulo={`Operações concluídas — ${rotuloDia(diaSelecionado.ts)}`} onFechar={() => setDiaAberto(null)} largura={820}>
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={{ ...styles.table, minWidth: 640 }}>
               <thead>
                 <tr>{["ID Superior", "ID Cliente", "Cliente", "Tipo", "Fluxo", "Terc.", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -5616,6 +5674,18 @@ function CardOpFeita({ op, c }) {
 
 function ChartCard({ title, children }) {
   return <div style={styles.chartCard}><div style={styles.chartTitle}>{title}</div>{children}</div>;
+}
+/* ponto de linha clicável — usado nos gráficos de Evolução Diária para abrir
+   o drill-down das operações do dia. Círculo invisível maior por baixo do
+   ponto visível só para facilitar o clique/toque. */
+function DotClicavel({ cx, cy, payload, r, fill, onSelecionar }) {
+  if (cx == null || cy == null) return null;
+  return (
+    <g style={{ cursor: "pointer" }} onClick={() => onSelecionar(payload)}>
+      <circle cx={cx} cy={cy} r={r + 7} fill="transparent" />
+      <circle cx={cx} cy={cy} r={r} fill={fill} />
+    </g>
+  );
 }
 function TipoIcon({ tipo, big }) {
   const isTruck = tipo?.icon === "truck" || /carga|caminh/i.test(tipo?.label || "");
