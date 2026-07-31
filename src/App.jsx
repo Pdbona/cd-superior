@@ -118,6 +118,14 @@ function pessoasDaOperacao(op, tipo) {
 }
 
 /* ---------- helpers ---------- */
+/* tabelas largas: a rolagem horizontal nativa exige Shift+roda ou arrastar
+   uma barrinha de 8px que quase não aparece — a maioria dos gestores não
+   descobre sozinha. Redireciona a roda vertical do mouse para scrollLeft
+   quando o cursor está sobre uma tabela que realmente transborda. */
+const rolarNaHorizontal = (e) => {
+  const el = e.currentTarget;
+  if (el.scrollWidth > el.clientWidth) el.scrollLeft += e.deltaY;
+};
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const brl = (v) => "R$ " + (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const hhmm = (h) => {
@@ -1921,7 +1929,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
             </button>
             {msg && <span style={{ marginLeft: 12, fontSize: 12.5, color: C.verde, fontWeight: 600 }}>{msg}</span>}
           </div>
-          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+          <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={styles.table}>
               <thead>
                 <tr>{["Colaborador", "Operações", "Detalhe", "Valor a Receber"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -2852,7 +2860,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
             <span><strong style={{ color: corAderencia(diaEvolucao.Aderencia) }}>{diaEvolucao.Aderencia}%</strong> aderência do dia</span>
             <span><strong style={{ color: C.laranja }}>{brl(diaEvolucao.Economia)}</strong> economia do dia</span>
           </div>
-          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+          <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={{ ...styles.table, minWidth: 640 }}>
               <thead>
                 <tr>{["ID Superior", "Cliente", "Tipo", "Fluxo", "Concluída em", "Economia", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -3567,7 +3575,7 @@ function Relatorios({ ops, params, diasTerc }) {
       {porCliente.length === 0 ? (
         <EmptyState text="Nenhuma operação concluída no período selecionado." />
       ) : (
-        <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+        <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
           <table style={{ ...styles.table, minWidth: 780 }}>
             <thead>
               <tr>{["Cliente", "Ops", "Volume", "Horas", "Referência", "Custo Real", "Economia", "Aderência"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -3638,11 +3646,11 @@ function RaioXMdO({ ops, params, diasTerc }) {
 
   const construirLinha = (ts, doDia) => {
     const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
-    const tercPrevistos = calcs.reduce((s, { op, c }) => {
-      if (c.paletizado) return s;
-      const qtd = op.qtdTerceirizada || 0;
-      return s + qtd;
-    }, 0);
+    /* previsto = MdO terceirizada CADASTRADA NO TIPO da operação (c.pessoasRef,
+       o mesmo "tipo.pessoas" de Parâmetros), somada por operação do dia — nunca
+       o qtdTerceirizada digitado na operação (esse é o REALIZADO). Tipo manual
+       com 0 pessoas cadastradas contribui zero, ou seja, fica desconsiderado. */
+    const tercPrevistos = calcs.reduce((s, { c }) => s + (c.paletizado ? 0 : c.pessoasRef), 0);
     const custoPrevisto = calcs.reduce((s, { c }) => s + c.referencia, 0);
     const tercRealizado = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
     const custoRealizado = tercRealizado * params.custoTerceirizada;
@@ -3707,7 +3715,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
     linhas.length === 0 ? (
       <EmptyState text="Nenhuma operação concluída neste recorte." />
     ) : (
-      <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+      <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
         <table style={styles.table}>
           <thead><tr>{colunas.map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
           <tbody>
@@ -3792,7 +3800,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
 
       {diaSelecionado && (
         <Modal titulo={`Operações concluídas — ${rotuloDia(diaSelecionado.ts)}`} onFechar={() => setDiaAberto(null)} largura={820}>
-          <div style={{ overflowX: "auto", display: "block", width: "100%" }}>
+          <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={{ ...styles.table, minWidth: 640 }}>
               <thead>
                 <tr>{["ID Superior", "ID Cliente", "Cliente", "Tipo", "Fluxo", "Terc.", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
@@ -5369,6 +5377,11 @@ function FontInject() {
     input:focus, select:focus, textarea:focus { outline: none; border-color: ${C.navy2} !important; box-shadow: 0 0 0 3px rgba(43,76,126,.12); }
     ::-webkit-scrollbar { height: 8px; width: 8px; }
     ::-webkit-scrollbar-thumb { background: ${C.prataClaro}; border-radius: 8px; }
+    .scroll-x { scrollbar-color: ${C.prata} #E9EDF2; scrollbar-width: auto; }
+    .scroll-x::-webkit-scrollbar { height: 12px; }
+    .scroll-x::-webkit-scrollbar-track { background: #E9EDF2; border-radius: 8px; }
+    .scroll-x::-webkit-scrollbar-thumb { background: ${C.prata}; border-radius: 8px; border: 2px solid #E9EDF2; }
+    .scroll-x::-webkit-scrollbar-thumb:hover { background: ${C.navy2}; }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes pulsoAlerta {
       0%,100% { box-shadow: 0 0 0 0 rgba(249,168,37,.55); }
