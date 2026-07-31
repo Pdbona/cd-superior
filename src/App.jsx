@@ -8,7 +8,7 @@ import {
   Truck, Package, TrendingDown, Award, CheckCircle2, AlertTriangle,
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
-  FileText, Download, Building2, Calendar, Database, Eraser
+  FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -860,6 +860,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
     { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
     { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
     { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
+    { id: "auditoria", label: "Auditoria", sub: "Terceirizados & bônus", icon: ShieldCheck },
     { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
     { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
     { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings }
@@ -912,6 +913,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
+        {tab === "auditoria" && <Auditoria ops={ops} params={params} diasTerc={diasTerc} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
       </main>
 
@@ -929,7 +931,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
 function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
   /* Nenhum campo de seleção vem pré-preenchido: um cliente ou tipo herdado
      por descuido gera registro errado que só aparece no fechamento. */
-  const empty = { ref: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
+  const empty = { ref: "", idCliente: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
   const [form, setForm] = useState(empty);
   const [erro, setErro] = useState("");
   const [ajusteAberto, setAjusteAberto] = useState(false);
@@ -939,7 +941,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
 
   const salvar = () => {
     if (!form.dataPlanejada) return setErro("Informe a data planejada da operação.");
-    if (!form.ref.trim()) return setErro("Informe a referência (NF / Pedido).");
+    if (!form.ref.trim()) return setErro("Informe o ID Superior (NF/Pedido/DP).");
     if (!form.cliente.trim()) return setErro("Selecione o cliente.");
     if (!form.tipoId) return setErro("Selecione o tipo de operação.");
     if (!form.direcao) return setErro("Selecione a direção: recebimento ou expedição.");
@@ -1084,8 +1086,11 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
         </div>
 
         <div style={styles.formGrid}>
-          <Field label="Referência (NF / Pedido / ID)" required>
+          <Field label="ID Superior (NF/Pedido/DP)" required>
             <input style={styles.input} value={form.ref} onChange={e => set("ref", e.target.value)} placeholder="Ex.: NF 12345" />
+          </Field>
+          <Field label="ID Cliente (ID/CNTR/NF)">
+            <input style={styles.input} value={form.idCliente} onChange={e => set("idCliente", e.target.value)} placeholder="Ex.: CNTR-9021" />
           </Field>
           <Field label="Cliente" required>
             {(params.clientes || []).length === 0 ? (
@@ -1622,7 +1627,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       .filter(o => o.status === "concluida" && o.fim)
       .map(o => ({ op: o, c: calcOp(o, params) }))
       .filter(x => x.c.bonusDistribuido > 0)
-      .filter(x => (x.op.ref || "").toLowerCase().includes(q) || (x.op.cliente || "").toLowerCase().includes(q))
+      .filter(x => (x.op.ref || "").toLowerCase().includes(q) || (x.op.idCliente || "").toLowerCase().includes(q) || (x.op.cliente || "").toLowerCase().includes(q))
       .sort((a, b) => b.op.fim - a.op.fim)
       .slice(0, 30);
   }, [ops, params, buscaRateio, buscando]);
@@ -1643,7 +1648,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
         if (!mapa[nome]) mapa[nome] = { nome, total: 0, operacoes: [] };
         mapa[nome].total += c.valorPorPessoa;
         mapa[nome].operacoes.push({
-          ref: op.ref, cliente: op.cliente, tipo: c.tipo?.label,
+          ref: op.ref, idCliente: op.idCliente || "", cliente: op.cliente, tipo: c.tipo?.label,
           fim: op.fim, bolo: c.bonusDistribuido, divisao: c.nomeados.length, valor: c.valorPorPessoa
         });
       });
@@ -1676,7 +1681,8 @@ function Rateio({ ops, params, persistOps, persistParams }) {
     const detalhe = [];
     porColaborador.forEach(p => p.operacoes.forEach(o => detalhe.push({
       "Colaborador": p.nome,
-      "Referência": o.ref,
+      "ID Superior": o.ref,
+      "ID Cliente": o.idCliente,
       "Cliente": o.cliente,
       "Tipo": o.tipo,
       "Data Conclusão": new Date(o.fim).toLocaleString("pt-BR"),
@@ -2001,6 +2007,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
     setEditId(op.id);
     setDraft({
       ref: op.ref || "",
+      idCliente: op.idCliente || "",
       cliente: op.cliente || "",
       tipoId: op.tipoId || "",
       direcao: op.direcao || "",
@@ -2031,7 +2038,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
     if (draft.status === "em_andamento" && !ini) return setMsg("Informe o horário de início.");
     if (draft.status === "cancelada" && !draft.motivoCancelamento) return setMsg("Selecione o motivo do cancelamento.");
     if (draft.status !== "cancelada" && !draft.motivo.trim()) return setMsg("Descreva o motivo do ajuste (fica registrado para auditoria).");
-    if (!draft.ref.trim()) return setMsg("Informe a referência (NF/Pedido).");
+    if (!draft.ref.trim()) return setMsg("Informe o ID Superior (NF/Pedido/DP).");
     if (!draft.cliente.trim()) return setMsg("Selecione o cliente.");
     if (!draft.tipoId) return setMsg("Selecione o tipo de operação.");
     if (!draft.direcao) return setMsg("Selecione a direção: recebimento ou expedição.");
@@ -2055,7 +2062,8 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
       de: `${op.ref} · ${op.cliente} · ${op.status} · ${dataAntes} · ${fmtDT(op.inicio)} → ${fmtDT(op.fim)}`,
       para: `${draft.ref.trim() || op.ref} · ${draft.cliente.trim() || op.cliente} · ${draft.status} · ${dataDepois} · ${fmtDT(ini)} → ${fmtDT(fim)}`
         + (dataMudou ? " (data replanejada)" : "")
-        + (draft.ref.trim() && draft.ref.trim() !== op.ref ? " (referência alterada)" : "")
+        + (draft.ref.trim() && draft.ref.trim() !== op.ref ? " (ID Superior alterado)" : "")
+        + (draft.idCliente.trim() !== (op.idCliente || "") ? " (ID Cliente alterado)" : "")
         + (draft.cliente.trim() && draft.cliente.trim() !== op.cliente ? " (cliente alterado)" : "")
         + (draft.tipoId && draft.tipoId !== op.tipoId ? " (tipo alterado)" : "")
         + (draft.direcao && draft.direcao !== op.direcao ? " (direção alterada)" : "")
@@ -2069,6 +2077,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
     await persistOps(ops.map(o => o.id === op.id ? {
       ...o,
       ref: draft.ref.trim() || o.ref,
+      idCliente: draft.idCliente.trim(),
       cliente: draft.cliente.trim() || o.cliente,
       tipoId: draft.tipoId || o.tipoId,
       direcao: draft.direcao || o.direcao,
@@ -2140,6 +2149,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
   const lista = buscando
     ? todas.filter(o =>
         o.ref.toLowerCase().includes(busca.toLowerCase()) ||
+        (o.idCliente || "").toLowerCase().includes(busca.toLowerCase()) ||
         o.cliente.toLowerCase().includes(busca.toLowerCase()))
     : recentes;
   const anteriores = todas.length - recentes.length;
@@ -2238,9 +2248,13 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                 {emEdicao && draft && (
                   <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.prataClaro}` }}>
                     <div style={styles.formGrid}>
-                      <Field label="Referência (NF/Pedido)">
+                      <Field label="ID Superior (NF/Pedido/DP)">
                         <input type="text" style={styles.input} value={draft.ref}
                           onChange={e => setDraft(d => ({ ...d, ref: e.target.value }))} />
+                      </Field>
+                      <Field label="ID Cliente (ID/CNTR/NF)">
+                        <input type="text" style={styles.input} value={draft.idCliente}
+                          onChange={e => setDraft(d => ({ ...d, idCliente: e.target.value }))} />
                       </Field>
                       <Field label="Cliente">
                         {(params.clientes || []).length === 0 ? (
@@ -3187,12 +3201,12 @@ function Relatorios({ ops, params, diasTerc }) {
     XLSX.utils.book_append_sheet(wb, ws1, "Consolidado Diretoria");
 
     /* Aba 2 — Operações */
-    const s2 = [["Data Início", "Data Fim", "Referência", "Cliente", "Tipo", "Direção", "Volume (un)",
+    const s2 = [["Data Início", "Data Fim", "ID Superior", "ID Cliente", "Cliente", "Tipo", "Direção", "Volume (un)",
       "Pessoas Terc.", "Qtd. Bônus", "Colaboradores Superior", "Tempo Real (h)", "Meta (h)", "Desvio (h)",
       "Cumpriu Meta", "Conferente", "Referência 100% Terc. (R$)", "Custo Terceirizada (R$)", "Bônus Rateado (R$)",
       "Custo Real (R$)", "Economia (R$)", "Economia (%)", "Observação"]];
     dados.forEach(({ op, c }) => s2.push([
-      fmtDT(op.inicio), fmtDT(op.fim), op.ref, op.cliente, c.tipo?.label || "",
+      fmtDT(op.inicio), fmtDT(op.fim), op.ref, op.idCliente || "", op.cliente, c.tipo?.label || "",
       op.direcao === "recebimento" ? "Recebimento" : "Expedição", op.volume || 0,
       op.qtdTerceirizada || 0, op.qtdSuperior || 0, (c.nomeados || []).join(", ") || "—",
       +(c.tempoReal || 0).toFixed(2), c.metaHoras, +((c.tempoReal || 0) - c.metaHoras).toFixed(2),
@@ -3204,7 +3218,7 @@ function Relatorios({ ops, params, diasTerc }) {
       op.observacao || ""
     ]));
     const ws2 = XLSX.utils.aoa_to_sheet(s2);
-    ws2["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 13 }, { wch: 11 },
+    ws2["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 13 }, { wch: 11 },
       { wch: 13 }, { wch: 15 }, { wch: 24 }, { wch: 13 }, { wch: 10 }, { wch: 11 }, { wch: 13 },
       { wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 15 }, { wch: 13 }, { wch: 44 }];
     XLSX.utils.book_append_sheet(wb, ws2, "Operações");
@@ -3541,6 +3555,139 @@ function Relatorios({ ops, params, diasTerc }) {
             </tfoot>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   GESTOR — ABA: AUDITORIA (terceirizados & bônus por dia)
+   ============================================================ */
+function Auditoria({ ops, params, diasTerc }) {
+  const [diaAberto, setDiaAberto] = useState(null); // ts do dia clicado no drill-down
+
+  /* Mês corrente, agrupado por dia planejado — mesma noção de "dia" usada
+     em diasTerc e calcDia, para bater com o que o gestor já registra ali.
+     Só operações concluídas: é o que já virou fato, auditável. */
+  const linhas = useMemo(() => {
+    const hoje = new Date();
+    const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).getTime();
+    const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 1).getTime() - 1;
+    const concluidasMes = ops.filter(o => o.status === "concluida"
+      && diaPlanejado(o) >= inicioMes && diaPlanejado(o) <= fimMes);
+    const dias = Array.from(new Set(concluidasMes.map(o => diaPlanejado(o))));
+    return dias.map(ts => {
+      const doDia = concluidasMes.filter(o => diaPlanejado(o) === ts);
+      const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
+      const tercProgramados = doDia.reduce((s, o) => s + (o.qtdTerceirizada || 0), 0);
+      const custoProgramado = tercProgramados * params.custoTerceirizada;
+      const tercChamados = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
+      const custoTerc = tercChamados * params.custoTerceirizada;
+      const qtdBonus = calcs.reduce((s, { op, c }) => s + (c.cumpriuMeta ? (op.qtdSuperior || 0) : 0), 0);
+      const rateioUnit = params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior;
+      const custoBonus = qtdBonus * params.bonusSuperior;
+      const custoTotalReal = custoTerc + custoBonus;
+      const economia = custoProgramado - custoTotalReal;
+      const distribuido = qtdBonus * rateioUnit;
+      return { ts, ops: calcs, nOps: doDia.length, tercProgramados, custoProgramado,
+        tercChamados, custoTerc, qtdBonus, custoBonus, custoTotalReal, economia, distribuido };
+    }).sort((a, b) => b.ts - a.ts);
+  }, [ops, params, diasTerc]);
+
+  const totais = useMemo(() => linhas.reduce((s, l) => ({
+    nOps: s.nOps + l.nOps, tercProgramados: s.tercProgramados + l.tercProgramados,
+    custoProgramado: s.custoProgramado + l.custoProgramado, tercChamados: s.tercChamados + l.tercChamados,
+    custoTerc: s.custoTerc + l.custoTerc, qtdBonus: s.qtdBonus + l.qtdBonus, custoBonus: s.custoBonus + l.custoBonus,
+    custoTotalReal: s.custoTotalReal + l.custoTotalReal, economia: s.economia + l.economia, distribuido: s.distribuido + l.distribuido
+  }), { nOps: 0, tercProgramados: 0, custoProgramado: 0, tercChamados: 0, custoTerc: 0, qtdBonus: 0, custoBonus: 0, custoTotalReal: 0, distribuido: 0, economia: 0 }),
+  [linhas]);
+
+  const diaSelecionado = diaAberto != null ? linhas.find(l => l.ts === diaAberto) : null;
+
+  return (
+    <div>
+      <SectionTitle icon={ShieldCheck}>Auditoria de Terceirizados &amp; Bônus <Badge>{new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</Badge></SectionTitle>
+      <p style={{ fontFamily: "'Roboto',sans-serif", fontSize: 12.5, color: C.prata, marginTop: -6, marginBottom: 16 }}>
+        Operações concluídas do mês atual, agrupadas por dia. Clique na quantidade de operações para ver o detalhe.
+      </p>
+
+      {linhas.length === 0 ? (
+        <EmptyState text="Nenhuma operação concluída neste mês ainda." />
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={styles.table}>
+            <thead>
+              <tr>{["Dia", "Operações", "Terc. Programados", "Custo Programado", "Terc. Chamados", "Custo Terceirizados",
+                "Qtd. Bônus", "Custo Bônus", "Custo Total Real", "Economia", "Distribuído"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {linhas.map((l, i) => (
+                <tr key={l.ts} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                  <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{rotuloDia(l.ts)}</td>
+                  <td style={styles.td}>
+                    <button onClick={() => setDiaAberto(l.ts)} style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, border: "none", cursor: "pointer", fontFamily: "'Roboto Mono',monospace" }}>
+                      {plOp(l.nOps)}
+                    </button>
+                  </td>
+                  <td style={styles.tdMono}>{l.tercProgramados}</td>
+                  <td style={styles.tdMono}>{brl(l.custoProgramado)}</td>
+                  <td style={styles.tdMono}>{l.tercChamados}</td>
+                  <td style={styles.tdMono}>{brl(l.custoTerc)}</td>
+                  <td style={styles.tdMono}>{l.qtdBonus}</td>
+                  <td style={styles.tdMono}>{brl(l.custoBonus)}</td>
+                  <td style={{ ...styles.tdMono, fontWeight: 700 }}>{brl(l.custoTotalReal)}</td>
+                  <td style={{ ...styles.tdMono, fontWeight: 700, color: l.economia >= 0 ? C.verde : C.vermelho }}>{brl(l.economia)}</td>
+                  <td style={styles.tdMono}>{brl(l.distribuido)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: C.navy, color: C.branco }}>
+                <td style={styles.tf}>TOTAL</td>
+                <td style={styles.tf}>{plOp(totais.nOps)}</td>
+                <td style={styles.tfMono}>{totais.tercProgramados}</td>
+                <td style={styles.tfMono}>{brl(totais.custoProgramado)}</td>
+                <td style={styles.tfMono}>{totais.tercChamados}</td>
+                <td style={styles.tfMono}>{brl(totais.custoTerc)}</td>
+                <td style={styles.tfMono}>{totais.qtdBonus}</td>
+                <td style={styles.tfMono}>{brl(totais.custoBonus)}</td>
+                <td style={styles.tfMono}>{brl(totais.custoTotalReal)}</td>
+                <td style={{ ...styles.tfMono, color: "#FFD9BC" }}>{brl(totais.economia)}</td>
+                <td style={styles.tfMono}>{brl(totais.distribuido)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      {diaSelecionado && (
+        <Modal titulo={`Operações concluídas — ${rotuloDia(diaSelecionado.ts)}`} onFechar={() => setDiaAberto(null)} largura={820}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ ...styles.table, minWidth: 640 }}>
+              <thead>
+                <tr>{["ID Superior", "ID Cliente", "Cliente", "Tipo", "Fluxo", "Terc.", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {diaSelecionado.ops.map(({ op, c }, i) => (
+                  <tr key={op.id} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                    <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{op.ref}</td>
+                    <td style={styles.td}>{op.idCliente || "—"}</td>
+                    <td style={styles.td}>{op.cliente}</td>
+                    <td style={styles.td}>{c.tipo?.label || "—"}</td>
+                    <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                    <td style={styles.tdMono}>{op.qtdTerceirizada || 0}</td>
+                    <td style={styles.tdMono}>{c.cumpriuMeta ? (op.qtdSuperior || 0) : 0}</td>
+                    <td style={styles.td}>
+                      <span style={{ ...styles.pill, background: c.cumpriuMeta ? "#E8F5E9" : "#FFEBEE", color: c.cumpriuMeta ? C.verde : C.vermelho }}>
+                        {c.cumpriuMeta ? "No prazo" : "Atrasada"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
       )}
     </div>
   );
@@ -4023,6 +4170,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
 
   const linhasOps = dados.slice().reverse().map(({ op, c }) => `<tr>
     <td class="b">${esc(op.ref)}</td>
+    <td>${esc(op.idCliente || "—")}</td>
     <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
     <td>${esc(c.tipo?.label || "—")}</td>
     <td class="m">${nf(op.volume)}</td>
@@ -4032,6 +4180,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
 
   const linhasPlan = planejadas.slice(0, 25).map(({ op, c }) => `<tr>
     <td class="b">${esc(op.ref)}</td>
+    <td>${esc(op.idCliente || "—")}</td>
     <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
     <td>${esc(c.tipo?.label || "—")}</td>
     <td class="m">${nf(op.volume)}</td>
@@ -4193,7 +4342,7 @@ ${plano ? `<main>
 
   <h2 class="sec">Operações Programadas</h2>
   <table>
-    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
+    <thead><tr><th>ID Superior</th><th>ID Cliente</th><th>Fluxo</th><th>Tipo</th><th>Volume previsto</th><th>Data programada</th><th>Situação</th></tr></thead>
     <tbody>${linhasPlan}</tbody>
   </table>
   ${planejadas.length > 25 ? `<div class="note">Exibindo as 25 operações mais próximas de um total de ${planejadas.length} programadas.</div>` : ""}
@@ -4299,7 +4448,7 @@ ${plano ? `<main>
   ${dados.length > 0 ? `
   <h2 class="sec">Operações Realizadas</h2>
   <table>
-    <thead><tr><th>Referência</th><th>Fluxo</th><th>Tipo</th><th>Volume</th><th>Data</th><th>Tempo</th><th>Prazo</th></tr></thead>
+    <thead><tr><th>ID Superior</th><th>ID Cliente</th><th>Fluxo</th><th>Tipo</th><th>Volume</th><th>Data</th><th>Tempo</th><th>Prazo</th></tr></thead>
     <tbody>${linhasOps}</tbody>
   </table>` : ""}
 
