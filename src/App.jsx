@@ -8,7 +8,8 @@ import {
   Truck, Package, TrendingDown, Award, CheckCircle2, AlertTriangle,
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
-  FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck
+  FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
+  Camera, Images, X, Share2, Boxes, Timer
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -37,6 +38,195 @@ const K_PARAMS = "sbs_sup_params_v2";
    naquele dia", independente de quantas operações rodaram nele. */
 const K_DIAS = "sbs_sup_dias_terc_v1";
 const SHARED = true; // dados visíveis a todos que usam este app
+
+/* ============================================================
+   EVIDÊNCIA FOTOGRÁFICA
+   ------------------------------------------------------------
+   As fotos ficam no próprio Firestore, em base64, e não no Cloud
+   Storage. Motivo: o Cloud Storage exige plano Blaze (cartão de
+   crédito cadastrado), enquanto o Firestore já está em uso e o
+   volume aqui é pequeno. Contas do dimensionamento:
+
+     ~100 KB por foto comprimida  ×  4 fotos por operação
+     ×  10 operações/dia  ×  5 dias de retenção  ≈  20 MB
+
+   O plano gratuito do Firestore comporta 1 GB, ou seja, sobra
+   folga de 50x. Um documento do Firestore aceita no máximo 1 MiB,
+   por isso cada operação tem seu próprio documento (4 fotos), e o
+   índice guarda apenas metadados leves — assim a galeria abre sem
+   baixar nenhuma imagem.
+
+   Estrutura:
+     sbs_sup_fotos_idx_v1   → índice leve, um registro por operação
+     sbs_sup_fotos_<opId>   → { inicio: [...], fim: [...] } em base64
+   ============================================================ */
+const K_FOTOS_IDX = "sbs_sup_fotos_idx_v1";
+const PREFIXO_FOTOS = "sbs_sup_fotos_";
+
+/* Retenção: passado esse prazo as fotos são apagadas automaticamente.
+   Alterar aqui muda todo o comportamento do sistema (avisos na tela
+   do gestor, contagem regressiva na galeria e a rotina de limpeza). */
+const RETENCAO_DIAS = 5;
+const RETENCAO_MS = RETENCAO_DIAS * 24 * 3600000;
+
+/* Limites de captura */
+const FOTOS_INICIO_OBRIGATORIAS = 2;
+const FOTOS_FIM_MIN = 1;
+const FOTOS_FIM_MAX = 2;
+
+/* Compressão: 1.100px no maior lado e qualidade 0,58 dão evidência
+   legível de placa, lacre e avaria com ~90 KB por imagem. Se ainda
+   assim ficar grande (foto muito detalhada), o laço reduz mais. */
+const FOTO_LADO_MAX = 1100;
+const FOTO_QUALIDADE = 0.58;
+const FOTO_BYTES_ALVO = 160000;   // ~160 KB por foto já em base64
+
+const chaveFotos = (opId) => `${PREFIXO_FOTOS}${opId}`;
+
+/* Comprime o arquivo vindo da câmera do celular. Fotos de celular
+   chegam com 3–8 MB; sem esta etapa, duas delas já estourariam o
+   limite de 1 MiB do documento. */
+function comprimirFoto(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Não foi possível ler a foto."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Arquivo de imagem inválido."));
+      img.onload = () => {
+        let { width: w, height: h } = img;
+        const escala = Math.min(1, FOTO_LADO_MAX / Math.max(w, h));
+        w = Math.round(w * escala); h = Math.round(h * escala);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        let q = FOTO_QUALIDADE;
+        let out = canvas.toDataURL("image/jpeg", q);
+        /* reduz a qualidade progressivamente até caber no alvo */
+        let tentativas = 0;
+        while (out.length > FOTO_BYTES_ALVO && q > 0.3 && tentativas < 6) {
+          q -= 0.07; tentativas++;
+          out = canvas.toDataURL("image/jpeg", q);
+        }
+        resolve(out);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ---- leitura ---- */
+async function lerIndiceFotos() {
+  try {
+    const r = await storage.get(K_FOTOS_IDX, SHARED);
+    if (r?.value) {
+      const parsed = JSON.parse(r.value);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+  } catch (e) { console.error("Índice de fotos:", e); }
+  return [];
+}
+
+async function lerFotosDaOperacao(opId) {
+  try {
+    const r = await storage.get(chaveFotos(opId), SHARED);
+    if (r?.value) {
+      const parsed = JSON.parse(r.value);
+      return {
+        inicio: Array.isArray(parsed.inicio) ? parsed.inicio : [],
+        fim: Array.isArray(parsed.fim) ? parsed.fim : []
+      };
+    }
+  } catch (e) { console.error("Fotos da operação:", e); }
+  return { inicio: [], fim: [] };
+}
+
+/* ---- gravação ----
+   Grava o pacote de fotos e atualiza o índice numa tacada só. O índice
+   é reescrito inteiro porque é pequeno (metadados) e assim não há risco
+   de ficar dessincronizado com os documentos de imagem. */
+async function salvarFotos({ op, momento, fotos, usuario }) {
+  const agora = Date.now();
+  const atual = await lerFotosDaOperacao(op.id);
+  const marcadas = fotos.map((d, i) => ({
+    d, ts: agora, por: usuario || null, seq: i + 1
+  }));
+  const pacote = momento === "inicio"
+    ? { ...atual, inicio: marcadas }
+    : { ...atual, fim: marcadas };
+
+  await storage.set(chaveFotos(op.id), JSON.stringify(pacote), SHARED);
+
+  const idx = await lerIndiceFotos();
+  const semEsta = idx.filter(r => r.opId !== op.id);
+  const anterior = idx.find(r => r.opId === op.id) || {};
+  const registro = {
+    opId: op.id,
+    ref: op.ref,
+    cliente: op.cliente,
+    direcao: op.direcao,
+    tipoId: op.tipoId,
+    doca: op.doca || anterior.doca || null,
+    conferenteInicio: op.conferenteInicio || anterior.conferenteInicio || null,
+    conferenteFim: op.conferenteFim || anterior.conferenteFim || null,
+    dia: inicioDoDia(op.inicio || anterior.criadoEm || agora),
+    criadoEm: anterior.criadoEm || agora,
+    tsInicio: momento === "inicio" ? agora : (anterior.tsInicio || null),
+    tsFim: momento === "fim" ? agora : (anterior.tsFim || null),
+    nIni: pacote.inicio.length,
+    nFim: pacote.fim.length,
+    volume: op.volume ?? anterior.volume ?? null,
+    volumeReal: op.volumeReal ?? anterior.volumeReal ?? null,
+    /* a contagem da retenção começa na PRIMEIRA captura da operação,
+       para que o par início/fim expire junto e não fique meia evidência */
+    expiraEm: (anterior.criadoEm || agora) + RETENCAO_MS
+  };
+  const novo = [...semEsta, registro].sort((a, b) => b.criadoEm - a.criadoEm);
+  await storage.set(K_FOTOS_IDX, JSON.stringify(novo), SHARED);
+  return novo;
+}
+
+/* ---- limpeza automática (retenção de RETENCAO_DIAS) ----
+   Roda quando o gestor abre o painel. Não existe servidor próprio neste
+   app, então este é o gancho natural: alguém abre o sistema todo dia.
+   Devolve o índice já sem os vencidos. */
+async function limparFotosExpiradas() {
+  const idx = await lerIndiceFotos();
+  const agora = Date.now();
+  const vencidos = idx.filter(r => (r.expiraEm || 0) <= agora);
+  if (vencidos.length === 0) return { idx, removidos: 0 };
+  for (const r of vencidos) {
+    try { await storage.del(chaveFotos(r.opId)); } catch (e) { console.error(e); }
+  }
+  const restantes = idx.filter(r => (r.expiraEm || 0) > agora);
+  await storage.set(K_FOTOS_IDX, JSON.stringify(restantes), SHARED);
+  return { idx: restantes, removidos: vencidos.length };
+}
+
+/* dias que faltam até a exclusão — a galeria mostra isso em cada registro,
+   para o gestor saber que precisa baixar antes de perder */
+function diasParaExpirar(expiraEm) {
+  if (!expiraEm) return null;
+  const restante = expiraEm - Date.now();
+  if (restante <= 0) return 0;
+  return Math.ceil(restante / (24 * 3600000));
+}
+
+/* nome de arquivo previsível para o cliente: SUPERIOR_NF123_INICIO_1.jpg */
+function nomeArquivoFoto(reg, momento, seq) {
+  const limpo = (s) => String(s || "").replace(/[^\w\-]+/g, "_").toUpperCase();
+  return `SUPERIOR_${limpo(reg.ref)}_${momento === "inicio" ? "INICIO" : "FIM"}_${seq}.jpg`;
+}
+
+function baixarDataUrl(dataUrl, nome) {
+  const a = document.createElement("a");
+  a.href = dataUrl; a.download = nome;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
 
 const DEFAULT_PARAMS = {
   custoTerceirizada: 240,
@@ -200,14 +390,26 @@ function calcOp(op, params) {
   /* produtividade realizada — base do aprendizado para recalibrar metas.
      Paletizado não tem headcount alocado, então não há produtividade a medir. */
   const pessoas = paletizado ? 0 : pessoasDaOperacao(op, tipo);
+  /* Volume de apuração: o realizado (contado pelo conferente no fim) quando
+     existir, senão o programado. A meta continua saindo do PROGRAMADO — quem
+     executou não pode mudar o alvo depois do fato —, mas a produtividade e a
+     calibragem precisam do que de fato passou pela doca. */
+  const volApurado = op.volumeReal != null && op.volumeReal > 0 ? op.volumeReal : op.volume;
+  /* Acuracidade do planejamento: quanto o programado errou o realizado.
+     Vira indicador de qualidade da informação que o cliente envia. */
+  const divergenciaVol = (op.volumeReal != null && op.volume)
+    ? op.volumeReal - op.volume : null;
+  const divergenciaPct = (divergenciaVol != null && op.volume)
+    ? (divergenciaVol / op.volume) * 100 : null;
   /* Paletizado nao tem headcount de referencia: produtividade medida em un/hora,
      sem dividir por pessoas -- ainda assim entra na calibragem de metas. */
   const prodReal = paletizado
-    ? ((tempoReal && op.volume) ? op.volume / tempoReal : null)
-    : ((tempoReal && pessoas && op.volume) ? op.volume / (pessoas * tempoReal) : null);
+    ? ((tempoReal && volApurado) ? volApurado / tempoReal : null)
+    : ((tempoReal && pessoas && volApurado) ? volApurado / (pessoas * tempoReal) : null);
   return { tipo, paletizado, pessoasRef, metaHoras, metaComTolerancia, meta, referencia, custoTerc, bonusPotencial, bonusPago,
     bonusDistribuido, distribuivelPotencial, rateioUnit,
     custoReal, economia, tempoReal, cumpriuMeta, nomeados, valorPorPessoa, pessoas, prodReal, alvoRateio,
+    volApurado, divergenciaVol, divergenciaPct,
     rateioPendente: bonusDistribuido > 0 && nomeados.length === 0,
     totalPessoas: pessoas };
 }
@@ -616,10 +818,116 @@ function PortaEntrada({ params, onEntrar }) {
 /* ============================================================
    APP DO CONFERENTE — tela única, mobile-first
    ============================================================ */
+/* ------------------------------------------------------------
+   CAPTURA DE FOTOS (tela do conferente)
+   Abre a câmera do celular direto pelo input capture. No desktop
+   cai na seleção de arquivo, o que serve para teste do gestor.
+   As miniaturas ficam em memória até a operação ser gravada.
+   ------------------------------------------------------------ */
+function CapturaFotos({ fotos, setFotos, max, min, titulo, ajuda }) {
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState("");
+  const inputRef = React.useRef(null);
+
+  const escolher = async (e) => {
+    const arquivos = Array.from(e.target.files || []);
+    if (arquivos.length === 0) return;
+    setErro(""); setCarregando(true);
+    try {
+      const espaco = max - fotos.length;
+      const novas = [];
+      for (const f of arquivos.slice(0, espaco)) {
+        novas.push(await comprimirFoto(f));
+      }
+      setFotos([...fotos, ...novas]);
+    } catch (err) {
+      setErro(err.message || "Não foi possível processar a foto.");
+    } finally {
+      setCarregando(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const remover = (i) => setFotos(fotos.filter((_, k) => k !== i));
+  const completo = fotos.length >= min;
+
+  return (
+    <div style={{
+      marginTop: 12, border: `1.5px solid ${completo ? C.verde : C.laranja}`,
+      background: completo ? "#F1F8F2" : "#FFF7F0",
+      borderRadius: 10, padding: "12px 13px"
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+        <Camera size={15} color={completo ? C.verde : C.laranjaEsc} strokeWidth={2.4} />
+        <span style={{
+          fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5,
+          color: completo ? C.verde : C.laranjaEsc, textTransform: "uppercase", letterSpacing: .3
+        }}>
+          {titulo}
+        </span>
+        <span style={{
+          marginLeft: "auto", fontFamily: "'Roboto Mono',monospace",
+          fontWeight: 700, fontSize: 13, color: completo ? C.verde : C.laranjaEsc
+        }}>
+          {fotos.length}/{max}
+        </span>
+      </div>
+      <div style={{ fontSize: 11.5, color: C.texto, lineHeight: 1.4, marginBottom: 9 }}>{ajuda}</div>
+
+      {fotos.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
+          {fotos.map((f, i) => (
+            <div key={i} style={{ position: "relative" }}>
+              <img src={f} alt={`Foto ${i + 1}`} style={{
+                width: 86, height: 86, objectFit: "cover", borderRadius: 8,
+                border: `2px solid ${C.prataClaro}`, display: "block"
+              }} />
+              <button onClick={() => remover(i)} title="Remover foto" style={{
+                position: "absolute", top: -7, right: -7, width: 24, height: 24,
+                borderRadius: "50%", border: "none", background: C.vermelho, color: C.branco,
+                cursor: "pointer", fontSize: 15, lineHeight: 1, display: "flex",
+                alignItems: "center", justifyContent: "center", padding: 0,
+                boxShadow: "0 2px 6px rgba(0,0,0,.25)"
+              }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {erro && (
+        <div style={{ fontSize: 11.5, color: C.vermelho, marginBottom: 7, fontWeight: 600 }}>{erro}</div>
+      )}
+
+      <input ref={inputRef} type="file" accept="image/*" capture="environment"
+        multiple={max - fotos.length > 1} onChange={escolher} style={{ display: "none" }} />
+
+      {fotos.length < max && (
+        <button onClick={() => inputRef.current && inputRef.current.click()} disabled={carregando}
+          style={{
+            width: "100%", padding: "11px 12px", borderRadius: 8,
+            border: `1.5px dashed ${C.laranja}`, background: C.branco, color: C.laranjaEsc,
+            fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13,
+            cursor: carregando ? "wait" : "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 7
+          }}>
+          <Camera size={16} strokeWidth={2.4} />
+          {carregando ? "Processando…" : fotos.length === 0 ? "Tirar foto" : "Tirar mais uma"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, usuario }) {
   const [obs, setObs] = useState({});
   const [docaSel, setDocaSel] = useState({});
   const [aviso, setAviso] = useState("");
+  const [erro, setErro] = useState("");
+  /* fotos e volume ficam por operação enquanto o conferente preenche */
+  const [fotosIni, setFotosIni] = useState({});
+  const [fotosFim, setFotosFim] = useState({});
+  const [volReal, setVolReal] = useState({});
+  const [salvando, setSalvando] = useState(null);
 
   /* Titularidade: quem iniciou é quem finaliza.
      Sem conferente identificado (nenhum cadastrado ainda), mantém aberto —
@@ -650,30 +958,68 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     return d.toDateString() === h.toDateString();
   });
 
+  const alertar = (msg) => { setErro(msg); setTimeout(() => setErro(""), 4500); };
+  const confirmar = (msg) => { setAviso(msg); setTimeout(() => setAviso(""), 3000); };
+
   const iniciar = async (id) => {
+    const alvo = ops.find(o => o.id === id);
+    if (!alvo) return;
     const doca = docaSel[id];
-    if (!doca) {
-      setAviso("Selecione a doca antes de iniciar a operação.");
-      setTimeout(() => setAviso(""), 3000);
-      return;
+    if (!doca) return alertar("Selecione a doca antes de iniciar a operação.");
+    const fotos = fotosIni[id] || [];
+    if (fotos.length < FOTOS_INICIO_OBRIGATORIAS) {
+      return alertar(`Tire as ${FOTOS_INICIO_OBRIGATORIAS} fotos obrigatórias antes de iniciar.`);
     }
-    await persistOps(ops.map(o => o.id === id
-      ? { ...o, status: "em_andamento", inicio: Date.now(), conferenteInicio: usuario || null, doca } : o));
-    setAviso("Operação iniciada — bom trabalho!"); setTimeout(() => setAviso(""), 3000);
+
+    setSalvando(id);
+    const inicio = Date.now();
+    const atualizada = { ...alvo, status: "em_andamento", inicio,
+      conferenteInicio: usuario || null, doca };
+    try {
+      /* fotos primeiro: se a imagem não subir, a operação não é aberta e o
+         conferente pode tentar de novo sem ficar com registro pela metade */
+      await salvarFotos({ op: atualizada, momento: "inicio", fotos, usuario });
+      await persistOps(ops.map(o => o.id === id ? atualizada : o));
+      setFotosIni(d => { const n = { ...d }; delete n[id]; return n; });
+      confirmar("Operação iniciada com as fotos registradas.");
+    } catch (e) {
+      console.error(e);
+      alertar("Não foi possível enviar as fotos. Verifique o sinal e tente de novo.");
+    } finally { setSalvando(null); }
   };
+
   const finalizar = async (id) => {
     /* Só quem iniciou fecha a operação. Guarda também no handler, e não só
        na interface: o botão pode não estar visível, mas a função existe. */
     const alvo = ops.find(o => o.id === id);
-    if (alvo && !podeFinalizar(alvo)) {
-      setAviso(`Somente ${alvo.conferenteInicio} pode finalizar esta operação.`);
-      setTimeout(() => setAviso(""), 4000);
-      return;
+    if (!alvo) return;
+    if (!podeFinalizar(alvo)) {
+      return alertar(`Somente ${alvo.conferenteInicio} pode finalizar esta operação.`);
     }
-    await persistOps(ops.map(o => o.id === id
-      ? { ...o, status: "concluida", fim: Date.now(), conferenteFim: usuario || null,
-          observacao: obs[id] ?? o.observacao ?? "" } : o));
-    setAviso("Operação finalizada e registrada!"); setTimeout(() => setAviso(""), 3000);
+    const bruto = volReal[id];
+    const vr = parseInt(bruto, 10);
+    if (!bruto || isNaN(vr) || vr <= 0) {
+      return alertar("Informe a quantidade de volumes antes de finalizar.");
+    }
+    const fotos = fotosFim[id] || [];
+    if (fotos.length < FOTOS_FIM_MIN) {
+      return alertar(`Tire ao menos ${FOTOS_FIM_MIN} foto antes de finalizar.`);
+    }
+
+    setSalvando(id);
+    const atualizada = { ...alvo, status: "concluida", fim: Date.now(),
+      conferenteFim: usuario || null, volumeReal: vr,
+      observacao: obs[id] ?? alvo.observacao ?? "" };
+    try {
+      await salvarFotos({ op: atualizada, momento: "fim", fotos, usuario });
+      await persistOps(ops.map(o => o.id === id ? atualizada : o));
+      setFotosFim(d => { const n = { ...d }; delete n[id]; return n; });
+      setVolReal(d => { const n = { ...d }; delete n[id]; return n; });
+      confirmar("Operação finalizada e registrada!");
+    } catch (e) {
+      console.error(e);
+      alertar("Não foi possível enviar as fotos. Verifique o sinal e tente de novo.");
+    } finally { setSalvando(null); }
   };
 
 
@@ -702,6 +1048,11 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
       <div style={styles.accentBar} />
 
       {aviso && <div style={styles.toast}><CheckCircle2 size={16} /> {aviso}</div>}
+      {erro && (
+        <div style={{ ...styles.toast, background: C.vermelho }}>
+          <AlertTriangle size={16} /> {erro}
+        </div>
+      )}
 
       <main style={{ padding: "18px 16px", maxWidth: 760, margin: "0 auto" }}>
         <SectionTitle icon={Activity}>Operações de hoje <Badge>{abertas.length}</Badge></SectionTitle>
@@ -748,11 +1099,37 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, fontSize: 12, color: C.prata }}>
                     <span style={styles.infoChip}><Package size={12} /> {c.tipo?.label}</span>
                     {op.doca && <span style={styles.infoChip}>Doca {op.doca}</span>}
-                    {op.volume ? <span style={styles.infoChip}>{op.volume} un</span> : null}
                     <span style={styles.infoChip}><Users size={12} /> {op.qtdTerceirizada} terceirizados</span>
                     {op.qtdSuperior > 0 && <span style={styles.infoChip}><Award size={12} /> {op.qtdSuperior} bônus</span>}
                     <span style={styles.infoChip}><Target size={12} /> Meta {hhmm(c.metaHoras)}</span>
                   </div>
+
+                  {/* Volume planejado — fica em destaque próprio porque é a
+                      referência que o conferente confere contra o que de fato
+                      passou pela doca. Misturado aos outros chips, passava batido. */}
+                  {op.volume ? (
+                    <div style={{
+                      marginTop: 10, display: "flex", alignItems: "center", gap: 9,
+                      background: "#EEF2F8", border: `1px solid ${C.prataClaro}`,
+                      borderRadius: 8, padding: "9px 12px"
+                    }}>
+                      <Boxes size={17} color={C.navy2} strokeWidth={2.2} />
+                      <div style={{ lineHeight: 1.25 }}>
+                        <div style={{
+                          fontSize: 10, fontWeight: 700, color: C.prata,
+                          textTransform: "uppercase", letterSpacing: .5
+                        }}>
+                          Programado pelo gestor
+                        </div>
+                        <div style={{
+                          fontFamily: "'Roboto Mono',monospace", fontWeight: 700,
+                          fontSize: 17, color: C.navy
+                        }}>
+                          {op.volume.toLocaleString("pt-BR")} <span style={{ fontSize: 12 }}>volumes</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* Cronômetro grande */}
                   {rodando && (
@@ -795,15 +1172,96 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                             <option key={n} value={n}>Doca {n}</option>
                           ))}
                         </select>
-                        <button style={{ ...styles.btnBig, background: docaSel[op.id] ? C.verde : C.prataClaro,
-                          cursor: docaSel[op.id] ? "pointer" : "not-allowed" }} onClick={() => iniciar(op.id)}>
-                          <Play size={22} strokeWidth={2.6} /> INICIAR OPERAÇÃO
-                        </button>
+
+                        <CapturaFotos
+                          fotos={fotosIni[op.id] || []}
+                          setFotos={(f) => setFotosIni(d => ({ ...d, [op.id]: f }))}
+                          max={FOTOS_INICIO_OBRIGATORIAS} min={FOTOS_INICIO_OBRIGATORIAS}
+                          titulo={`Fotos de abertura (${FOTOS_INICIO_OBRIGATORIAS} obrigatórias)`}
+                          ajuda="Registre o veículo/carga antes de começar: placa, lacre e o estado da mercadoria." />
+
+                        {(() => {
+                          const prontoIni = docaSel[op.id] &&
+                            (fotosIni[op.id] || []).length >= FOTOS_INICIO_OBRIGATORIAS;
+                          const gravando = salvando === op.id;
+                          return (
+                            <button
+                              disabled={!prontoIni || gravando}
+                              style={{
+                                ...styles.btnBig, marginTop: 12,
+                                background: prontoIni ? C.verde : C.prataClaro,
+                                cursor: gravando ? "wait" : prontoIni ? "pointer" : "not-allowed"
+                              }}
+                              onClick={() => iniciar(op.id)}>
+                              <Play size={22} strokeWidth={2.6} />
+                              {gravando ? "ENVIANDO FOTOS…" : "INICIAR OPERAÇÃO"}
+                            </button>
+                          );
+                        })()}
                       </>
                     ) : meu ? (
-                      <button style={{ ...styles.btnBig, background: C.navy }} onClick={() => finalizar(op.id)}>
-                        <Square size={20} strokeWidth={2.6} /> FINALIZAR OPERAÇÃO
-                      </button>
+                      <>
+                        {/* Volume realizado — campo separado do planejado de
+                            propósito: o planejado alimenta a meta e não pode ser
+                            reescrito no fim, senão a operação passaria a ser
+                            julgada contra um alvo que nunca existiu. */}
+                        <div style={{ marginBottom: 4 }}>
+                          <label style={styles.fieldLabel}>
+                            <Boxes size={12} style={{ verticalAlign: -2 }} />{" "}
+                            Volumes {op.direcao === "expedicao" ? "embarcados" : "recebidos"} *
+                          </label>
+                          <input type="number" min="1" inputMode="numeric"
+                            style={{ ...styles.input, width: "100%", fontFamily: "'Roboto Mono',monospace",
+                              fontSize: 17, fontWeight: 700, textAlign: "center" }}
+                            placeholder="Digite a quantidade conferida"
+                            value={volReal[op.id] ?? ""}
+                            onChange={e => setVolReal(d => ({ ...d, [op.id]: e.target.value }))} />
+                          {(() => {
+                            const vr = parseInt(volReal[op.id], 10);
+                            if (!vr || !op.volume) return null;
+                            const dif = vr - op.volume;
+                            if (dif === 0) return (
+                              <div style={{ fontSize: 11.5, color: C.verde, fontWeight: 700, marginTop: 5 }}>
+                                ✓ Confere com o programado
+                              </div>
+                            );
+                            const pct = (dif / op.volume) * 100;
+                            return (
+                              <div style={{ fontSize: 11.5, color: C.laranjaEsc, fontWeight: 700, marginTop: 5 }}>
+                                {dif > 0 ? "+" : ""}{dif.toLocaleString("pt-BR")} un
+                                {" "}({pct > 0 ? "+" : ""}{pct.toFixed(1)}%) vs programado
+                                {Math.abs(pct) >= 5 && " — descreva o motivo na observação"}
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        <CapturaFotos
+                          fotos={fotosFim[op.id] || []}
+                          setFotos={(f) => setFotosFim(d => ({ ...d, [op.id]: f }))}
+                          max={FOTOS_FIM_MAX} min={FOTOS_FIM_MIN}
+                          titulo={`Fotos de fechamento (${FOTOS_FIM_MIN} a ${FOTOS_FIM_MAX})`}
+                          ajuda="Registre a carga finalizada: estufagem, lacre aplicado ou área liberada." />
+
+                        {(() => {
+                          const vr = parseInt(volReal[op.id], 10);
+                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= FOTOS_FIM_MIN;
+                          const gravando = salvando === op.id;
+                          return (
+                            <button
+                              disabled={!prontoFim || gravando}
+                              style={{
+                                ...styles.btnBig, marginTop: 12,
+                                background: prontoFim ? C.navy : C.prataClaro,
+                                cursor: gravando ? "wait" : prontoFim ? "pointer" : "not-allowed"
+                              }}
+                              onClick={() => finalizar(op.id)}>
+                              <Square size={20} strokeWidth={2.6} />
+                              {gravando ? "ENVIANDO FOTOS…" : "FINALIZAR OPERAÇÃO"}
+                            </button>
+                          );
+                        })()}
+                      </>
                     ) : (
                       <div style={{ ...styles.btnBig, background: C.bgLeve, color: C.prata,
                         border: `1px dashed ${C.prataClaro}`, cursor: "default", flexDirection: "column", gap: 3,
@@ -867,6 +1325,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
     { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
     { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
     { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
+    { id: "fotos", label: "Fotos", sub: "Evidências · 5 dias", icon: Images },
     { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
     { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
     { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
@@ -898,7 +1357,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
       </header>
       <div style={styles.accentBar} />
 
-      <nav style={styles.tabNav}>
+      <nav className="scroll-x" onWheel={rolarNaHorizontal} style={styles.tabNav}>
         {TABS.map(t => {
           const Ic = t.icon, active = tab === t.id;
           return (
@@ -917,6 +1376,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} />}
         {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} />}
+        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
@@ -2018,6 +2478,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
       tipoId: op.tipoId || "",
       direcao: op.direcao || "",
       volume: op.volume ?? "",
+      volumeReal: op.volumeReal ?? "",
       qtdTerceirizada: op.qtdTerceirizada ?? "",
       qtdPessoasSuperior: op.qtdPessoasSuperior ?? "",
       qtdSuperior: op.qtdSuperior ?? "",
@@ -2073,7 +2534,8 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
         + (draft.cliente.trim() && draft.cliente.trim() !== op.cliente ? " (cliente alterado)" : "")
         + (draft.tipoId && draft.tipoId !== op.tipoId ? " (tipo alterado)" : "")
         + (draft.direcao && draft.direcao !== op.direcao ? " (direção alterada)" : "")
-        + (String(draft.volume) !== String(op.volume ?? "") ? " (volume alterado)" : "")
+        + (String(draft.volume) !== String(op.volume ?? "") ? " (volume programado alterado)" : "")
+        + (String(draft.volumeReal) !== String(op.volumeReal ?? "") ? " (volume realizado alterado)" : "")
         + (draft.status === "cancelada" ? ` · cancelada (${draft.motivoCancelamento === "cliente" ? "Cliente" : "Superior"})` : "")
     };
     /* Se o gestor encerrou uma operação que o conferente deixou aberta,
@@ -2088,6 +2550,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
       tipoId: draft.tipoId || o.tipoId,
       direcao: draft.direcao || o.direcao,
       volume: draft.volume !== "" ? parseInt(draft.volume, 10) : o.volume,
+      volumeReal: draft.volumeReal !== "" ? parseInt(draft.volumeReal, 10) : null,
       qtdTerceirizada: draft.qtdTerceirizada !== "" ? parseInt(draft.qtdTerceirizada, 10) : o.qtdTerceirizada,
       qtdPessoasSuperior: draft.qtdPessoasSuperior !== "" ? parseInt(draft.qtdPessoasSuperior, 10) : o.qtdPessoasSuperior,
       qtdSuperior: draft.qtdSuperior !== "" ? parseInt(draft.qtdSuperior, 10) : o.qtdSuperior,
@@ -2288,9 +2751,34 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                           ))}
                         </div>
                       </Field>
-                      <Field label="Volume (unidades)">
+                      <Field label="Volume PROGRAMADO (unidades)">
                         <input type="number" min="0" style={styles.input} value={draft.volume}
                           onChange={e => setDraft(d => ({ ...d, volume: e.target.value }))} />
+                      </Field>
+                      {/* Realizado: o que o conferente contou no fechamento.
+                          Fica em branco enquanto a operação não fecha. O gestor
+                          só mexe aqui para corrigir uma contagem errada. */}
+                      <Field label="Volume REALIZADO (contado)">
+                        <input type="number" min="0" style={styles.input} value={draft.volumeReal}
+                          placeholder="Informado pelo conferente"
+                          onChange={e => setDraft(d => ({ ...d, volumeReal: e.target.value }))} />
+                        {(() => {
+                          const vp = parseInt(draft.volume, 10);
+                          const vr = parseInt(draft.volumeReal, 10);
+                          if (!vp || !vr) return null;
+                          const dif = vr - vp;
+                          if (dif === 0) return (
+                            <div style={{ fontSize: 11, color: C.verde, fontWeight: 700, marginTop: 4 }}>
+                              Confere com o programado
+                            </div>
+                          );
+                          return (
+                            <div style={{ fontSize: 11, color: C.laranjaEsc, fontWeight: 700, marginTop: 4 }}>
+                              {dif > 0 ? "+" : ""}{dif.toLocaleString("pt-BR")} un
+                              {" "}({((dif / vp) * 100).toFixed(1)}%) vs programado
+                            </div>
+                          );
+                        })()}
                       </Field>
                       {params.tipos.find(tp => tp.id === draft.tipoId)?.modalidade !== "paletizado" && (
                         <>
@@ -2432,6 +2920,23 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
    ============================================================ */
 function Dashboard({ ops, params, now, diasTerc }) {
   const [diaSel, setDiaSel] = useState(null);
+  /* índice leve das fotos — só metadados, para saber quais operações
+     têm evidência e habilitar o clique. As imagens só descem quando
+     o gestor abre o visualizador. */
+  const [idxFotos, setIdxFotos] = useState([]);
+  const [fotoAberta, setFotoAberta] = useState(null);
+
+  useEffect(() => {
+    let vivo = true;
+    lerIndiceFotos().then(r => { if (vivo) setIdxFotos(r); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [ops.length]);
+
+  const fotosPorOp = useMemo(() => {
+    const m = {};
+    idxFotos.forEach(r => { m[r.opId] = r; });
+    return m;
+  }, [idxFotos]);
   /* drill-down dos gráficos de Evolução Diária: clicar numa coluna ou ponto
      abre o detalhe das operações daquele dia específico */
   const [diaEvolucao, setDiaEvolucao] = useState(null);
@@ -2709,9 +3214,19 @@ function Dashboard({ ops, params, now, diasTerc }) {
         </div>
       ) : (
         <div style={styles.opCardGrid}>
-          {realizadasHoje.map(({ op, c }) => <CardOpFeita key={op.id} op={op} c={c} />)}
+          {realizadasHoje.map(({ op, c }) => {
+            const reg = fotosPorOp[op.id];
+            const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
+            return (
+              <CardOpFeita key={op.id} op={op} c={c}
+                temFotos={n > 0 ? n : null}
+                onVerFotos={() => setFotoAberta(reg)} />
+            );
+          })}
         </div>
       )}
+
+      {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
 
       {diaSel && (
         <div style={{
@@ -3016,6 +3531,471 @@ function Dashboard({ ops, params, now, diasTerc }) {
 }
 
 
+/* ============================================================
+   GESTOR — ABA: GALERIA DE FOTOS
+   Evidência fotográfica das operações, com retenção de 5 dias.
+   Dois caminhos chegam aqui: esta aba e o clique numa operação
+   concluída no Dashboard — os dois abrem o mesmo visualizador.
+   ============================================================ */
+
+/* Visualizador de uma operação: baixa as imagens só quando aberto,
+   para a lista da galeria continuar leve. */
+function VisorFotos({ reg, onFechar }) {
+  const [pacote, setPacote] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [zoom, setZoom] = useState(null);
+  const [falhou, setFalhou] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCarregando(true); setFalhou(false);
+      try {
+        const p = await lerFotosDaOperacao(reg.opId);
+        if (vivo) setPacote(p);
+      } catch (e) {
+        if (vivo) setFalhou(true);
+      } finally { if (vivo) setCarregando(false); }
+    })();
+    return () => { vivo = false; };
+  }, [reg.opId]);
+
+  const todas = pacote
+    ? [...pacote.inicio.map((f, i) => ({ ...f, momento: "inicio", seq: i + 1 })),
+       ...pacote.fim.map((f, i) => ({ ...f, momento: "fim", seq: i + 1 }))]
+    : [];
+
+  const baixarTodas = () => {
+    todas.forEach((f, i) => {
+      setTimeout(() => baixarDataUrl(f.d, nomeArquivoFoto(reg, f.momento, f.seq)), i * 350);
+    });
+  };
+
+  /* Compartilhamento nativo do celular (WhatsApp, e-mail). Só aparece
+     onde o navegador suporta arquivos — no desktop fica oculto. */
+  const podeCompartilhar = typeof navigator !== "undefined" &&
+    navigator.share && navigator.canShare;
+
+  const compartilhar = async () => {
+    try {
+      const arquivos = await Promise.all(todas.map(async (f) => {
+        const blob = await (await fetch(f.d)).blob();
+        return new File([blob], nomeArquivoFoto(reg, f.momento, f.seq), { type: "image/jpeg" });
+      }));
+      if (navigator.canShare({ files: arquivos })) {
+        await navigator.share({
+          files: arquivos,
+          title: `Evidência ${reg.ref}`,
+          text: `${reg.ref} · ${reg.cliente} · ${fmtDT(reg.tsInicio)}`
+        });
+      }
+    } catch (e) { /* usuário cancelou — nada a fazer */ }
+  };
+
+  const dias = diasParaExpirar(reg.expiraEm);
+
+  return (
+    <>
+      <div style={{
+        position: "fixed", inset: 0, background: "rgba(15,23,42,.6)", zIndex: 2000,
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 16
+      }} onClick={onFechar}>
+        <div style={{
+          background: C.branco, borderRadius: 12, maxWidth: 780, width: "100%",
+          maxHeight: "88vh", overflow: "auto", boxShadow: "0 10px 40px rgba(0,0,0,.3)"
+        }} onClick={e => e.stopPropagation()}>
+
+          <div style={{
+            background: C.navy, color: C.branco, padding: "16px 20px",
+            borderRadius: "12px 12px 0 0", position: "sticky", top: 0, zIndex: 2
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <div>
+                <div style={{
+                  fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17,
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap"
+                }}>
+                  <Camera size={17} /> {reg.ref}
+                  <DirTag dir={reg.direcao} />
+                </div>
+                <div style={{ fontSize: 12.5, color: C.prataClaro, marginTop: 3 }}>
+                  {reg.cliente}
+                  {reg.doca && ` · Doca ${reg.doca}`}
+                  {reg.conferenteInicio && ` · ${reg.conferenteInicio}`}
+                </div>
+              </div>
+              <button onClick={onFechar} style={{
+                border: "none", background: "rgba(255,255,255,.15)", color: C.branco,
+                borderRadius: 6, width: 30, height: 30, fontSize: 19, lineHeight: 1,
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
+              }}>×</button>
+            </div>
+          </div>
+          <div style={{ height: 3, background: C.laranja }} />
+
+          <div style={{ padding: "16px 20px 20px" }}>
+            <div style={{
+              display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, fontSize: 11.5
+            }}>
+              <span style={styles.infoChip}><Clock size={12} /> Início {fmtDT(reg.tsInicio)}</span>
+              {reg.tsFim && <span style={styles.infoChip}><CheckCircle2 size={12} /> Fim {fmtDT(reg.tsFim)}</span>}
+              {reg.volume ? <span style={styles.infoChip}>Programado {reg.volume.toLocaleString("pt-BR")} un</span> : null}
+              {reg.volumeReal ? <span style={{ ...styles.infoChip, borderColor: C.verde, color: C.verde }}>
+                Realizado {reg.volumeReal.toLocaleString("pt-BR")} un
+              </span> : null}
+              <span style={{
+                ...styles.pill,
+                background: dias <= 1 ? "#FFEBEE" : "#FFF4EB",
+                color: dias <= 1 ? C.vermelho : C.laranjaEsc
+              }}>
+                <Timer size={11} /> {dias === 0 ? "Expira hoje" : `Expira em ${dias} dia${dias > 1 ? "s" : ""}`}
+              </span>
+            </div>
+
+            {carregando ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: C.prata, fontSize: 13.5 }}>
+                <RefreshCw size={22} style={{ animation: "spin 1s linear infinite" }} />
+                <div style={{ marginTop: 8 }}>Carregando fotos…</div>
+              </div>
+            ) : falhou ? (
+              <EmptyState text="Não foi possível carregar as fotos. Verifique a conexão e tente de novo." />
+            ) : todas.length === 0 ? (
+              <EmptyState text="As fotos desta operação já foram removidas pela retenção." />
+            ) : (
+              <>
+                {["inicio", "fim"].map(momento => {
+                  const grupo = todas.filter(f => f.momento === momento);
+                  if (grupo.length === 0) return null;
+                  return (
+                    <div key={momento} style={{ marginBottom: 18 }}>
+                      <div style={{
+                        fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
+                        color: momento === "inicio" ? C.laranjaEsc : C.verde,
+                        textTransform: "uppercase", letterSpacing: .5, marginBottom: 8,
+                        display: "flex", alignItems: "center", gap: 6
+                      }}>
+                        {momento === "inicio" ? <Play size={13} /> : <Square size={13} />}
+                        {momento === "inicio" ? "Abertura da operação" : "Fechamento da operação"}
+                        <span style={{ color: C.prata, fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>
+                          {fmtDT(grupo[0].ts)}
+                        </span>
+                      </div>
+                      <div style={{
+                        display: "grid", gap: 10,
+                        gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))"
+                      }}>
+                        {grupo.map((f, i) => (
+                          <div key={i} style={{
+                            border: `1px solid ${C.prataClaro}`, borderRadius: 9, overflow: "hidden",
+                            background: C.bgLeve
+                          }}>
+                            <img src={f.d} alt={`${momento} ${f.seq}`}
+                              onClick={() => setZoom(f)}
+                              style={{ width: "100%", display: "block", cursor: "zoom-in", aspectRatio: "4/3", objectFit: "cover" }} />
+                            <button onClick={() => baixarDataUrl(f.d, nomeArquivoFoto(reg, f.momento, f.seq))}
+                              style={{
+                                width: "100%", border: "none", borderTop: `1px solid ${C.prataClaro}`,
+                                background: C.branco, color: C.navy2, padding: "8px",
+                                fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
+                                cursor: "pointer", display: "flex", alignItems: "center",
+                                justifyContent: "center", gap: 5
+                              }}>
+                              <Download size={13} /> Baixar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 4 }}>
+                  <button onClick={baixarTodas} style={{ ...styles.btnPrimary, flex: "1 1 190px" }}>
+                    <Download size={15} /> Baixar todas ({todas.length})
+                  </button>
+                  {podeCompartilhar && (
+                    <button onClick={compartilhar} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
+                      <Share2 size={15} /> Enviar ao cliente
+                    </button>
+                  )}
+                  <button onClick={() => abrirDossieFotos(reg, pacote)} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
+                    <FileText size={15} /> Relatório em PDF
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {zoom && (
+        <div onClick={() => setZoom(null)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,.9)", zIndex: 3000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 12, cursor: "zoom-out"
+        }}>
+          <img src={zoom.d} alt="Ampliada" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+        </div>
+      )}
+    </>
+  );
+}
+
+/* Dossiê imprimível — abre uma janela pronta para "Salvar como PDF".
+   É o formato que o gestor encaminha ao cliente sem precisar montar
+   e-mail com anexos soltos. */
+function abrirDossieFotos(reg, pacote) {
+  if (!pacote) return;
+  const bloco = (titulo, lista, cor) => {
+    if (!lista || lista.length === 0) return "";
+    return `
+      <h2 style="font-family:Montserrat,Arial,sans-serif;font-size:13px;text-transform:uppercase;
+        letter-spacing:.5px;color:${cor};margin:22px 0 10px;padding-bottom:6px;
+        border-bottom:2px solid ${cor}">${titulo} — ${new Date(lista[0].ts).toLocaleString("pt-BR")}</h2>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        ${lista.map((f, i) => `
+          <figure style="margin:0;flex:1 1 300px;max-width:340px">
+            <img src="${f.d}" style="width:100%;border:1px solid #C5CDD8;border-radius:6px;display:block" />
+            <figcaption style="font-family:Arial,sans-serif;font-size:10px;color:#8A9BB0;margin-top:5px">
+              Foto ${i + 1} · ${new Date(f.ts).toLocaleString("pt-BR")}${f.por ? ` · ${f.por}` : ""}
+            </figcaption>
+          </figure>`).join("")}
+      </div>`;
+  };
+
+  const linha = (rot, val) => val
+    ? `<tr><td style="padding:5px 14px 5px 0;color:#8A9BB0;font-size:11px;white-space:nowrap">${rot}</td>
+         <td style="padding:5px 0;color:#1A2B3C;font-size:12px;font-weight:600">${val}</td></tr>`
+    : "";
+
+  const dif = (reg.volumeReal != null && reg.volume)
+    ? reg.volumeReal - reg.volume : null;
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8" />
+<title>Evidência ${reg.ref} — Superior Transportes</title>
+<style>@media print{.noprint{display:none}} body{margin:0;background:#F7F9FB}</style></head>
+<body>
+<div style="max-width:900px;margin:0 auto;background:#fff;padding:26px 30px 40px">
+  <div class="noprint" style="text-align:right;margin-bottom:14px">
+    <button onclick="window.print()" style="background:#FF6B00;color:#fff;border:none;
+      padding:10px 20px;border-radius:6px;font-family:Montserrat,Arial,sans-serif;
+      font-weight:700;font-size:13px;cursor:pointer">Salvar como PDF</button>
+  </div>
+  <div style="border-bottom:3px solid #FF6B00;padding-bottom:14px;margin-bottom:18px">
+    <div style="font-family:Montserrat,Arial,sans-serif;font-size:20px;font-weight:800;color:#1E3A5F">
+      Evidência Fotográfica da Operação
+    </div>
+    <div style="font-family:Arial,sans-serif;font-size:12px;color:#8A9BB0;margin-top:4px">
+      Superior Transportes · Emitido em ${new Date().toLocaleString("pt-BR")}
+    </div>
+  </div>
+  <table style="font-family:Arial,sans-serif;border-collapse:collapse;margin-bottom:6px">
+    ${linha("Referência", reg.ref)}
+    ${linha("Cliente", reg.cliente)}
+    ${linha("Operação", reg.direcao === "expedicao" ? "Expedição" : "Recebimento")}
+    ${linha("Doca", reg.doca)}
+    ${linha("Conferente", reg.conferenteInicio)}
+    ${linha("Início", reg.tsInicio ? new Date(reg.tsInicio).toLocaleString("pt-BR") : null)}
+    ${linha("Término", reg.tsFim ? new Date(reg.tsFim).toLocaleString("pt-BR") : null)}
+    ${linha("Volumes programados", reg.volume != null ? reg.volume.toLocaleString("pt-BR") : null)}
+    ${linha("Volumes conferidos", reg.volumeReal != null ? reg.volumeReal.toLocaleString("pt-BR") : null)}
+    ${dif != null && dif !== 0
+      ? linha("Divergência", `${dif > 0 ? "+" : ""}${dif.toLocaleString("pt-BR")} un`)
+      : (dif === 0 ? linha("Divergência", "Nenhuma — confere com o programado") : "")}
+  </table>
+  ${bloco("Abertura da operação", pacote.inicio, "#B5560A")}
+  ${bloco("Fechamento da operação", pacote.fim, "#2E7D32")}
+  <div style="margin-top:34px;padding-top:14px;border-top:1px solid #C5CDD8;
+    font-family:Arial,sans-serif;font-size:10px;color:#8A9BB0">
+    Documento gerado automaticamente pelo Monitor Operacional · SBS Solution — Lean Manufacturing &amp; Logística
+  </div>
+</div></body></html>`;
+
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+function GaleriaFotos({ ops, params }) {
+  const [idx, setIdx] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [aberta, setAberta] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [cliFiltro, setCliFiltro] = useState("");
+  const [limpeza, setLimpeza] = useState(0);
+
+  const recarregar = useCallback(async () => {
+    setCarregando(true);
+    try {
+      /* a limpeza roda junto com a leitura: é o único gancho confiável
+         num app sem servidor próprio */
+      const { idx: atual, removidos } = await limparFotosExpiradas();
+      setIdx(atual);
+      setLimpeza(removidos);
+    } catch (e) {
+      console.error(e);
+      setIdx(await lerIndiceFotos());
+    } finally { setCarregando(false); }
+  }, []);
+
+  useEffect(() => { recarregar(); }, [recarregar]);
+
+  const clientes = useMemo(
+    () => Array.from(new Set(idx.map(r => r.cliente).filter(Boolean))).sort(),
+    [idx]);
+
+  const filtrado = useMemo(() => {
+    const q = busca.trim().toLowerCase();
+    return idx
+      .filter(r => !cliFiltro || r.cliente === cliFiltro)
+      .filter(r => !q ||
+        String(r.ref || "").toLowerCase().includes(q) ||
+        String(r.cliente || "").toLowerCase().includes(q))
+      .sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+  }, [idx, busca, cliFiltro]);
+
+  /* agrupa por dia para o gestor localizar pela data, que é como o
+     cliente costuma pedir ("me manda as fotos de terça") */
+  const porDia = useMemo(() => {
+    const m = {};
+    filtrado.forEach(r => {
+      const d = inicioDoDia(r.criadoEm || Date.now());
+      (m[d] = m[d] || []).push(r);
+    });
+    return Object.entries(m)
+      .map(([ts, lista]) => ({ ts: Number(ts), lista }))
+      .sort((a, b) => b.ts - a.ts);
+  }, [filtrado]);
+
+  const totalFotos = idx.reduce((s, r) => s + (r.nIni || 0) + (r.nFim || 0), 0);
+
+  return (
+    <div>
+      <SectionTitle icon={Images}>
+        Galeria de Fotos <Badge>{plOp(idx.length)}</Badge>
+        {totalFotos > 0 && (
+          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
+            {totalFotos} fotos
+          </span>
+        )}
+      </SectionTitle>
+
+      <div style={{ ...styles.infoBox, marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 9 }}>
+        <Timer size={16} color={C.laranjaEsc} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div>
+          As fotos ficam disponíveis por <strong>{RETENCAO_DIAS} dias</strong> e depois são
+          excluídas automaticamente para não ocupar espaço. Se o cliente pedir uma
+          evidência antiga, ela não existirá mais — baixe ou gere o PDF antes do prazo.
+          {limpeza > 0 && (
+            <span style={{ color: C.laranjaEsc, fontWeight: 700 }}>
+              {" "}({limpeza} {limpeza === 1 ? "operação vencida foi removida" : "operações vencidas foram removidas"} agora)
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px" }}>
+          <Search size={15} color={C.prata} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={e => setBusca(e.target.value)}
+            placeholder="Buscar por NF/pedido ou cliente…"
+            style={{ ...styles.input, width: "100%", paddingLeft: 33 }} />
+        </div>
+        <select value={cliFiltro} onChange={e => setCliFiltro(e.target.value)}
+          style={{ ...styles.input, flex: "0 1 190px" }}>
+          <option value="">Todos os clientes</option>
+          {clientes.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <button onClick={recarregar} style={styles.btnGhost}>
+          <RefreshCw size={15} style={{ animation: carregando ? "spin 1s linear infinite" : "none" }} /> Atualizar
+        </button>
+      </div>
+
+      {carregando ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: C.prata, fontSize: 13.5 }}>
+          <RefreshCw size={22} style={{ animation: "spin 1s linear infinite" }} />
+          <div style={{ marginTop: 8 }}>Carregando galeria…</div>
+        </div>
+      ) : porDia.length === 0 ? (
+        <EmptyState text={idx.length === 0
+          ? "Nenhuma foto registrada ainda. As fotos aparecem aqui assim que os conferentes iniciarem operações."
+          : "Nenhum registro corresponde ao filtro."} />
+      ) : (
+        porDia.map(({ ts, lista }) => (
+          <div key={ts} style={{ marginBottom: 22 }}>
+            <div style={{
+              fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5,
+              color: C.navy, textTransform: "uppercase", letterSpacing: .4,
+              paddingBottom: 7, marginBottom: 11, borderBottom: `2px solid ${C.prataClaro}`,
+              display: "flex", alignItems: "center", gap: 8
+            }}>
+              <Calendar size={14} />
+              {ehHoje(ts) ? "Hoje" : new Date(ts).toLocaleDateString("pt-BR", {
+                weekday: "long", day: "2-digit", month: "long"
+              })}
+              <span style={{ color: C.prata, fontWeight: 500, textTransform: "none" }}>
+                · {plOp(lista.length)}
+              </span>
+            </div>
+
+            <div style={{ display: "grid", gap: 11, gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))" }}>
+              {lista.map(reg => {
+                const dias = diasParaExpirar(reg.expiraEm);
+                const urgente = dias <= 1;
+                const nf = (reg.nIni || 0) + (reg.nFim || 0);
+                const semFecho = !reg.tsFim;
+                return (
+                  <button key={reg.opId} onClick={() => setAberta(reg)} style={{
+                    textAlign: "left", background: C.branco, cursor: "pointer",
+                    border: `1px solid ${urgente ? C.laranja : C.prataClaro}`,
+                    borderTop: `4px solid ${semFecho ? C.laranja : C.verde}`,
+                    borderRadius: 10, padding: "12px 13px", font: "inherit",
+                    boxShadow: "0 2px 8px rgba(30,58,95,.05)", width: "100%"
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{
+                          fontFamily: "'Montserrat',sans-serif", fontWeight: 800,
+                          fontSize: 14.5, color: C.navy, overflow: "hidden", textOverflow: "ellipsis"
+                        }}>{reg.ref}</div>
+                        <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{reg.cliente}</div>
+                      </div>
+                      <DirTag dir={reg.direcao} />
+                    </div>
+
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 9, fontSize: 11, color: C.prata }}>
+                      <span style={styles.infoChip}><Camera size={11} /> {nf} fotos</span>
+                      {reg.doca && <span style={styles.infoChip}>Doca {reg.doca}</span>}
+                      {reg.volumeReal != null && (
+                        <span style={styles.infoChip}>{reg.volumeReal.toLocaleString("pt-BR")} un</span>
+                      )}
+                    </div>
+
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      marginTop: 10, paddingTop: 9, borderTop: `1px solid ${C.prataClaro}`
+                    }}>
+                      <span style={{ fontSize: 11, color: C.prata }}>
+                        {hora(reg.tsInicio)}{reg.tsFim ? ` → ${hora(reg.tsFim)}` : " · em aberto"}
+                      </span>
+                      <span style={{
+                        ...styles.pill, background: urgente ? "#FFEBEE" : "#F1F8F2",
+                        color: urgente ? C.vermelho : C.verde
+                      }}>
+                        {dias === 0 ? "expira hoje" : `${dias}d`}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))
+      )}
+
+      {aberta && <VisorFotos reg={aberta} onFechar={() => setAberta(null)} />}
+    </div>
+  );
+}
+
 function Relatorios({ ops, params, diasTerc }) {
   const hoje = new Date();
   const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
@@ -3261,13 +4241,17 @@ function Relatorios({ ops, params, diasTerc }) {
     XLSX.utils.book_append_sheet(wb, ws1, "Consolidado Diretoria");
 
     /* Aba 2 — Operações */
-    const s2 = [["Data Início", "Data Fim", "ID Superior", "ID Cliente", "Cliente", "Tipo", "Direção", "Volume (un)",
+    const s2 = [["Data Início", "Data Fim", "ID Superior", "ID Cliente", "Cliente", "Tipo", "Direção",
+      "Volume Programado (un)", "Volume Realizado (un)", "Divergência (un)", "Divergência (%)",
       "Pessoas Terc.", "Qtd. Bônus", "Colaboradores Superior", "Tempo Real (h)", "Meta (h)", "Desvio (h)",
       "Cumpriu Meta", "Conferente", "Referência 100% Terc. (R$)", "Custo Terceirizada (R$)", "Bônus Rateado (R$)",
       "Custo Real (R$)", "Economia (R$)", "Economia (%)", "Observação"]];
     dados.forEach(({ op, c }) => s2.push([
       fmtDT(op.inicio), fmtDT(op.fim), op.ref, op.idCliente || "", op.cliente, c.tipo?.label || "",
       op.direcao === "recebimento" ? "Recebimento" : "Expedição", op.volume || 0,
+      op.volumeReal != null ? op.volumeReal : "",
+      c.divergenciaVol != null ? c.divergenciaVol : "",
+      c.divergenciaPct != null ? +c.divergenciaPct.toFixed(2) : "",
       op.qtdTerceirizada || 0, op.qtdSuperior || 0, (c.nomeados || []).join(", ") || "—",
       +(c.tempoReal || 0).toFixed(2), c.metaHoras, +((c.tempoReal || 0) - c.metaHoras).toFixed(2),
       c.cumpriuMeta ? "SIM" : "NÃO",
@@ -3278,7 +4262,8 @@ function Relatorios({ ops, params, diasTerc }) {
       op.observacao || ""
     ]));
     const ws2 = XLSX.utils.aoa_to_sheet(s2);
-    ws2["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 13 }, { wch: 11 },
+    ws2["!cols"] = [{ wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 13 },
+      { wch: 20 }, { wch: 19 }, { wch: 15 }, { wch: 15 },
       { wch: 13 }, { wch: 15 }, { wch: 24 }, { wch: 13 }, { wch: 10 }, { wch: 11 }, { wch: 13 },
       { wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 18 }, { wch: 16 }, { wch: 15 }, { wch: 13 }, { wch: 44 }];
     XLSX.utils.book_append_sheet(wb, ws2, "Operações");
@@ -5379,6 +6364,7 @@ function FontInject() {
     ::-webkit-scrollbar-thumb { background: ${C.prataClaro}; border-radius: 8px; }
     .scroll-x { scrollbar-color: ${C.prata} #E9EDF2; scrollbar-width: auto; }
     .scroll-x::-webkit-scrollbar { height: 12px; }
+    nav.scroll-x::-webkit-scrollbar { height: 6px; }
     .scroll-x::-webkit-scrollbar-track { background: #E9EDF2; border-radius: 8px; }
     .scroll-x::-webkit-scrollbar-thumb { background: ${C.prata}; border-radius: 8px; border: 2px solid #E9EDF2; }
     .scroll-x::-webkit-scrollbar-thumb:hover { background: ${C.navy2}; }
@@ -5639,10 +6625,13 @@ function CardOpAgora({ op, c, el, st }) {
 }
 
 /* ---------- card compacto: operação concluída hoje ---------- */
-function CardOpFeita({ op, c }) {
+function CardOpFeita({ op, c, temFotos, onVerFotos }) {
   const naMeta = c.cumpriuMeta === true;
   const cor = naMeta ? C.verde : C.vermelho;
   const dif = c.tempoReal != null ? c.tempoReal - c.metaHoras : null;
+  /* divergência entre o que o gestor programou e o que o conferente contou */
+  const divergencia = (op.volumeReal != null && op.volume)
+    ? op.volumeReal - op.volume : null;
   return (
     <div style={{ background: naMeta ? "#F6FBF7" : "#FFF9F9", border: `1px solid ${C.prataClaro}`,
       borderLeft: `4px solid ${cor}`, borderRadius: 9, padding: "11px 12px" }}>
@@ -5658,8 +6647,14 @@ function CardOpFeita({ op, c }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, fontSize: 11, flexWrap: "wrap" }}>
         <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 12, color: C.navy }}>
-          {(op.volume || 0).toLocaleString("pt-BR")} un
+          {(op.volumeReal ?? op.volume ?? 0).toLocaleString("pt-BR")} un
         </strong>
+        {divergencia != null && divergencia !== 0 && (
+          <span style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 10.5, fontWeight: 700,
+            color: C.laranjaEsc }}>
+            ({divergencia > 0 ? "+" : ""}{divergencia.toLocaleString("pt-BR")})
+          </span>
+        )}
         <span style={{ color: C.prataClaro }}>·</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: C.prata }}>
           <Clock size={11} strokeWidth={2.4} /> {hora(op.inicio)} → {hora(op.fim)}
@@ -5681,6 +6676,16 @@ function CardOpFeita({ op, c }) {
           ? <><CheckCircle2 size={11} /> Na meta ({hhmm(c.metaHoras)}){c.bonusPago > 0 ? " · com bônus" : ""}</>
           : <><AlertTriangle size={11} /> Fora da meta ({hhmm(c.metaHoras)}) · +{hhmm(dif)}</>}
       </div>
+      {temFotos && (
+        <button onClick={onVerFotos} style={{
+          width: "100%", marginTop: 8, padding: "8px 10px", borderRadius: 7,
+          border: `1.5px solid ${C.navy2}`, background: C.branco, color: C.navy2,
+          fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+        }}>
+          <Camera size={13} strokeWidth={2.4} /> Ver fotos ({temFotos})
+        </button>
+      )}
     </div>
   );
 }
@@ -5740,7 +6745,7 @@ const styles = {
   logoWrap: { borderRadius: 12, overflow: "hidden", padding: "6px 8px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: C.branco },
   accentBar: { height: 6, background: `linear-gradient(90deg, ${C.laranja} 0%, ${C.navy} 100%)` },
   tabNav: { display: "flex", gap: 4, padding: "0 16px", background: C.branco, borderBottom: `1px solid ${C.prataClaro}`, overflowX: "auto" },
-  tabBtn: { display: "flex", alignItems: "center", gap: 9, padding: "13px 16px", border: "none", background: "transparent", color: C.prata, cursor: "pointer", borderBottom: "3px solid transparent", fontFamily: "'Montserrat',sans-serif", whiteSpace: "nowrap" },
+  tabBtn: { display: "flex", alignItems: "center", gap: 8, padding: "13px 13px", border: "none", background: "transparent", color: C.prata, cursor: "pointer", borderBottom: "3px solid transparent", fontFamily: "'Montserrat',sans-serif", whiteSpace: "nowrap" },
   tabBtnActive: { color: C.navy, borderBottomColor: C.laranja },
   main: { padding: "22px 26px", maxWidth: 1220, margin: "0 auto" },
   secTitle: { fontFamily: "'Montserrat',sans-serif", fontSize: 18, fontWeight: 800, color: C.navy, borderLeft: `5px solid ${C.navy}`, paddingLeft: 12, margin: "26px 0 14px", display: "flex", alignItems: "center", gap: 9, lineHeight: 1.3 },
