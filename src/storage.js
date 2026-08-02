@@ -1,10 +1,11 @@
 /* ============================================================
    CAMADA DE DADOS — SBS Solution / CD Superior Transportes
-   ...
+   v2 — acrescenta del() para a limpeza automática das fotos.
+   Nada mais mudou: credenciais e get/set continuam idênticos.
    ============================================================ */
 import { initializeApp } from "firebase/app";
 import {
-  getFirestore, doc, getDoc, setDoc
+  getFirestore, doc, getDoc, setDoc, deleteDoc
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -43,6 +44,19 @@ export const storage = {
       return { key: chave, value: valor };
     } catch (e) {
       console.error("Falha ao gravar no banco:", e);
+      throw e;
+    }
+  },
+
+  /* Remove um documento inteiro. Usado só pela limpeza automática das
+     fotos (retenção de 5 dias). Sem isso, as fotos vencidas continuariam
+     ocupando espaço no Firestore indefinidamente. */
+  async del(chave) {
+    try {
+      await deleteDoc(doc(db, COLECAO, chave));
+      return { key: chave, deleted: true };
+    } catch (e) {
+      console.error("Falha ao excluir do banco:", e);
       throw e;
     }
   }
