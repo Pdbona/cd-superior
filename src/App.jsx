@@ -69,10 +69,29 @@ const PREFIXO_FOTOS = "sbs_sup_fotos_";
 const RETENCAO_DIAS = 5;
 const RETENCAO_MS = RETENCAO_DIAS * 24 * 3600000;
 
-/* Limites de captura */
+/* Limites de captura — valores de fábrica, usados quando o gestor ainda não
+   configurou nada em Parâmetros (ou como piso de segurança do JSON salvo). */
 const FOTOS_INICIO_OBRIGATORIAS = 2;
 const FOTOS_FIM_MIN = 1;
-const FOTOS_FIM_MAX = 2;
+
+/* Teto de fotos por etapa, independente do mínimo definido pelo gestor —
+   existe só para o conferente não anexar fotos sem limite; o gestor não
+   configura isso, só o mínimo. Se o mínimo configurado ultrapassar o teto
+   de fábrica, o teto sobe junto (nunca pode ser menor que o mínimo). */
+const FOTOS_TETO_CAPTURA = 6;
+
+/* Mínimo de fotos por direção (recebimento/expedição) x etapa (início/fim),
+   configurável pelo gestor em Parâmetros. Ver DEFAULT_PARAMS.fotosMin. */
+function minFotosCfg(params, direcao, etapa) {
+  const dir = direcao === "expedicao" ? "expedicao" : "recebimento";
+  const cfg = (params?.fotosMin && params.fotosMin[dir]) || {};
+  const v = cfg[etapa];
+  const base = etapa === "inicio" ? FOTOS_INICIO_OBRIGATORIAS : FOTOS_FIM_MIN;
+  return Number.isFinite(v) && v >= 0 ? v : base;
+}
+function maxFotosCfg(min) {
+  return Math.max(FOTOS_TETO_CAPTURA, min);
+}
 
 /* Compressão: 1.100px no maior lado e qualidade 0,58 dão evidência
    legível de placa, lacre e avaria com ~90 KB por imagem. Se ainda
@@ -261,6 +280,12 @@ const DEFAULT_PARAMS = {
      processo na hora — sem foto — quando o celular/coletor falha em
      campo, sem precisar mexer no código toda vez que isso acontece. */
   exigirFotos: true,
+  /* Mínimo de fotos por direção x etapa. Recebimento e Expedição podem ter
+     exigências diferentes, e início/fim também — ver minFotosCfg(). */
+  fotosMin: {
+    recebimento: { inicio: FOTOS_INICIO_OBRIGATORIAS, fim: FOTOS_FIM_MIN },
+    expedicao: { inicio: FOTOS_INICIO_OBRIGATORIAS, fim: FOTOS_FIM_MIN }
+  },
   /* Motivos de pausa — livremente editáveis pelo gestor na aba Parâmetros.
      Pausar para de contar o tempo da operação (não conta contra a meta/bônus). */
   motivosPausa: ["Almoço", "Jantar", "Café", "Atendimento Diretoria"],
@@ -965,10 +990,11 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 
   /* Com o parâmetro desligado (problema de celular/coletor em campo), os
      mínimos caem a zero — as fotos continuam disponíveis, só deixam de
-     travar o início/fim da operação. */
+     travar o início/fim da operação. O mínimo em si depende da direção
+     (Recebimento/Expedição) da operação, configurado pelo gestor. */
   const exigeFotos = params.exigirFotos !== false;
-  const minFotosIni = exigeFotos ? FOTOS_INICIO_OBRIGATORIAS : 0;
-  const minFotosFim = exigeFotos ? FOTOS_FIM_MIN : 0;
+  const minFotosIni = (op) => exigeFotos ? minFotosCfg(params, op?.direcao, "inicio") : 0;
+  const minFotosFim = (op) => exigeFotos ? minFotosCfg(params, op?.direcao, "fim") : 0;
 
   /* Titularidade: quem iniciou é quem finaliza.
      Sem conferente identificado (nenhum cadastrado ainda), mantém aberto —
@@ -1008,8 +1034,9 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     const doca = docaSel[id];
     if (!doca) return alertar("Selecione a doca antes de iniciar a operação.");
     const fotos = fotosIni[id] || [];
-    if (fotos.length < minFotosIni) {
-      return alertar(`Tire as ${minFotosIni} fotos obrigatórias antes de iniciar.`);
+    const minIni = minFotosIni(alvo);
+    if (fotos.length < minIni) {
+      return alertar(`Tire as ${minIni} fotos obrigatórias antes de iniciar.`);
     }
 
     setSalvando(id);
@@ -1084,8 +1111,9 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
       return alertar("Informe a quantidade de volumes antes de finalizar.");
     }
     const fotos = fotosFim[id] || [];
-    if (fotos.length < minFotosFim) {
-      return alertar(`Tire ao menos ${minFotosFim} foto antes de finalizar.`);
+    const minFim = minFotosFim(alvo);
+    if (fotos.length < minFim) {
+      return alertar(`Tire ao menos ${minFim} foto antes de finalizar.`);
     }
 
     setSalvando(id);
@@ -1262,15 +1290,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         <CapturaFotos
                           fotos={fotosIni[op.id] || []}
                           setFotos={(f) => setFotosIni(d => ({ ...d, [op.id]: f }))}
-                          max={FOTOS_INICIO_OBRIGATORIAS} min={minFotosIni}
+                          max={maxFotosCfg(minFotosIni(op))} min={minFotosIni(op)}
                           titulo={exigeFotos
-                            ? `Fotos de abertura (${FOTOS_INICIO_OBRIGATORIAS} obrigatórias)`
+                            ? `Fotos de abertura (${minFotosIni(op)} obrigatórias)`
                             : "Fotos de abertura (opcional)"}
                           ajuda="Registre o veículo/carga antes de começar: placa, lacre e o estado da mercadoria." />
 
                         {(() => {
                           const prontoIni = docaSel[op.id] &&
-                            (fotosIni[op.id] || []).length >= minFotosIni;
+                            (fotosIni[op.id] || []).length >= minFotosIni(op);
                           const gravando = salvando === op.id;
                           return (
                             <button
@@ -1374,15 +1402,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         <CapturaFotos
                           fotos={fotosFim[op.id] || []}
                           setFotos={(f) => setFotosFim(d => ({ ...d, [op.id]: f }))}
-                          max={FOTOS_FIM_MAX} min={minFotosFim}
+                          max={maxFotosCfg(minFotosFim(op))} min={minFotosFim(op)}
                           titulo={exigeFotos
-                            ? `Fotos de fechamento (${FOTOS_FIM_MIN} a ${FOTOS_FIM_MAX})`
+                            ? `Fotos de fechamento (mínimo ${minFotosFim(op)})`
                             : "Fotos de fechamento (opcional)"}
                           ajuda="Registre a carga finalizada: estufagem, lacre aplicado ou área liberada." />
 
                         {(() => {
                           const vr = parseInt(volReal[op.id], 10);
-                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= minFotosFim;
+                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= minFotosFim(op);
                           const gravando = salvando === op.id;
                           return (
                             <button
@@ -3698,6 +3726,15 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
   const [erroRomaneio, setErroRomaneio] = useState("");
   const [gravando, setGravando] = useState(false);
 
+  /* Edição de fotos pelo gestor: corrige uma foto errada do conferente sem
+     precisar anular a operação. Upload substitui/complementa direto pela
+     tela, e a retenção de RETENCAO_DIAS continua contando a partir da
+     mesma data original (salvarFotos preserva anterior.criadoEm). */
+  const [salvandoMomento, setSalvandoMomento] = useState(null);
+  const [erroFotos, setErroFotos] = useState("");
+  const inputUploadRef = React.useRef(null);
+  const [uploadAlvo, setUploadAlvo] = useState(null); // momento aguardando arquivo
+
   useEffect(() => {
     let vivo = true;
     (async () => {
@@ -3745,6 +3782,67 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
   };
 
   const dias = diasParaExpirar(reg.expiraEm);
+
+  /* Regrava o momento (inicio/fim) inteiro com a lista de dataURLs já
+     resolvida — usa o mesmo salvarFotos() do fluxo do conferente, então
+     índice e retenção continuam consistentes com o resto do app. */
+  const persistirFotos = async (momento, novaLista) => {
+    setSalvandoMomento(momento); setErroFotos("");
+    try {
+      const alvo = op || {
+        id: reg.opId, ref: reg.ref, cliente: reg.cliente,
+        direcao: reg.direcao, tipoId: reg.tipoId, doca: reg.doca
+      };
+      await salvarFotos({ op: alvo, momento, fotos: novaLista, usuario: "Gestor" });
+      setPacote(p => ({
+        ...(p || { inicio: [], fim: [] }),
+        [momento]: novaLista.map((d, i) => ({ d, ts: Date.now(), por: "Gestor", seq: i + 1 }))
+      }));
+    } catch (e) {
+      console.error(e);
+      setErroFotos("Não foi possível salvar as fotos. Verifique o sinal e tente de novo.");
+    } finally {
+      setSalvandoMomento(null);
+    }
+  };
+
+  /* Confirmação em dois cliques (sem dialog nativo, para ficar consistente
+     com o resto do app — nenhuma outra exclusão aqui usa window.confirm).
+     Primeiro clique arma a remoção; um segundo clique na mesma foto, dentro
+     de 3s, efetiva. Qualquer outro clique cancela. */
+  const [armarRemocao, setArmarRemocao] = useState(null); // { momento, seq } | null
+  const removerFoto = (momento, seq) => {
+    if (armarRemocao?.momento === momento && armarRemocao?.seq === seq) {
+      setArmarRemocao(null);
+      const atual = (pacote?.[momento] || []).map(f => f.d);
+      persistirFotos(momento, atual.filter((_, i) => i !== seq - 1));
+    } else {
+      setArmarRemocao({ momento, seq });
+      setTimeout(() => setArmarRemocao(a =>
+        (a?.momento === momento && a?.seq === seq) ? null : a), 3000);
+    }
+  };
+
+  const abrirUpload = (momento) => {
+    setUploadAlvo(momento);
+    if (inputUploadRef.current) { inputUploadRef.current.value = ""; inputUploadRef.current.click(); }
+  };
+
+  const arquivoEscolhido = async (e) => {
+    const arquivos = Array.from(e.target.files || []);
+    const momento = uploadAlvo;
+    if (arquivos.length === 0 || !momento) return;
+    setSalvandoMomento(momento); setErroFotos("");
+    try {
+      const novas = [];
+      for (const f of arquivos) novas.push(await comprimirFoto(f));
+      const atual = (pacote?.[momento] || []).map(f => f.d);
+      await persistirFotos(momento, [...atual, ...novas]);
+    } catch (err) {
+      setErroFotos(err.message || "Não foi possível processar a foto.");
+      setSalvandoMomento(null);
+    }
+  };
 
   /* Grava observação/avaria na operação (se houver persistOps disponível)
      e, na sequência, abre a janela do romaneio pronta para "Salvar como PDF". */
@@ -3833,52 +3931,101 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
               </div>
             ) : falhou ? (
               <EmptyState text="Não foi possível carregar as fotos. Verifique a conexão e tente de novo." />
-            ) : todas.length === 0 ? (
-              <EmptyState text="As fotos desta operação já foram removidas pela retenção." />
             ) : (
               <>
+                <input ref={inputUploadRef} type="file" accept="image/*" multiple
+                  style={{ display: "none" }} onChange={arquivoEscolhido} />
+
+                {erroFotos && (
+                  <div style={styles.erro}><AlertTriangle size={15} /> {erroFotos}</div>
+                )}
+
+                {todas.length === 0 && (
+                  <div style={{ ...styles.infoBox, marginBottom: 14 }}>
+                    Nenhuma foto registrada nesta operação (ou já removidas pela retenção). Use
+                    "Adicionar foto" abaixo se precisar incluir uma evidência.
+                  </div>
+                )}
+
                 {["inicio", "fim"].map(momento => {
                   const grupo = todas.filter(f => f.momento === momento);
-                  if (grupo.length === 0) return null;
+                  const enviando = salvandoMomento === momento;
                   return (
                     <div key={momento} style={{ marginBottom: 18 }}>
                       <div style={{
                         fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
                         color: momento === "inicio" ? C.laranjaEsc : C.verde,
                         textTransform: "uppercase", letterSpacing: .5, marginBottom: 8,
-                        display: "flex", alignItems: "center", gap: 6
+                        display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap"
                       }}>
                         {momento === "inicio" ? <Play size={13} /> : <Square size={13} />}
                         {momento === "inicio" ? "Abertura da operação" : "Fechamento da operação"}
-                        <span style={{ color: C.prata, fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>
-                          {fmtDT(grupo[0].ts)}
-                        </span>
-                      </div>
-                      <div style={{
-                        display: "grid", gap: 10,
-                        gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))"
-                      }}>
-                        {grupo.map((f, i) => (
-                          <div key={i} style={{
-                            border: `1px solid ${C.prataClaro}`, borderRadius: 9, overflow: "hidden",
-                            background: C.bgLeve
+                        {grupo.length > 0 && (
+                          <span style={{ color: C.prata, fontWeight: 500, textTransform: "none", letterSpacing: 0 }}>
+                            {fmtDT(grupo[0].ts)}
+                          </span>
+                        )}
+                        <button onClick={() => abrirUpload(momento)} disabled={enviando}
+                          style={{
+                            marginLeft: "auto", border: `1px solid ${C.prataClaro}`, background: C.branco,
+                            color: C.navy2, borderRadius: 6, padding: "5px 10px", fontSize: 11,
+                            fontFamily: "'Montserrat',sans-serif", fontWeight: 700, textTransform: "none",
+                            letterSpacing: 0, cursor: enviando ? "wait" : "pointer",
+                            display: "flex", alignItems: "center", gap: 5, opacity: enviando ? .6 : 1
                           }}>
-                            <img src={f.d} alt={`${momento} ${f.seq}`}
-                              onClick={() => setZoom(f)}
-                              style={{ width: "100%", display: "block", cursor: "zoom-in", aspectRatio: "4/3", objectFit: "cover" }} />
-                            <button onClick={() => baixarDataUrl(f.d, nomeArquivoFoto(reg, f.momento, f.seq))}
-                              style={{
-                                width: "100%", border: "none", borderTop: `1px solid ${C.prataClaro}`,
-                                background: C.branco, color: C.navy2, padding: "8px",
-                                fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
-                                cursor: "pointer", display: "flex", alignItems: "center",
-                                justifyContent: "center", gap: 5
-                              }}>
-                              <Download size={13} /> Baixar
-                            </button>
-                          </div>
-                        ))}
+                          <Camera size={12} /> {enviando ? "Enviando…" : "Adicionar foto"}
+                        </button>
                       </div>
+
+                      {grupo.length === 0 ? (
+                        <div style={{ fontSize: 12, color: C.prata, fontStyle: "italic" }}>
+                          Nenhuma foto nesta etapa.
+                        </div>
+                      ) : (
+                        <div style={{
+                          display: "grid", gap: 10,
+                          gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))"
+                        }}>
+                          {grupo.map((f, i) => (
+                            <div key={i} style={{
+                              position: "relative", border: `1px solid ${C.prataClaro}`, borderRadius: 9,
+                              overflow: "hidden", background: C.bgLeve
+                            }}>
+                              <img src={f.d} alt={`${momento} ${f.seq}`}
+                                onClick={() => setZoom(f)}
+                                style={{ width: "100%", display: "block", cursor: "zoom-in", aspectRatio: "4/3", objectFit: "cover" }} />
+                              {(() => {
+                                const armada = armarRemocao?.momento === momento && armarRemocao?.seq === f.seq;
+                                return (
+                                  <button onClick={() => removerFoto(momento, f.seq)}
+                                    title={armada ? "Clique de novo para confirmar" : "Remover foto errada"}
+                                    disabled={enviando}
+                                    style={{
+                                      position: "absolute", top: 6, right: 6, height: 26,
+                                      minWidth: 26, borderRadius: armada ? 13 : "50%", border: "none",
+                                      background: C.vermelho, color: C.branco, fontSize: 10.5, fontWeight: 700,
+                                      fontFamily: "'Montserrat',sans-serif", padding: armada ? "0 9px" : 0,
+                                      cursor: enviando ? "wait" : "pointer", display: "flex", alignItems: "center",
+                                      justifyContent: "center", gap: 4, boxShadow: "0 2px 6px rgba(0,0,0,.3)"
+                                    }}>
+                                    <Trash2 size={13} /> {armada && "Confirmar?"}
+                                  </button>
+                                );
+                              })()}
+                              <button onClick={() => baixarDataUrl(f.d, nomeArquivoFoto(reg, f.momento, f.seq))}
+                                style={{
+                                  width: "100%", border: "none", borderTop: `1px solid ${C.prataClaro}`,
+                                  background: C.branco, color: C.navy2, padding: "8px",
+                                  fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
+                                  cursor: "pointer", display: "flex", alignItems: "center",
+                                  justifyContent: "center", gap: 5
+                                }}>
+                                <Download size={13} /> Baixar
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -6023,7 +6170,11 @@ ${plano ? `<main>
 function Parametros({ params, persistParams, persistOps, ops }) {
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
     conferentes: params.conferentes || [], gestores: params.gestores || [],
-    motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa });
+    motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa,
+    fotosMin: {
+      recebimento: { ...DEFAULT_PARAMS.fotosMin.recebimento, ...(params.fotosMin?.recebimento || {}) },
+      expedicao: { ...DEFAULT_PARAMS.fotosMin.expedicao, ...(params.fotosMin?.expedicao || {}) }
+    } });
   const [novoCliente, setNovoCliente] = useState("");
   const [novoMotivoPausa, setNovoMotivoPausa] = useState("");
   const [salvo, setSalvo] = useState(false);
@@ -6033,6 +6184,14 @@ function Parametros({ params, persistParams, persistOps, ops }) {
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
   const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
   const setV = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setSalvo(false); };
+  const setFotosMin = (direcao, etapa, v) => {
+    const n = Math.max(0, parseInt(v, 10) || 0);
+    setDraft(d => ({ ...d, fotosMin: {
+      ...d.fotosMin,
+      [direcao]: { ...(d.fotosMin?.[direcao] || {}), [etapa]: n }
+    } }));
+    setSalvo(false);
+  };
   const setTipo = (id, k, v) => { setDraft(d => ({ ...d, tipos: d.tipos.map(t => t.id === id ? { ...t, [k]: v } : t) })); setSalvo(false); };
   const addCliente = () => {
     const v = novoCliente.trim();
@@ -6119,6 +6278,16 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       motivosPausa: (draft.motivosPausa || DEFAULT_PARAMS.motivosPausa).map(m => m.trim()).filter(Boolean),
       metaDinamica: draft.metaDinamica !== false,
       exigirFotos: draft.exigirFotos !== false,
+      fotosMin: {
+        recebimento: {
+          inicio: Math.max(0, parseInt(draft.fotosMin?.recebimento?.inicio, 10) || 0),
+          fim: Math.max(0, parseInt(draft.fotosMin?.recebimento?.fim, 10) || 0)
+        },
+        expedicao: {
+          inicio: Math.max(0, parseInt(draft.fotosMin?.expedicao?.inicio, 10) || 0),
+          fim: Math.max(0, parseInt(draft.fotosMin?.expedicao?.fim, 10) || 0)
+        }
+      },
       conferentes: (draft.conferentes || []).filter(c => c.nome && c.pin)
         .map(c => ({ id: c.id || uid(), nome: c.nome.trim(), pin: c.pin.toString().trim() })),
       gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
@@ -6367,11 +6536,61 @@ function Parametros({ params, persistParams, persistOps, ops }) {
               Exigir fotos do conferente
             </strong>
             <div style={{ fontSize: 12, color: C.prata, marginTop: 3, lineHeight: 1.55 }}>
-              Ligada (padrão), o conferente só inicia com {FOTOS_INICIO_OBRIGATORIAS} fotos e só finaliza com
-              ao menos {FOTOS_FIM_MIN}. Desligada, as fotos ficam opcionais e a operação segue mesmo sem tirá-las.
+              Ligada (padrão), o conferente só inicia e finaliza com as fotos mínimas configuradas abaixo.
+              Desligada, as fotos ficam opcionais e a operação segue mesmo sem tirá-las.
             </div>
           </span>
         </label>
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}`,
+          opacity: draft.exigirFotos === false ? .5 : 1 }}>
+          <div style={{ fontSize: 12, color: C.prata, marginBottom: 10, lineHeight: 1.55 }}>
+            Quantidade <strong>mínima</strong> de fotos exigida em cada etapa, separada por tipo de operação —
+            Recebimento e Expedição podem ter exigências diferentes.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+            <div>
+              <div style={{
+                fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
+                color: "#0D47A1", textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
+              }}>Recebimento</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <Field label="Início (mín.)">
+                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                    style={styles.input}
+                    value={draft.fotosMin?.recebimento?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
+                    onChange={e => setFotosMin("recebimento", "inicio", e.target.value)} />
+                </Field>
+                <Field label="Fim (mín.)">
+                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                    style={styles.input}
+                    value={draft.fotosMin?.recebimento?.fim ?? FOTOS_FIM_MIN}
+                    onChange={e => setFotosMin("recebimento", "fim", e.target.value)} />
+                </Field>
+              </div>
+            </div>
+            <div>
+              <div style={{
+                fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
+                color: "#B71C1C", textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
+              }}>Expedição</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <Field label="Início (mín.)">
+                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                    style={styles.input}
+                    value={draft.fotosMin?.expedicao?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
+                    onChange={e => setFotosMin("expedicao", "inicio", e.target.value)} />
+                </Field>
+                <Field label="Fim (mín.)">
+                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                    style={styles.input}
+                    value={draft.fotosMin?.expedicao?.fim ?? FOTOS_FIM_MIN}
+                    onChange={e => setFotosMin("expedicao", "fim", e.target.value)} />
+                </Field>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <SectionTitle icon={Truck}>Tipos de Operação e Linha de Base</SectionTitle>
