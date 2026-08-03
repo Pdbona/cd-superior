@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, Images, X, Share2, Boxes, Timer
+  Camera, X, Share2, Boxes, Timer, PauseCircle, PlayCircle
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -181,6 +181,9 @@ async function salvarFotos({ op, momento, fotos, usuario }) {
     nFim: pacote.fim.length,
     volume: op.volume ?? anterior.volume ?? null,
     volumeReal: op.volumeReal ?? anterior.volumeReal ?? null,
+    /* referência do cliente (NF/pedido do lado do cliente) — campo ainda não
+       existe no cadastro da operação; propagado assim que existir */
+    refCliente: op.refCliente ?? anterior.refCliente ?? null,
     /* a contagem da retenção começa na PRIMEIRA captura da operação,
        para que o par início/fim expire junto e não fique meia evidência */
     expiraEm: (anterior.criadoEm || agora) + RETENCAO_MS
@@ -258,6 +261,9 @@ const DEFAULT_PARAMS = {
      processo na hora — sem foto — quando o celular/coletor falha em
      campo, sem precisar mexer no código toda vez que isso acontece. */
   exigirFotos: true,
+  /* Motivos de pausa — livremente editáveis pelo gestor na aba Parâmetros.
+     Pausar para de contar o tempo da operação (não conta contra a meta/bônus). */
+  motivosPausa: ["Almoço", "Jantar", "Café", "Atendimento Diretoria"],
   tipos: [
     /* Linhas de base informadas pelo Pablo (jul/2026):
        Passeio: 1.500 un · 4 pessoas · 3,5h → 107,1 un/pessoa/hora
@@ -348,6 +354,24 @@ function headcount(op) {
 const TOLERANCIA_META_MIN = 15;
 const TOLERANCIA_META_H = TOLERANCIA_META_MIN / 60;
 
+/* ---------- pausas (almoço, jantar, café, atendimento diretoria etc.) ----------
+   op.pausas é um array de { inicio, fim, motivo }. Pausa em aberto tem fim=null.
+   O tempo pausado é descontado do tempo real da operação: não conta contra a
+   meta nem contra o bônus — só o tempo efetivamente trabalhado é cobrado. */
+function tempoPausadoMs(op, now) {
+  if (!op || !Array.isArray(op.pausas) || op.pausas.length === 0) return 0;
+  return op.pausas.reduce((s, p) => s + ((p.fim || now) - p.inicio), 0);
+}
+function estaPausada(op) {
+  if (!op || !Array.isArray(op.pausas) || op.pausas.length === 0) return false;
+  const ultima = op.pausas[op.pausas.length - 1];
+  return !!ultima && ultima.fim == null;
+}
+function pausaAtual(op) {
+  if (!estaPausada(op)) return null;
+  return op.pausas[op.pausas.length - 1];
+}
+
 function calcOp(op, params) {
   const tipo = params.tipos.find(t => t.id === op.tipoId) || params.tipos[0];
   const paletizado = tipo && tipo.modalidade === "paletizado";
@@ -373,7 +397,8 @@ function calcOp(op, params) {
   const metaComTolerancia = metaHoras + TOLERANCIA_META_H;
   let tempoReal = null, cumpriuMeta = null;
   if (op.status === "concluida" && op.inicio && op.fim) {
-    tempoReal = (op.fim - op.inicio) / 3600000;
+    const pausadoMs = tempoPausadoMs(op, op.fim);
+    tempoReal = (op.fim - op.inicio - pausadoMs) / 3600000;
     cumpriuMeta = tempoReal <= metaComTolerancia;
   }
   const bonusPago = cumpriuMeta === true ? bonusPotencial : 0;
@@ -622,6 +647,8 @@ export default function App() {
         /* params gravados antes da separação custo × distribuído não têm
            bonusRateio — adota o padrão para o rateio não pagar o valor cheio */
         if (parsed.bonusRateio == null) parsed.bonusRateio = DEFAULT_PARAMS.bonusRateio;
+        /* params gravados antes da função Pausar não têm motivosPausa */
+        if (!Array.isArray(parsed.motivosPausa)) parsed.motivosPausa = DEFAULT_PARAMS.motivosPausa;
         setParams(parsed);
       }
     } catch (e) {}
@@ -933,6 +960,8 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
   const [fotosFim, setFotosFim] = useState({});
   const [volReal, setVolReal] = useState({});
   const [salvando, setSalvando] = useState(null);
+  /* motivo selecionado para pausar, por operação */
+  const [pausaMotivoSel, setPausaMotivoSel] = useState({});
 
   /* Com o parâmetro desligado (problema de celular/coletor em campo), os
      mínimos caem a zero — as fotos continuam disponíveis, só deixam de
@@ -1000,6 +1029,44 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     } finally { setSalvando(null); }
   };
 
+  /* Pausa a contagem de tempo da operação (almoço, jantar, café, atendimento
+     diretoria etc.). O tempo pausado não conta contra a meta/bônus — ver
+     tempoPausadoMs()/calcOp(). Podem existir várias pausas na mesma operação. */
+  const pausar = async (id, motivo) => {
+    const alvo = ops.find(o => o.id === id);
+    if (!alvo) return;
+    if (!podeFinalizar(alvo)) return;
+    if (!motivo) return alertar("Selecione o motivo da pausa.");
+    if (estaPausada(alvo)) return; // já pausada, evita pausa duplicada
+    const pausas = [...(alvo.pausas || []), { inicio: Date.now(), fim: null, motivo }];
+    const atualizada = { ...alvo, pausas };
+    setSalvando(id);
+    try {
+      await persistOps(ops.map(o => o.id === id ? atualizada : o));
+      setPausaMotivoSel(d => { const n = { ...d }; delete n[id]; return n; });
+      confirmar(`Operação pausada — ${motivo}.`);
+    } catch (e) {
+      console.error(e);
+      alertar("Não foi possível pausar. Verifique o sinal e tente de novo.");
+    } finally { setSalvando(null); }
+  };
+
+  const retomar = async (id) => {
+    const alvo = ops.find(o => o.id === id);
+    if (!alvo || !estaPausada(alvo)) return;
+    const pausas = alvo.pausas.map((p, i) =>
+      i === alvo.pausas.length - 1 ? { ...p, fim: Date.now() } : p);
+    const atualizada = { ...alvo, pausas };
+    setSalvando(id);
+    try {
+      await persistOps(ops.map(o => o.id === id ? atualizada : o));
+      confirmar("Operação retomada.");
+    } catch (e) {
+      console.error(e);
+      alertar("Não foi possível retomar. Verifique o sinal e tente de novo.");
+    } finally { setSalvando(null); }
+  };
+
   const finalizar = async (id) => {
     /* Só quem iniciou fecha a operação. Guarda também no handler, e não só
        na interface: o botão pode não estar visível, mas a função existe. */
@@ -1007,6 +1074,9 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     if (!alvo) return;
     if (!podeFinalizar(alvo)) {
       return alertar(`Somente ${alvo.conferenteInicio} pode finalizar esta operação.`);
+    }
+    if (estaPausada(alvo)) {
+      return alertar("Retome a operação antes de finalizar.");
     }
     const bruto = volReal[id];
     const vr = parseInt(bruto, 10);
@@ -1078,7 +1148,8 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
             {abertas.map(op => {
               const c = calcOp(op, params);
               const rodando = op.status === "em_andamento";
-              const elapsed = op.inicio ? (now - op.inicio) / 3600000 : 0;
+              const pausada = estaPausada(op);
+              const elapsed = op.inicio ? (now - op.inicio - tempoPausadoMs(op, now)) / 3600000 : 0;
               /* só fica vermelho depois da tolerância — dentro dela o bônus
                  ainda está de pé, e o conferente não deve ver "perdido" */
               const over = rodando && elapsed > c.metaComTolerancia;
@@ -1146,12 +1217,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                   {/* Cronômetro grande */}
                   {rodando && (
                     <div style={{ textAlign: "center", padding: "16px 0 6px" }}>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: 1 }}>Tempo decorrido</div>
-                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 44, fontWeight: 700, color: over ? C.vermelho : C.laranja, lineHeight: 1.1 }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: 1 }}>
+                        Tempo decorrido {pausada && "(pausado)"}
+                      </div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 44, fontWeight: 700,
+                        color: pausada ? C.laranjaEsc : over ? C.vermelho : C.laranja, lineHeight: 1.1 }}>
                         {hhmm(elapsed)}
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: over ? C.vermelho : C.verde }}>
-                        {over ? "⚠ Meta ultrapassada" : `Dentro da meta (${hhmm(c.metaHoras)})`}
+                      <div style={{ fontSize: 12, fontWeight: 600, color: pausada ? C.laranjaEsc : over ? C.vermelho : C.verde }}>
+                        {pausada ? "⏸ Operação pausada" : over ? "⚠ Meta ultrapassada" : `Dentro da meta (${hhmm(c.metaHoras)})`}
                       </div>
                       <div style={{ fontSize: 11, color: C.prata, marginTop: 4 }}>Início: {fmtDT(op.inicio)}</div>
                     </div>
@@ -1214,7 +1288,54 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         })()}
                       </>
                     ) : meu ? (
+                      pausada ? (
+                        <div style={{
+                          ...styles.btnBig, background: "#FFF3E0", color: C.laranjaEsc,
+                          border: `1.5px dashed ${C.laranja}`, cursor: "default",
+                          flexDirection: "column", gap: 8, paddingTop: 16, paddingBottom: 16
+                        }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 15 }}>
+                            <PauseCircle size={19} strokeWidth={2.4} /> OPERAÇÃO PAUSADA
+                          </span>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, textTransform: "none" }}>
+                            {pausaAtual(op)?.motivo} · desde {hora(pausaAtual(op)?.inicio)}
+                          </span>
+                          <span style={{ fontSize: 10.5, fontWeight: 500, textTransform: "none", color: C.prata }}>
+                            O tempo pausado não conta contra a meta.
+                          </span>
+                          <button disabled={salvando === op.id}
+                            style={{
+                              ...styles.btnBig, background: C.verde, marginTop: 4, width: "100%",
+                              cursor: salvando === op.id ? "wait" : "pointer"
+                            }}
+                            onClick={() => retomar(op.id)}>
+                            <PlayCircle size={20} strokeWidth={2.6} />
+                            {salvando === op.id ? "RETOMANDO…" : "RETOMAR OPERAÇÃO"}
+                          </button>
+                        </div>
+                      ) : (
                       <>
+                        {/* Pausar — almoço, jantar, café, atendimento diretoria etc.
+                            Lista de motivos é cadastrada pelo gestor em Parâmetros. */}
+                        <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "stretch" }}>
+                          <select value={pausaMotivoSel[op.id] || ""}
+                            onChange={e => setPausaMotivoSel(d => ({ ...d, [op.id]: e.target.value }))}
+                            style={{ ...styles.input, flex: 1 }}>
+                            <option value="">Pausar operação — motivo…</option>
+                            {(params.motivosPausa || []).map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          <button
+                            disabled={!pausaMotivoSel[op.id] || salvando === op.id}
+                            onClick={() => pausar(op.id, pausaMotivoSel[op.id])}
+                            style={{
+                              ...styles.btnGhost, whiteSpace: "nowrap", flexShrink: 0,
+                              cursor: (!pausaMotivoSel[op.id] || salvando === op.id) ? "not-allowed" : "pointer",
+                              opacity: !pausaMotivoSel[op.id] ? .6 : 1
+                            }}>
+                            <PauseCircle size={15} /> Pausar
+                          </button>
+                        </div>
+
                         {/* Volume realizado — campo separado do planejado de
                             propósito: o planejado alimenta a meta e não pode ser
                             reescrito no fim, senão a operação passaria a ser
@@ -1278,6 +1399,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                           );
                         })()}
                       </>
+                      )
                     ) : (
                       <div style={{ ...styles.btnBig, background: C.bgLeve, color: C.prata,
                         border: `1px dashed ${C.prataClaro}`, cursor: "default", flexDirection: "column", gap: 3,
@@ -1341,7 +1463,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
     { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
     { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
     { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
-    { id: "fotos", label: "Fotos", sub: "Evidências · 5 dias", icon: Images },
+    { id: "fotos", label: "Gerar Romaneio", sub: "Recebimento & Expedição", icon: FileText },
     { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
     { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
     { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
@@ -1392,7 +1514,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} />}
         {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} />}
-        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} />}
+        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
@@ -1883,7 +2005,8 @@ function Acompanhamento({ ops, params, now }) {
 
         <Coluna titulo="Em Andamento" lista={andamento} cor={C.laranja} icone={Play} render={op => {
           const c = calcOp(op, params);
-          const el = op.inicio ? (now - op.inicio) / 3600000 : 0;
+          const pausada = estaPausada(op);
+          const el = op.inicio ? (now - op.inicio - tempoPausadoMs(op, now)) / 3600000 : 0;
           const st = statusTempo(el, c.metaHoras);
           const cor = corTempo(st);
           const pct = Math.min(100, (el / c.metaHoras) * 100);
@@ -1899,6 +2022,11 @@ function Acompanhamento({ ops, params, now }) {
                   style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: cor }}>{hhmm(el)}</span>
               </div>
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente} · {op.qtdTerceirizada}T + {op.qtdSuperior}B</div>
+              {pausada && (
+                <div style={{ ...styles.pill, background: "#FFF3E0", color: C.laranjaEsc, marginTop: 5, display: "inline-flex" }}>
+                  <PauseCircle size={11} style={{ marginRight: 3 }} /> Pausada · {pausaAtual(op)?.motivo}
+                </div>
+              )}
               {/* início sempre visível: antes só aparecia quando a operação
                   estava dentro da meta, justo o caso em que menos importa */}
               <div style={{ fontSize: 11, color: C.texto, marginTop: 4, fontFamily: "'Roboto Mono',monospace" }}>
@@ -2992,8 +3120,8 @@ function Dashboard({ ops, params, now, diasTerc }) {
     .filter(o => o.status === "em_andamento" && o.inicio)
     .map(o => {
       const c = calcOp(o, params);
-      const el = (now - o.inicio) / 3600000;
-      return { op: o, c, el, st: statusTempo(el, c.metaHoras) };
+      const el = (now - o.inicio - tempoPausadoMs(o, now)) / 3600000;
+      return { op: o, c, el, st: statusTempo(el, c.metaHoras), pausada: estaPausada(o) };
     })
     .sort((a, b) => (b.el / b.c.metaHoras) - (a.el / a.c.metaHoras))
   , [ops, params, now]);
@@ -3207,8 +3335,8 @@ function Dashboard({ ops, params, now, diasTerc }) {
             )}
           </SectionTitle>
           <div style={styles.opCardGrid}>
-            {emAndamento.map(({ op, c, el, st }) => (
-              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} />
+            {emAndamento.map(({ op, c, el, st, pausada }) => (
+              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
             ))}
           </div>
         </>
@@ -3556,11 +3684,19 @@ function Dashboard({ ops, params, now, diasTerc }) {
 
 /* Visualizador de uma operação: baixa as imagens só quando aberto,
    para a lista da galeria continuar leve. */
-function VisorFotos({ reg, onFechar }) {
+function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
   const [pacote, setPacote] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [zoom, setZoom] = useState(null);
   const [falhou, setFalhou] = useState(false);
+
+  /* Cadastro do romaneio: observação livre + avaria (sim/não + descrição).
+     Parte do próprio op, senão fica perdido se ele fechar e reabrir o modal. */
+  const [obs, setObs] = useState(op?.observacao || "");
+  const [avariaTem, setAvariaTem] = useState(op?.avariaTem || false);
+  const [avariaDescricao, setAvariaDescricao] = useState(op?.avariaDescricao || "");
+  const [erroRomaneio, setErroRomaneio] = useState("");
+  const [gravando, setGravando] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -3609,6 +3745,28 @@ function VisorFotos({ reg, onFechar }) {
   };
 
   const dias = diasParaExpirar(reg.expiraEm);
+
+  /* Grava observação/avaria na operação (se houver persistOps disponível)
+     e, na sequência, abre a janela do romaneio pronta para "Salvar como PDF". */
+  const gravarEGerarRomaneio = async () => {
+    if (avariaTem && !avariaDescricao.trim()) {
+      return setErroRomaneio("Descreva a avaria antes de gerar o romaneio.");
+    }
+    setErroRomaneio("");
+    setGravando(true);
+    try {
+      if (persistOps && op && ops) {
+        const atualizada = { ...op, observacao: obs, avariaTem, avariaDescricao };
+        await persistOps(ops.map(o => o.id === op.id ? atualizada : o));
+      }
+      abrirRomaneio(reg, pacote, { observacao: obs, avariaTem, avariaDescricao });
+    } catch (e) {
+      console.error(e);
+      setErroRomaneio("Não foi possível gravar. Verifique o sinal e tente de novo.");
+    } finally {
+      setGravando(false);
+    }
+  };
 
   return (
     <>
@@ -3725,18 +3883,59 @@ function VisorFotos({ reg, onFechar }) {
                   );
                 })}
 
+                {/* ===== CADASTRO DO ROMANEIO: observações + avaria ===== */}
+                <div style={{
+                  marginTop: 18, paddingTop: 16, borderTop: `2px solid ${C.prataClaro}`
+                }}>
+                  <div style={{
+                    fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5,
+                    color: C.navy, textTransform: "uppercase", letterSpacing: .4, marginBottom: 10
+                  }}>
+                    Romaneio de {reg.direcao === "expedicao" ? "Expedição" : "Recebimento"}
+                  </div>
+
+                  <label style={{ fontSize: 11.5, color: C.prata, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                    Observações (opcional)
+                  </label>
+                  <textarea value={obs} onChange={e => setObs(e.target.value)}
+                    placeholder="Alguma observação sobre a operação…"
+                    style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12, fontFamily: "'Roboto',sans-serif" }} />
+
+                  <label style={{ fontSize: 11.5, color: C.prata, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                    Houve avaria nesta operação?
+                  </label>
+                  <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                      <input type="radio" checked={!avariaTem} onChange={() => setAvariaTem(false)} /> Não
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                      <input type="radio" checked={avariaTem} onChange={() => setAvariaTem(true)} /> Sim
+                    </label>
+                  </div>
+                  {avariaTem && (
+                    <textarea value={avariaDescricao} onChange={e => setAvariaDescricao(e.target.value)}
+                      placeholder="Descreva a avaria (ex: 1 caixa amassada no palete 3)…"
+                      style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12, fontFamily: "'Roboto',sans-serif" }} />
+                  )}
+
+                  {erroRomaneio && (
+                    <div style={{ fontSize: 11.5, color: C.vermelho, fontWeight: 600, marginBottom: 10 }}>{erroRomaneio}</div>
+                  )}
+                </div>
+
                 <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 4 }}>
-                  <button onClick={baixarTodas} style={{ ...styles.btnPrimary, flex: "1 1 190px" }}>
-                    <Download size={15} /> Baixar todas ({todas.length})
+                  <button onClick={gravarEGerarRomaneio} disabled={gravando}
+                    style={{ ...styles.btnPrimary, flex: "1 1 220px", opacity: gravando ? .7 : 1 }}>
+                    <FileText size={15} /> {gravando ? "Gravando…" : "Gravar e Gerar Romaneio"}
+                  </button>
+                  <button onClick={baixarTodas} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
+                    <Download size={15} /> Baixar fotos ({todas.length})
                   </button>
                   {podeCompartilhar && (
                     <button onClick={compartilhar} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
                       <Share2 size={15} /> Enviar ao cliente
                     </button>
                   )}
-                  <button onClick={() => abrirDossieFotos(reg, pacote)} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
-                    <FileText size={15} /> Relatório em PDF
-                  </button>
                 </div>
               </>
             )}
@@ -3756,87 +3955,175 @@ function VisorFotos({ reg, onFechar }) {
   );
 }
 
-/* Dossiê imprimível — abre uma janela pronta para "Salvar como PDF".
-   É o formato que o gestor encaminha ao cliente sem precisar montar
-   e-mail com anexos soltos. */
-function abrirDossieFotos(reg, pacote) {
-  if (!pacote) return;
-  const bloco = (titulo, lista, cor) => {
-    if (!lista || lista.length === 0) return "";
-    return `
-      <h2 style="font-family:Montserrat,Arial,sans-serif;font-size:13px;text-transform:uppercase;
-        letter-spacing:.5px;color:${cor};margin:22px 0 10px;padding-bottom:6px;
-        border-bottom:2px solid ${cor}">${titulo} — ${new Date(lista[0].ts).toLocaleString("pt-BR")}</h2>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        ${lista.map((f, i) => `
-          <figure style="margin:0;flex:1 1 300px;max-width:340px">
-            <img src="${f.d}" style="width:100%;border:1px solid #C5CDD8;border-radius:6px;display:block" />
-            <figcaption style="font-family:Arial,sans-serif;font-size:10px;color:#8A9BB0;margin-top:5px">
-              Foto ${i + 1} · ${new Date(f.ts).toLocaleString("pt-BR")}${f.por ? ` · ${f.por}` : ""}
-            </figcaption>
-          </figure>`).join("")}
-      </div>`;
+/* Romaneio imprimível — abre uma janela pronta para "Salvar como PDF", já no
+   padrão visual SBS/Superior (validado com Pablo em Ago/2026): logo Superior
+   em destaque, verde/azul da Superior, rodapé com a logo da SBS pequena
+   ("Desenvolvido por SBS Solution"), bloco de avaria e fotos reais da operação.
+   Nome do documento = "Recebimento" ou "Expedição" conforme a direção da
+   operação (não é escolhido manualmente). */
+function abrirRomaneio(reg, pacote, dados) {
+  const { observacao, avariaTem, avariaDescricao } = dados || {};
+  const expedicao = reg.direcao === "expedicao";
+  const tipoLabel = expedicao ? "EXPEDIÇÃO" : "RECEBIMENTO";
+  const nomeArquivo = expedicao ? "expedicao" : "recebimento";
+
+  const fotosHTML = (lista, legenda) => {
+    if (!lista || lista.length === 0) {
+      return `<div class="foto-box"><div class="foto-placeholder">Sem foto</div><div class="foto-legenda">${legenda}</div></div>`;
+    }
+    return lista.map((f, i) => `
+      <div class="foto-box">
+        <img src="${f.d}" style="width:100%;height:140px;object-fit:cover;border-radius:4px;margin-bottom:6px" />
+        <div class="foto-legenda">${legenda}${lista.length > 1 ? ` (${i + 1}/${lista.length})` : ""} — ${new Date(f.ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</div>
+      </div>`).join("");
   };
 
-  const linha = (rot, val) => val
-    ? `<tr><td style="padding:5px 14px 5px 0;color:#8A9BB0;font-size:11px;white-space:nowrap">${rot}</td>
-         <td style="padding:5px 0;color:#1A2B3C;font-size:12px;font-weight:600">${val}</td></tr>`
-    : "";
-
-  const dif = (reg.volumeReal != null && reg.volume)
-    ? reg.volumeReal - reg.volume : null;
+  const dado = (label, valor) => valor == null || valor === "" ? "" : `
+    <div class="dado"><div class="dado-label">${label}</div><div class="dado-valor">${valor}</div></div>`;
 
   const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8" />
-<title>Evidência ${reg.ref} — Superior Transportes</title>
-<style>@media print{.noprint{display:none}} body{margin:0;background:#F7F9FB}</style></head>
+<title>Romaneio de ${tipoLabel} — ${reg.ref} — Superior Transportes</title>
+<style>
+  @page { size: A4; margin: 12mm 14mm 20mm 14mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F7F9FB; font-family: Arial, sans-serif; color: #1A2B3C; font-size: 12px; }
+  @media print { .noprint { display: none } body { background: #fff } }
+  .folha { max-width: 900px; margin: 0 auto; background: #fff; padding: 26px 30px 30px; }
+  .cabecalho { display: flex; align-items: center; justify-content: space-between; border-bottom: 5px solid #00A651; padding-bottom: 14px; margin-bottom: 20px; }
+  .cabecalho-esq { display: flex; align-items: center; gap: 14px; }
+  .cabecalho-esq img { height: 44px; width: auto; }
+  .empresa-nome { font-family: 'Montserrat',Arial,sans-serif; font-weight: 800; font-size: 15px; color: #003d7a; }
+  .empresa-sub { font-size: 10px; color: #8A9BB0; }
+  .tipo-doc { font-family: 'Montserrat',Arial,sans-serif; font-weight: 800; font-size: 19px; color: #00A651; text-align: right; }
+  .data-doc { font-size: 10px; color: #8A9BB0; text-align: right; }
+  .secao { margin-bottom: 16px; border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; }
+  .secao-titulo { font-family: 'Montserrat',Arial,sans-serif; font-weight: 700; font-size: 10.5px; color: #003d7a; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .grid2 { display: flex; flex-wrap: wrap; gap: 10px 24px; }
+  .dado { min-width: 160px; }
+  .dado-label { font-size: 8.5px; color: #8A9BB0; text-transform: uppercase; font-weight: 700; }
+  .dado-valor { font-size: 13px; font-weight: 700; color: #1A2B3C; }
+  .fotos { display: flex; gap: 10px; flex-wrap: wrap; }
+  .foto-box { flex: 1 1 200px; max-width: 260px; border: 1.5px dashed #C5CDD8; border-radius: 4px; padding: 8px; background: #f9fafb; }
+  .foto-placeholder { height: 100px; display: flex; align-items: center; justify-content: center; color: #999; background: #e6e6e6; border-radius: 4px; margin-bottom: 6px; font-size: 11px; }
+  .foto-legenda { font-size: 8.5px; color: #8A9BB0; text-transform: uppercase; font-weight: 700; }
+  .avaria-box { border-left: 4px solid #2E7D32; background: #f9fafb; padding: 10px; border-radius: 4px; }
+  .avaria-box.com { border-left-color: #C62828; }
+  .avaria-status { font-size: 9.5px; font-weight: 800; text-transform: uppercase; color: #2E7D32; margin-bottom: 4px; }
+  .avaria-box.com .avaria-status { color: #C62828; }
+  .rodape-assinatura { display: flex; justify-content: space-between; margin-top: 18px; padding-top: 14px; border-top: 1px solid #e0e0e0; }
+  .assinatura-col { text-align: center; flex: 1; }
+  .assinatura-label { font-size: 8.5px; color: #8A9BB0; text-transform: uppercase; margin-bottom: 16px; }
+  .assinatura-linha { border-top: 1px solid #1A2B3C; width: 70%; margin: 0 auto 4px; }
+  .assinatura-nome { font-size: 9.5px; font-weight: 700; }
+  .meta-col { font-size: 8.5px; color: #8A9BB0; line-height: 1.7; flex: 1; text-align: center; }
+  .footer { margin-top: 28px; background: #003d7a; color: #fff; padding: 10px 16px; border-top: 3px solid #FF6B00; display: flex; align-items: center; justify-content: space-between; }
+  .footer img { height: 20px; vertical-align: middle; margin-right: 6px; opacity: .9; }
+  .footer-txt { font-size: 8px; }
+</style>
+</head>
 <body>
-<div style="max-width:900px;margin:0 auto;background:#fff;padding:26px 30px 40px">
+<div class="folha">
   <div class="noprint" style="text-align:right;margin-bottom:14px">
     <button onclick="window.print()" style="background:#FF6B00;color:#fff;border:none;
       padding:10px 20px;border-radius:6px;font-family:Montserrat,Arial,sans-serif;
       font-weight:700;font-size:13px;cursor:pointer">Salvar como PDF</button>
   </div>
-  <div style="border-bottom:3px solid #FF6B00;padding-bottom:14px;margin-bottom:18px">
-    <div style="font-family:Montserrat,Arial,sans-serif;font-size:20px;font-weight:800;color:#1E3A5F">
-      Evidência Fotográfica da Operação
+
+  <div class="cabecalho">
+    <div class="cabecalho-esq">
+      <img src="${SUP_LOGO}" alt="Superior Transportes" />
+      <div>
+        <div class="empresa-nome">SUPERIOR TRANSPORTES</div>
+        <div class="empresa-sub">Gestão de Operações</div>
+      </div>
     </div>
-    <div style="font-family:Arial,sans-serif;font-size:12px;color:#8A9BB0;margin-top:4px">
-      Superior Transportes · Emitido em ${new Date().toLocaleString("pt-BR")}
+    <div>
+      <div class="tipo-doc">ROMANEIO DE ${tipoLabel}</div>
+      <div class="data-doc">Emitido em ${new Date().toLocaleString("pt-BR")}</div>
     </div>
   </div>
-  <table style="font-family:Arial,sans-serif;border-collapse:collapse;margin-bottom:6px">
-    ${linha("Referência", reg.ref)}
-    ${linha("Cliente", reg.cliente)}
-    ${linha("Operação", reg.direcao === "expedicao" ? "Expedição" : "Recebimento")}
-    ${linha("Doca", reg.doca)}
-    ${linha("Conferente", reg.conferenteInicio)}
-    ${linha("Início", reg.tsInicio ? new Date(reg.tsInicio).toLocaleString("pt-BR") : null)}
-    ${linha("Término", reg.tsFim ? new Date(reg.tsFim).toLocaleString("pt-BR") : null)}
-    ${linha("Volumes programados", reg.volume != null ? reg.volume.toLocaleString("pt-BR") : null)}
-    ${linha("Volumes conferidos", reg.volumeReal != null ? reg.volumeReal.toLocaleString("pt-BR") : null)}
-    ${dif != null && dif !== 0
-      ? linha("Divergência", `${dif > 0 ? "+" : ""}${dif.toLocaleString("pt-BR")} un`)
-      : (dif === 0 ? linha("Divergência", "Nenhuma — confere com o programado") : "")}
-  </table>
-  ${bloco("Abertura da operação", pacote.inicio, "#B5560A")}
-  ${bloco("Fechamento da operação", pacote.fim, "#2E7D32")}
-  <div style="margin-top:34px;padding-top:14px;border-top:1px solid #C5CDD8;
-    font-family:Arial,sans-serif;font-size:10px;color:#8A9BB0">
-    Documento gerado automaticamente pelo Monitor Operacional · SBS Solution — Lean Manufacturing &amp; Logística
+
+  <div class="secao">
+    <div class="secao-titulo">Referências da Operação</div>
+    <div class="grid2">
+      ${dado("Referência Superior", reg.ref)}
+      ${dado("Referência Cliente / NF", reg.refCliente || reg.cliente)}
+      ${dado("Cliente", reg.cliente)}
+      ${dado("Doca", reg.doca)}
+      ${dado("Conferente", reg.conferenteInicio)}
+    </div>
   </div>
-</div></body></html>`;
+
+  <div class="secao">
+    <div class="secao-titulo">Volumes e Horários</div>
+    <div class="grid2">
+      ${dado(expedicao ? "Volume Programado" : "Volume Previsto", reg.volume != null ? `${reg.volume.toLocaleString("pt-BR")} un` : null)}
+      ${dado(expedicao ? "Volume Carregado" : "Volume Recebido", reg.volumeReal != null ? `${reg.volumeReal.toLocaleString("pt-BR")} un` : null)}
+      ${dado("Início da Operação", reg.tsInicio ? new Date(reg.tsInicio).toLocaleString("pt-BR") : null)}
+      ${dado("Fim da Operação", reg.tsFim ? new Date(reg.tsFim).toLocaleString("pt-BR") : null)}
+    </div>
+  </div>
+
+  <div class="secao">
+    <div class="secao-titulo">Registros Fotográficos</div>
+    <div class="fotos">
+      ${fotosHTML(pacote && pacote.inicio, "Início")}
+      ${fotosHTML(pacote && pacote.fim, "Fim")}
+    </div>
+  </div>
+
+  ${observacao ? `
+  <div class="secao">
+    <div class="secao-titulo">Observações</div>
+    <div style="font-size:12px">${observacao.replace(/</g, "&lt;")}</div>
+  </div>` : ""}
+
+  <div class="secao" style="border-bottom:none">
+    <div class="secao-titulo">Registro de Avarias</div>
+    <div class="avaria-box ${avariaTem ? "com" : ""}">
+      <div class="avaria-status">${avariaTem ? "⚠ Com avarias detectadas" : "✓ Sem avarias detectadas"}</div>
+      <div>${avariaTem
+        ? (avariaDescricao || "").replace(/</g, "&lt;")
+        : "Operação executada conforme planejado. Produto em perfeito estado de conservação."}</div>
+    </div>
+  </div>
+
+  <div class="rodape-assinatura">
+    <div class="assinatura-col">
+      <div class="assinatura-label">Assinado por</div>
+      <div class="assinatura-linha"></div>
+      <div class="assinatura-nome">Operação Superior</div>
+    </div>
+    <div class="meta-col">
+      <div><strong>Referência:</strong> ${reg.ref}</div>
+      <div>Documento gerado automaticamente pelo sistema</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div><img src="${SBS_LOGO}" alt="SBS" /><span class="footer-txt">Desenvolvido por SBS Solution</span></div>
+    <div class="footer-txt">Lean Manufacturing &amp; Logística</div>
+  </div>
+</div>
+<script>document.title = "${nomeArquivo}_${(reg.ref || "").replace(/[^a-zA-Z0-9-]/g, "_")}";</script>
+</body></html>`;
 
   const w = window.open("", "_blank");
   if (w) { w.document.write(html); w.document.close(); }
 }
 
-function GaleriaFotos({ ops, params }) {
+function GaleriaFotos({ ops, params, persistOps }) {
   const [idx, setIdx] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [aberta, setAberta] = useState(null);
   const [busca, setBusca] = useState("");
   const [cliFiltro, setCliFiltro] = useState("");
   const [limpeza, setLimpeza] = useState(0);
+
+  /* Este painel gera o romaneio (Recebimento/Expedição) — só interessa a
+     operação já FINALIZADA (tem fotos de fechamento e volume conferido).
+     Operações ainda em aberto (só fotos de início) não aparecem aqui. */
+  const finalizadas = useMemo(() => idx.filter(r => r.tsFim), [idx]);
 
   const recarregar = useCallback(async () => {
     setCarregando(true);
@@ -3855,25 +4142,30 @@ function GaleriaFotos({ ops, params }) {
   useEffect(() => { recarregar(); }, [recarregar]);
 
   const clientes = useMemo(
-    () => Array.from(new Set(idx.map(r => r.cliente).filter(Boolean))).sort(),
-    [idx]);
+    () => Array.from(new Set(finalizadas.map(r => r.cliente).filter(Boolean))).sort(),
+    [finalizadas]);
 
+  /* Padrão: só o que foi finalizado HOJE — é isso que o gestor emite no
+     fim do dia. Digitando algo na busca (referência/NF ou cliente), a
+     restrição de dia cai, e ele pode resgatar romaneios de dias anteriores. */
+  const buscando = busca.trim().length > 0;
   const filtrado = useMemo(() => {
     const q = busca.trim().toLowerCase();
-    return idx
+    return finalizadas
       .filter(r => !cliFiltro || r.cliente === cliFiltro)
+      .filter(r => buscando || ehHoje(r.tsFim))
       .filter(r => !q ||
         String(r.ref || "").toLowerCase().includes(q) ||
         String(r.cliente || "").toLowerCase().includes(q))
-      .sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
-  }, [idx, busca, cliFiltro]);
+      .sort((a, b) => (b.tsFim || 0) - (a.tsFim || 0));
+  }, [finalizadas, busca, buscando, cliFiltro]);
 
   /* agrupa por dia para o gestor localizar pela data, que é como o
      cliente costuma pedir ("me manda as fotos de terça") */
   const porDia = useMemo(() => {
     const m = {};
     filtrado.forEach(r => {
-      const d = inicioDoDia(r.criadoEm || Date.now());
+      const d = inicioDoDia(r.tsFim || Date.now());
       (m[d] = m[d] || []).push(r);
     });
     return Object.entries(m)
@@ -3881,15 +4173,13 @@ function GaleriaFotos({ ops, params }) {
       .sort((a, b) => b.ts - a.ts);
   }, [filtrado]);
 
-  const totalFotos = idx.reduce((s, r) => s + (r.nIni || 0) + (r.nFim || 0), 0);
-
   return (
     <div>
-      <SectionTitle icon={Images}>
-        Galeria de Fotos <Badge>{plOp(idx.length)}</Badge>
-        {totalFotos > 0 && (
+      <SectionTitle icon={FileText}>
+        Gerar Romaneio <Badge>{plOp(filtrado.length)}</Badge>
+        {!buscando && (
           <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
-            {totalFotos} fotos
+            finalizadas hoje
           </span>
         )}
       </SectionTitle>
@@ -3897,9 +4187,10 @@ function GaleriaFotos({ ops, params }) {
       <div style={{ ...styles.infoBox, marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 9 }}>
         <Timer size={16} color={C.laranjaEsc} style={{ flexShrink: 0, marginTop: 1 }} />
         <div>
+          Por padrão só aparecem as operações <strong>finalizadas hoje</strong>. Para resgatar
+          um romaneio de dias anteriores, digite a referência/NF do processo na busca abaixo.
           As fotos ficam disponíveis por <strong>{RETENCAO_DIAS} dias</strong> e depois são
-          excluídas automaticamente para não ocupar espaço. Se o cliente pedir uma
-          evidência antiga, ela não existirá mais — baixe ou gere o PDF antes do prazo.
+          excluídas automaticamente — gere o romaneio antes do prazo.
           {limpeza > 0 && (
             <span style={{ color: C.laranjaEsc, fontWeight: 700 }}>
               {" "}({limpeza} {limpeza === 1 ? "operação vencida foi removida" : "operações vencidas foram removidas"} agora)
@@ -3912,7 +4203,7 @@ function GaleriaFotos({ ops, params }) {
         <div style={{ position: "relative", flex: "1 1 220px" }}>
           <Search size={15} color={C.prata} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }} />
           <input value={busca} onChange={e => setBusca(e.target.value)}
-            placeholder="Buscar por NF/pedido ou cliente…"
+            placeholder="Buscar por NF/pedido ou cliente (inclui dias anteriores)…"
             style={{ ...styles.input, width: "100%", paddingLeft: 33 }} />
         </div>
         <select value={cliFiltro} onChange={e => setCliFiltro(e.target.value)}
@@ -3931,9 +4222,10 @@ function GaleriaFotos({ ops, params }) {
           <div style={{ marginTop: 8 }}>Carregando galeria…</div>
         </div>
       ) : porDia.length === 0 ? (
-        <EmptyState text={idx.length === 0
-          ? "Nenhuma foto registrada ainda. As fotos aparecem aqui assim que os conferentes iniciarem operações."
-          : "Nenhum registro corresponde ao filtro."} />
+        <EmptyState text={finalizadas.length === 0
+          ? "Nenhuma operação finalizada ainda. Assim que o conferente concluir um recebimento ou expedição, ela aparece aqui para gerar o romaneio."
+          : buscando ? "Nenhum registro corresponde à busca."
+          : "Nenhuma operação foi finalizada hoje ainda. Digite a referência na busca para localizar romaneios de dias anteriores."} />
       ) : (
         porDia.map(({ ts, lista }) => (
           <div key={ts} style={{ marginBottom: 22 }}>
@@ -4007,7 +4299,15 @@ function GaleriaFotos({ ops, params }) {
         ))
       )}
 
-      {aberta && <VisorFotos reg={aberta} onFechar={() => setAberta(null)} />}
+      {aberta && (
+        <VisorFotos
+          reg={aberta}
+          op={ops.find(o => o.id === aberta.opId) || null}
+          persistOps={persistOps}
+          ops={ops}
+          onFechar={() => setAberta(null)}
+        />
+      )}
     </div>
   );
 }
@@ -5722,8 +6022,10 @@ ${plano ? `<main>
    ============================================================ */
 function Parametros({ params, persistParams, persistOps, ops }) {
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
-    conferentes: params.conferentes || [], gestores: params.gestores || [] });
+    conferentes: params.conferentes || [], gestores: params.gestores || [],
+    motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa });
   const [novoCliente, setNovoCliente] = useState("");
+  const [novoMotivoPausa, setNovoMotivoPausa] = useState("");
   const [salvo, setSalvo] = useState(false);
   /* seções recolhidas por padrão — a tela é longa demais com tudo aberto */
   const [aberta, setAberta] = useState(null);   // "conferentes" | "gestores" | "tipos" | null
@@ -5738,6 +6040,14 @@ function Parametros({ params, persistParams, persistOps, ops }) {
     if ((draft.clientes || []).some(c => c.toLowerCase() === v.toLowerCase())) { setNovoCliente(""); return; }
     setDraft(d => ({ ...d, clientes: [...(d.clientes || []), v] }));
     setNovoCliente(""); setSalvo(false);
+  };
+  /* --- motivos de pausa (almoço, jantar, café, atendimento diretoria etc.) --- */
+  const addMotivoPausa = () => {
+    const v = novoMotivoPausa.trim();
+    if (!v) return;
+    if ((draft.motivosPausa || []).some(m => m.toLowerCase() === v.toLowerCase())) { setNovoMotivoPausa(""); return; }
+    setDraft(d => ({ ...d, motivosPausa: [...(d.motivosPausa || []), v] }));
+    setNovoMotivoPausa(""); setSalvo(false);
   };
   /* --- conferentes --- */
   const [novoConf, setNovoConf] = useState({ nome: "", pin: "" });
@@ -5806,6 +6116,7 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       pinGestor: (draft.pinGestor || "1234").toString().trim() || "1234",
       clientes: (draft.clientes || []).map(c => c.trim()).filter(Boolean),
       equipe: (draft.equipe || params.equipe || []).map(c => c.trim()).filter(Boolean),
+      motivosPausa: (draft.motivosPausa || DEFAULT_PARAMS.motivosPausa).map(m => m.trim()).filter(Boolean),
       metaDinamica: draft.metaDinamica !== false,
       exigirFotos: draft.exigirFotos !== false,
       conferentes: (draft.conferentes || []).filter(c => c.nome && c.pin)
@@ -5886,6 +6197,31 @@ function Parametros({ params, persistParams, persistOps, ops }) {
               onKeyDown={e => { if (e.key === "Enter") { addCliente(); } }} />
           </div>
           <button style={styles.btnGhost} onClick={addCliente}><Plus size={15} /> Adicionar cliente</button>
+        </div>
+      </div>
+
+      <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
+      <p style={styles.helper}>Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria etc.). O tempo pausado não conta contra a meta/bônus.</p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {(draft.motivosPausa || []).length === 0
+            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum motivo cadastrado ainda.</span>
+            : draft.motivosPausa.map(m => (
+              <span key={m} style={styles.clienteChip}>
+                <PauseCircle size={13} /> {m}
+                <button style={styles.chipX} title="Remover"
+                  onClick={() => { setDraft(d => ({ ...d, motivosPausa: d.motivosPausa.filter(x => x !== m) })); setSalvo(false); }}>×</button>
+              </span>
+            ))}
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={styles.fieldLabel}>Novo motivo</label>
+            <input style={styles.input} value={novoMotivoPausa} placeholder="Ex.: Troca de turno"
+              onChange={e => setNovoMotivoPausa(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { addMotivoPausa(); } }} />
+          </div>
+          <button style={styles.btnGhost} onClick={addMotivoPausa}><Plus size={15} /> Adicionar motivo</button>
         </div>
       </div>
 
@@ -6615,7 +6951,7 @@ function LinhaPessoas({ op }) {
 }
 
 /* ---------- card compacto: operação em andamento ---------- */
-function CardOpAgora({ op, c, el, st }) {
+function CardOpAgora({ op, c, el, st, pausada }) {
   const cor = corTempo(st);
   const pct = Math.min(100, (el / c.metaHoras) * 100);
   const cls = st === "estourou" ? "critico-meta" : st === "atencao" ? "alerta-meta" : "";
@@ -6631,7 +6967,14 @@ function CardOpAgora({ op, c, el, st }) {
           {hhmm(el)}
         </span>
       </div>
-      <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} /></div>
+      <div style={{ marginTop: 5, display: "flex", gap: 5, flexWrap: "wrap" }}>
+        <DirTag dir={op.direcao} />
+        {pausada && (
+          <span style={{ ...styles.pill, background: "#FFF3E0", color: C.laranjaEsc }}>
+            <PauseCircle size={11} /> Pausada · {pausaAtual(op)?.motivo}
+          </span>
+        )}
+      </div>
       <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
         {op.cliente} · {c.tipo?.label}
       </div>
