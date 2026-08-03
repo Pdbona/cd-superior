@@ -253,6 +253,11 @@ const DEFAULT_PARAMS = {
      do nº de pessoas e da produtividade de referência de cada tipo.
      Quando desligada, usa metaHoras fixa (comportamento antigo). */
   metaDinamica: true,
+  /* exigirFotos: quando ligada (padrão), o conferente só inicia/finaliza
+     com as fotos mínimas. Existe para o gestor conseguir destravar o
+     processo na hora — sem foto — quando o celular/coletor falha em
+     campo, sem precisar mexer no código toda vez que isso acontece. */
+  exigirFotos: true,
   tipos: [
     /* Linhas de base informadas pelo Pablo (jul/2026):
        Passeio: 1.500 un · 4 pessoas · 3,5h → 107,1 un/pessoa/hora
@@ -295,55 +300,6 @@ function metaDaOperacao(op, tipo, params) {
     return { horas: fixa, dinamica: false, motivo: "sem volume ou equipe informada — usando meta fixa" };
   }
   return { horas: vol / (pessoas * prod), dinamica: true, motivo: "calculada por volume e equipe", prod, pessoas, vol };
-}
-
-/* ---------- turmas de terceirizados (benchmark por dia) ----------
-   Regra combinada com Pablo (02 ago 2026): 1 operação manual no dia não
-   chamaria nenhum terceirizado. A partir da 2ª, forma-se uma turma a cada
-   2 operações adicionais — 2-3 ops = 1 turma, 4-5 ops = 2 turmas, 6-7 ops
-   = 3 turmas, e assim por diante. O tamanho de cada turma é o campo
-   `pessoas` cadastrado no TIPO da operação (hoje 4, mas pode variar por
-   tipo no futuro). Isso é um BENCHMARK para medir economia — não define
-   quantos terceirizados chamar de fato, só quanto seria "esperado". */
-function turmasDoDia(qtdOpsManual) {
-  return Math.max(0, Math.ceil((qtdOpsManual - 1) / 2));
-}
-
-/* referência de benchmark (custo hipotético) da operação `op`, considerando
-   TODAS as operações manuais não canceladas do MESMO DIA — não só ela.
-   O total do dia (turmas × pessoas-média-do-dia × custoTerceirizada) é
-   distribuído igualmente entre as operações manuais daquele dia, para que
-   a soma por dia bata com o total e cada operação também tenha seu valor.
-   `ops` é opcional: chamadas antigas sem o 3º parâmetro caem no
-   comportamento anterior (1 turma cheia por operação, sem olhar o dia). */
-function referenciaBenchmarkOperacao(op, tipo, params, ops) {
-  if (!tipo || tipo.modalidade === "paletizado") return 0;
-  if (!Array.isArray(ops)) return (tipo.pessoas || 0) * params.custoTerceirizada; // fallback legado
-
-  const diaTs = diaPlanejado(op);
-  const opsManualDoDia = ops.filter(o => {
-    if (o.status === "cancelada") return false;
-    if (diaPlanejado(o) !== diaTs) return false;
-    const t = params.tipos.find(x => x.id === o.tipoId);
-    return t && t.modalidade !== "paletizado";
-  });
-  const n = opsManualDoDia.length;
-  if (n === 0) return 0;
-
-  const turmas = turmasDoDia(n);
-  if (turmas === 0) return 0;
-
-  /* tamanho médio de turma no dia — normalmente uniforme (todos os tipos
-     manuais hoje usam 4 pessoas); se um dia futuro tiver tipos com
-     `pessoas` diferentes, usa a média ponderada pelas operações do dia. */
-  const somaPessoas = opsManualDoDia.reduce((s, o) => {
-    const t = params.tipos.find(x => x.id === o.tipoId);
-    return s + (t ? t.pessoas : 0);
-  }, 0);
-  const pessoasMedia = somaPessoas / n;
-
-  const totalDia = turmas * pessoasMedia * params.custoTerceirizada;
-  return totalDia / n;
 }
 
 /* headcount que vai executar: terceirizados + pessoas da Superior.
@@ -392,18 +348,15 @@ function headcount(op) {
 const TOLERANCIA_META_MIN = 15;
 const TOLERANCIA_META_H = TOLERANCIA_META_MIN / 60;
 
-function calcOp(op, params, ops) {
+function calcOp(op, params) {
   const tipo = params.tipos.find(t => t.id === op.tipoId) || params.tipos[0];
   const paletizado = tipo && tipo.modalidade === "paletizado";
   const pessoasRef = tipo ? tipo.pessoas : 0;
   const meta = metaDaOperacao(op, tipo, params);
   const metaHoras = meta.horas;
   /* Paletizado: não existe MdO terceirizada de referência, então não há
-     custo, bônus nem economia a apurar — a operação só registra volume/SKU.
-     Nas demais, a referência agora vem do benchmark por turmas do DIA
-     inteiro (ver referenciaBenchmarkOperacao), não mais de uma turma cheia
-     por operação isolada. */
-  const referencia = paletizado ? 0 : referenciaBenchmarkOperacao(op, tipo, params, ops);
+     custo, bônus nem economia a apurar — a operação só registra volume/SKU. */
+  const referencia = paletizado ? 0 : pessoasRef * params.custoTerceirizada;
   const custoTerc = paletizado ? 0 : (op.qtdTerceirizada || 0) * params.custoTerceirizada;
   /* qtdSuperior = QUANTIDADE DE BÔNUS da operação (não headcount).
      Dois valores por bônus, propositalmente diferentes:
@@ -478,7 +431,7 @@ function calcOp(op, params, ops) {
    economia_dia = referencia_dia − custo_real_dia. */
 function calcDia(diaTs, ops, params, diasTerc) {
   const doDia = ops.filter(o => diaPlanejado(o) === diaTs && o.status !== "cancelada");
-  const calcs = doDia.map(o => calcOp(o, params, ops));
+  const calcs = doDia.map(o => calcOp(o, params));
   const referenciaDia = calcs.reduce((s, c) => s + c.referencia, 0);
   const bonusDia = calcs.reduce((s, c) => s + c.bonusPago, 0);
   const qtdTercDia = (diasTerc && diasTerc[diaTs] && diasTerc[diaTs].qtd) || 0;
@@ -501,7 +454,7 @@ function analisarProdutividade(ops, params) {
     const validas = ops
       .filter(o => o.tipoId === tipo.id && o.status === "concluida" && o.inicio && o.fim && o.volume > 0)
       .map(o => {
-        const c = calcOp(o, params, ops);
+        const c = calcOp(o, params);
         return { op: o, c, prod: c.prodReal };
       })
       .filter(x => x.prod && isFinite(x.prod) && x.prod > 0);
@@ -981,6 +934,13 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
   const [volReal, setVolReal] = useState({});
   const [salvando, setSalvando] = useState(null);
 
+  /* Com o parâmetro desligado (problema de celular/coletor em campo), os
+     mínimos caem a zero — as fotos continuam disponíveis, só deixam de
+     travar o início/fim da operação. */
+  const exigeFotos = params.exigirFotos !== false;
+  const minFotosIni = exigeFotos ? FOTOS_INICIO_OBRIGATORIAS : 0;
+  const minFotosFim = exigeFotos ? FOTOS_FIM_MIN : 0;
+
   /* Titularidade: quem iniciou é quem finaliza.
      Sem conferente identificado (nenhum cadastrado ainda), mantém aberto —
      senão o app trava numa instalação sem cadastro. */
@@ -1019,8 +979,8 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     const doca = docaSel[id];
     if (!doca) return alertar("Selecione a doca antes de iniciar a operação.");
     const fotos = fotosIni[id] || [];
-    if (fotos.length < FOTOS_INICIO_OBRIGATORIAS) {
-      return alertar(`Tire as ${FOTOS_INICIO_OBRIGATORIAS} fotos obrigatórias antes de iniciar.`);
+    if (fotos.length < minFotosIni) {
+      return alertar(`Tire as ${minFotosIni} fotos obrigatórias antes de iniciar.`);
     }
 
     setSalvando(id);
@@ -1054,8 +1014,8 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
       return alertar("Informe a quantidade de volumes antes de finalizar.");
     }
     const fotos = fotosFim[id] || [];
-    if (fotos.length < FOTOS_FIM_MIN) {
-      return alertar(`Tire ao menos ${FOTOS_FIM_MIN} foto antes de finalizar.`);
+    if (fotos.length < minFotosFim) {
+      return alertar(`Tire ao menos ${minFotosFim} foto antes de finalizar.`);
     }
 
     setSalvando(id);
@@ -1116,7 +1076,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
         ) : (
           <div style={{ display: "grid", gap: 14 }}>
             {abertas.map(op => {
-              const c = calcOp(op, params, ops);
+              const c = calcOp(op, params);
               const rodando = op.status === "em_andamento";
               const elapsed = op.inicio ? (now - op.inicio) / 3600000 : 0;
               /* só fica vermelho depois da tolerância — dentro dela o bônus
@@ -1228,13 +1188,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         <CapturaFotos
                           fotos={fotosIni[op.id] || []}
                           setFotos={(f) => setFotosIni(d => ({ ...d, [op.id]: f }))}
-                          max={FOTOS_INICIO_OBRIGATORIAS} min={FOTOS_INICIO_OBRIGATORIAS}
-                          titulo={`Fotos de abertura (${FOTOS_INICIO_OBRIGATORIAS} obrigatórias)`}
+                          max={FOTOS_INICIO_OBRIGATORIAS} min={minFotosIni}
+                          titulo={exigeFotos
+                            ? `Fotos de abertura (${FOTOS_INICIO_OBRIGATORIAS} obrigatórias)`
+                            : "Fotos de abertura (opcional)"}
                           ajuda="Registre o veículo/carga antes de começar: placa, lacre e o estado da mercadoria." />
 
                         {(() => {
                           const prontoIni = docaSel[op.id] &&
-                            (fotosIni[op.id] || []).length >= FOTOS_INICIO_OBRIGATORIAS;
+                            (fotosIni[op.id] || []).length >= minFotosIni;
                           const gravando = salvando === op.id;
                           return (
                             <button
@@ -1291,13 +1253,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         <CapturaFotos
                           fotos={fotosFim[op.id] || []}
                           setFotos={(f) => setFotosFim(d => ({ ...d, [op.id]: f }))}
-                          max={FOTOS_FIM_MAX} min={FOTOS_FIM_MIN}
-                          titulo={`Fotos de fechamento (${FOTOS_FIM_MIN} a ${FOTOS_FIM_MAX})`}
+                          max={FOTOS_FIM_MAX} min={minFotosFim}
+                          titulo={exigeFotos
+                            ? `Fotos de fechamento (${FOTOS_FIM_MIN} a ${FOTOS_FIM_MAX})`
+                            : "Fotos de fechamento (opcional)"}
                           ajuda="Registre a carga finalizada: estufagem, lacre aplicado ou área liberada." />
 
                         {(() => {
                           const vr = parseInt(volReal[op.id], 10);
-                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= FOTOS_FIM_MIN;
+                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= minFotosFim;
                           const gravando = salvando === op.id;
                           return (
                             <button
@@ -1339,7 +1303,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
             <SectionTitle icon={CheckCircle2}>Finalizadas hoje <Badge>{finalizadasHoje.length}</Badge></SectionTitle>
             <div style={{ display: "grid", gap: 8 }}>
               {finalizadasHoje.map(op => {
-                const c = calcOp(op, params, ops);
+                const c = calcOp(op, params);
                 return (
                   <div key={op.id} style={{ ...styles.opRow, opacity: .92 }}>
                     <TipoIcon tipo={c.tipo} />
@@ -1899,7 +1863,7 @@ function Acompanhamento({ ops, params, now }) {
         <Coluna titulo="Pendentes · hoje" lista={pendentes} cor={C.prata} icone={Clock}
           alerta={atrasadas > 0 ? `${atrasadas} programada${atrasadas > 1 ? "s" : ""} para dias anteriores e ainda não iniciada${atrasadas > 1 ? "s" : ""}` : null}
           render={op => {
-          const c = calcOp(op, params, ops);
+          const c = calcOp(op, params);
           const prog = dataProgramada(diaPlanejado(op));
           return (
             <div key={op.id} style={{ ...styles.miniCard,
@@ -1918,7 +1882,7 @@ function Acompanhamento({ ops, params, now }) {
         }} />
 
         <Coluna titulo="Em Andamento" lista={andamento} cor={C.laranja} icone={Play} render={op => {
-          const c = calcOp(op, params, ops);
+          const c = calcOp(op, params);
           const el = op.inicio ? (now - op.inicio) / 3600000 : 0;
           const st = statusTempo(el, c.metaHoras);
           const cor = corTempo(st);
@@ -1960,7 +1924,7 @@ function Acompanhamento({ ops, params, now }) {
         <Coluna titulo="Finalizadas · hoje" lista={concluidas} cor={C.verde} icone={CheckCircle2}
           rodape={ocultas > 0 ? `+${plOp(ocultas)} de dias anteriores — veja em Relatórios` : null}
           render={op => {
-          const c = calcOp(op, params, ops);
+          const c = calcOp(op, params);
           return (
             <div key={op.id} style={{ ...styles.miniCard, borderLeft: `3px solid ${c.cumpriuMeta ? C.verde : C.vermelho}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
@@ -2106,7 +2070,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
   /* operações do mês selecionado que geraram bônus */
   const comBonus = useMemo(() => ops
     .filter(o => o.status === "concluida" && o.fim && mesDe(o.fim) === mesFiltro)
-    .map(o => ({ op: o, c: calcOp(o, params, ops) }))
+    .map(o => ({ op: o, c: calcOp(o, params) }))
     .filter(x => x.c.bonusPago > 0)
     .sort((a, b) => b.op.fim - a.op.fim)
   , [ops, params, mesFiltro]);
@@ -2143,7 +2107,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
     const q = buscaRateio.trim().toLowerCase();
     return ops
       .filter(o => o.status === "concluida" && o.fim)
-      .map(o => ({ op: o, c: calcOp(o, params, ops) }))
+      .map(o => ({ op: o, c: calcOp(o, params) }))
       .filter(x => x.c.bonusDistribuido > 0)
       .filter(x => (x.op.ref || "").toLowerCase().includes(q) || (x.op.idCliente || "").toLowerCase().includes(q) || (x.op.cliente || "").toLowerCase().includes(q))
       .sort((a, b) => b.op.fim - a.op.fim)
@@ -2711,7 +2675,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
           {lista.map(op => {
-            const c = calcOp(op, params, ops);
+            const c = calcOp(op, params);
             const emEdicao = editId === op.id;
             const temAjuste = (op.ajustes || []).length > 0;
             /* fundo por status: verde claro concluída, amarelo claro em
@@ -2994,7 +2958,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
   const [diaEvolucao, setDiaEvolucao] = useState(null);
   const concluidas = useMemo(() =>
     ops.filter(o => o.status === "concluida")
-      .map(o => ({ op: o, c: calcOp(o, params, ops) }))
+      .map(o => ({ op: o, c: calcOp(o, params) }))
       .sort((a, b) => a.op.fim - b.op.fim)
   , [ops, params]);
 
@@ -3027,7 +2991,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
   const emAndamento = useMemo(() => ops
     .filter(o => o.status === "em_andamento" && o.inicio)
     .map(o => {
-      const c = calcOp(o, params, ops);
+      const c = calcOp(o, params);
       const el = (now - o.inicio) / 3600000;
       return { op: o, c, el, st: statusTempo(el, c.metaHoras) };
     })
@@ -3127,7 +3091,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
       const rec = { ops: 0, volume: 0, pessoas: 0 };
       const exp = { ops: 0, volume: 0, pessoas: 0 };
       todasDoDia.forEach(o => {
-        const c = calcOp(o, params, ops);
+        const c = calcOp(o, params);
         volume += o.volume || 0;
         pessoas += c.pessoas || 0;
         horas += c.metaHoras || 0;
@@ -3302,7 +3266,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
                 {ops.filter(o => diaPlanejado(o) === diaSel.ts && o.status !== "cancelada").map(o => {
-                  const c = calcOp(o, params, ops);
+                  const c = calcOp(o, params);
                   const corStatus = o.status === "concluida" ? C.verde : o.status === "em_andamento" ? C.laranja : C.prata;
                   const labelStatus = o.status === "concluida" ? "Concluída" : o.status === "em_andamento" ? "Em andamento" : "Pendente";
                   return (
@@ -4064,7 +4028,7 @@ function Relatorios({ ops, params, diasTerc }) {
     return ops
       .filter(o => o.status === "concluida" && o.fim >= ini && o.fim <= fim)
       .filter(o => cliFiltro === "todos" || o.cliente === cliFiltro)
-      .map(o => ({ op: o, c: calcOp(o, params, ops) }))
+      .map(o => ({ op: o, c: calcOp(o, params) }))
       .sort((a, b) => a.op.fim - b.op.fim);
   }, [ops, params, de, ate, cliFiltro]);
 
@@ -4122,7 +4086,7 @@ function Relatorios({ ops, params, diasTerc }) {
     .filter(o => (o.status === "pendente" || o.status === "em_andamento"))
     .filter(o => cliFiltro === "todos" || o.cliente === cliFiltro)
     .filter(o => diaPlanejado(o) >= inicioDoDia(Date.now()))
-    .map(o => ({ op: o, c: calcOp(o, params, ops) }))
+    .map(o => ({ op: o, c: calcOp(o, params) }))
     .sort((a, b) => diaPlanejado(a.op) - diaPlanejado(b.op))
   , [ops, params, cliFiltro]);
 
@@ -4132,7 +4096,7 @@ function Relatorios({ ops, params, diasTerc }) {
     const doAno = ops
       .filter(o => o.status === "concluida" && o.fim && new Date(o.fim).getFullYear() === ano)
       .filter(o => cliFiltro === "todos" || o.cliente === cliFiltro)
-      .map(o => ({ op: o, c: calcOp(o, params, ops) }));
+      .map(o => ({ op: o, c: calcOp(o, params) }));
     const n = doAno.length;
     const noPrazo = doAno.filter(x => x.c.cumpriuMeta).length;
     const volume = doAno.reduce((s, x) => s + (x.op.volume || 0), 0);
@@ -4215,7 +4179,7 @@ function Relatorios({ ops, params, diasTerc }) {
     ops.filter(o => o.status !== "cancelada").forEach(o => {
       const ts = diaPlanejado(o);
       if (ts < ini || ts > fim) return;
-      const c = calcOp(o, params, ops);
+      const c = calcOp(o, params);
       const d = garante(ts);
       const qtdBonus = c.cumpriuMeta === true ? (o.qtdSuperior || 0) : 0;
       /* Este relatório é para a prestadora: o valor de bônus aqui é o CUSTO
@@ -4682,7 +4646,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
 
   const construirLinha = (ts, doDia) => {
-    const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params, ops) }));
+    const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
     /* previsto = MdO terceirizada CADASTRADA NO TIPO da operação (c.pessoasRef,
        o mesmo "tipo.pessoas" de Parâmetros), somada por operação do dia — nunca
        o qtdTerceirizada digitado na operação (esse é o REALIZADO). Tipo manual
@@ -5843,6 +5807,7 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       clientes: (draft.clientes || []).map(c => c.trim()).filter(Boolean),
       equipe: (draft.equipe || params.equipe || []).map(c => c.trim()).filter(Boolean),
       metaDinamica: draft.metaDinamica !== false,
+      exigirFotos: draft.exigirFotos !== false,
       conferentes: (draft.conferentes || []).filter(c => c.nome && c.pin)
         .map(c => ({ id: c.id || uid(), nome: c.nome.trim(), pin: c.pin.toString().trim() })),
       gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
@@ -6050,6 +6015,28 @@ function Parametros({ params, persistParams, persistOps, ops }) {
           </div>
         </div>
       </Sanfona>
+
+      <SectionTitle icon={Camera}>Fotos de Evidência</SectionTitle>
+      <p style={styles.helper}>
+        Controla se o app do conferente trava sem as fotos obrigatórias. Desligue temporariamente quando o
+        celular ou coletor da doca estiver com problema, para o processo não parar — e religue assim que resolver.
+      </p>
+      <div style={{ ...styles.card, marginBottom: 14 }}>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+          <input type="checkbox" checked={draft.exigirFotos !== false}
+            onChange={e => setV("exigirFotos", e.target.checked)}
+            style={{ width: 18, height: 18, marginTop: 2, accentColor: C.navy2, cursor: "pointer" }} />
+          <span>
+            <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13.5, color: C.navy }}>
+              Exigir fotos do conferente
+            </strong>
+            <div style={{ fontSize: 12, color: C.prata, marginTop: 3, lineHeight: 1.55 }}>
+              Ligada (padrão), o conferente só inicia com {FOTOS_INICIO_OBRIGATORIAS} fotos e só finaliza com
+              ao menos {FOTOS_FIM_MIN}. Desligada, as fotos ficam opcionais e a operação segue mesmo sem tirá-las.
+            </div>
+          </span>
+        </label>
+      </div>
 
       <SectionTitle icon={Truck}>Tipos de Operação e Linha de Base</SectionTitle>
       <p style={styles.helper}>
