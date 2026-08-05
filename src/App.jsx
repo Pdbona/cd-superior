@@ -3229,6 +3229,27 @@ function Dashboard({ ops, params, now, diasTerc }) {
     economia: s.economia + d.economiaDia
   }), { referencia: 0, custoReal: 0, bonus: 0, economia: 0 }), [porDiaMes]);
 
+  /* dataset só do gráfico "Economia por Dia": mostra TODOS os dias do mês
+     no eixo X (não só os que têm operação/terceirizado), para o eixo não
+     "pular" datas. Os dias sem dado saem com custoRealDia/economiaDia = 0
+     (calcDia já cobre isso), então a coluna simplesmente não aparece —
+     sem precisar de tratamento especial para dias futuros. A lista de
+     cards abaixo continua usando porDiaMes (só os dias com dado, senão
+     viraria uma lista de ~30 cards vazios). */
+  const porDiaMesGrafico = useMemo(() => {
+    const hoje = inicioDoDia(Date.now());
+    const ano = Math.floor(mAtual / 12), mes = mAtual % 12;
+    const totalDias = new Date(ano, mes + 1, 0).getDate();
+    return Array.from({ length: totalDias }, (_, i) => {
+      const ts = new Date(ano, mes, i + 1).getTime();
+      return {
+        ...calcDia(ts, ops, params, diasTerc),
+        rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        futuro: ts > hoje
+      };
+    });
+  }, [ops, params, diasTerc, mAtual]);
+
   /* A calibragem de metas saiu daqui para a aba Parâmetros: é ajuste de
      cadastro, não gestão à vista — e esta tela roda em TV no CD. */
 
@@ -3667,7 +3688,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
         <>
           <div style={{ ...styles.chartCard, marginBottom: 14 }}>
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={porDiaMes} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
+              <BarChart data={porDiaMesGrafico} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
                 <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
