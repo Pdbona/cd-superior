@@ -5115,12 +5115,20 @@ function RaioXMdO({ ops, params, diasTerc }) {
 
   const construirLinha = (ts, doDia) => {
     const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
-    /* previsto = MdO terceirizada CADASTRADA NO TIPO da operação (c.pessoasRef,
-       o mesmo "tipo.pessoas" de Parâmetros), somada por operação do dia — nunca
-       o qtdTerceirizada digitado na operação (esse é o REALIZADO). Tipo manual
-       com 0 pessoas cadastradas contribui zero, ou seja, fica desconsiderado. */
-    const tercPrevistos = calcs.reduce((s, { c }) => s + (c.paletizado ? 0 : c.pessoasRef), 0);
-    const custoPrevisto = calcs.reduce((s, { c }) => s + c.referencia, 0);
+    /* previsto = premissa por FAIXA de quantidade de operações que exigem MdO
+       terceirizada no dia (paletizado não exige MdO, então não entra na
+       contagem) — orientação do Pablo, não é mais soma do headcount de cada
+       tipo:
+         1 operação        → 0 terceiros
+         2 a 3 operações    → 4 terceiros
+         4 a 5 operações    → 8 terceiros
+         6 a 7 operações    → 12 terceiros
+         8 a 9 operações    → 16 terceiros
+       Ou seja: a cada 2 operações adicionais, +4 terceirizados previstos —
+       floor(nOpsMdO / 2) * 4 reproduz exatamente essa escada. */
+    const nOpsMdO = calcs.filter(({ c }) => !c.paletizado).length;
+    const tercPrevistos = Math.floor(nOpsMdO / 2) * 4;
+    const custoPrevisto = tercPrevistos * params.custoTerceirizada;
     const tercRealizado = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
     const custoRealizado = tercRealizado * params.custoTerceirizada;
     const qtdBonus = calcs.reduce((s, { op, c }) => s + (c.cumpriuMeta ? (op.qtdSuperior || 0) : 0), 0);
@@ -5272,7 +5280,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
           <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
             <table style={{ ...styles.table, minWidth: 640 }}>
               <thead>
-                <tr>{["ID Superior", "ID Cliente", "Cliente", "Tipo", "Fluxo", "Terc.", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+                <tr>{["ID Superior", "ID Cliente", "Cliente", "Tipo", "Fluxo", "Vol. Realizado", "Terc.", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {diaSelecionado.ops.map(({ op, c }, i) => (
@@ -5282,6 +5290,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
                     <td style={styles.td}>{op.cliente}</td>
                     <td style={styles.td}>{c.tipo?.label || "—"}</td>
                     <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                    <td style={styles.tdMono}>{c.volApurado != null ? c.volApurado.toLocaleString("pt-BR") : "—"}</td>
                     <td style={styles.tdMono}>{op.qtdTerceirizada || 0}</td>
                     <td style={styles.tdMono}>{c.cumpriuMeta ? (op.qtdSuperior || 0) : 0}</td>
                     <td style={styles.td}>
