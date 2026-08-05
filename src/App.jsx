@@ -2829,7 +2829,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
           ? `Nenhuma operação encontrada para "${busca}".`
           : "Nenhuma operação nas últimas 72h. Use a busca para localizar registros anteriores."} />
       ) : (
-        <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10, alignItems: "start" }}>
           {lista.map(op => {
             const c = calcOp(op, params);
             const emEdicao = editId === op.id;
@@ -2844,10 +2844,10 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
               : op.status === "em_andamento" ? C.amarelo
               : op.status === "cancelada" ? C.vermelho : C.prataClaro;
             return (
-              <div key={op.id} style={{ ...styles.card, padding: 14, background: fundo, borderLeft: `4px solid ${barra}` }}>
-                <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div key={op.id} style={{ ...styles.card, padding: 11, background: fundo, borderLeft: `4px solid ${barra}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
                   <TipoIcon tipo={c.tipo} />
-                  <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ flex: 1, minWidth: 160 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       <strong style={{ color: C.navy, fontFamily: "'Montserrat',sans-serif", fontSize: 14 }}>{op.ref}</strong>
                       <StatusTag status={op.status} />
@@ -3056,6 +3056,24 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                       );
                     })()}
 
+                    {/* histórico completo só aparece aqui, dentro do modo de edição — no
+                       card fechado ele vira só uma linha com a data do último ajuste
+                       (ver bloco {temAjuste && !emEdicao} abaixo), pra caber mais
+                       caixinhas lado a lado na lista. */}
+                    {temAjuste && (
+                      <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px dashed ${C.prataClaro}` }}>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>
+                          Histórico de ajustes
+                        </div>
+                        {op.ajustes.map((a, i) => (
+                          <div key={i} style={{ fontSize: 11.5, color: C.texto, marginBottom: 5, lineHeight: 1.5 }}>
+                            <span style={{ color: C.prata, fontFamily: "'Roboto Mono',monospace" }}>{fmtDT(a.quando)}</span> — {a.motivo}
+                            <div style={{ color: C.prata, fontSize: 11 }}>{a.de} → {a.para}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {msg && <div style={styles.erro}><AlertTriangle size={15} /> {msg}</div>}
 
                     <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
@@ -3066,16 +3084,11 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
                 )}
 
                 {temAjuste && !emEdicao && (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.prataClaro}` }}>
-                    <div style={{ fontSize: 10.5, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>
-                      Histórico de ajustes
-                    </div>
-                    {op.ajustes.map((a, i) => (
-                      <div key={i} style={{ fontSize: 11.5, color: C.texto, marginBottom: 5, lineHeight: 1.5 }}>
-                        <span style={{ color: C.prata, fontFamily: "'Roboto Mono',monospace" }}>{fmtDT(a.quando)}</span> — {a.motivo}
-                        <div style={{ color: C.prata, fontSize: 11 }}>{a.de} → {a.para}</div>
-                      </div>
-                    ))}
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.prataClaro}`, fontSize: 11, color: C.prata }}>
+                    Último ajuste:{" "}
+                    <span style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>
+                      {fmtDT(op.ajustes[op.ajustes.length - 1].quando)}
+                    </span>
                   </div>
                 )}
               </div>
@@ -5116,17 +5129,22 @@ function RaioXMdO({ ops, params, diasTerc }) {
   const construirLinha = (ts, doDia) => {
     const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
     /* previsto = premissa por FAIXA de quantidade de operações que exigem MdO
-       terceirizada no dia (paletizado não exige MdO, então não entra na
-       contagem) — orientação do Pablo, não é mais soma do headcount de cada
-       tipo:
+       terceirizada no dia — orientação do Pablo, não é mais soma do headcount
+       de cada tipo:
          1 operação        → 0 terceiros
          2 a 3 operações    → 4 terceiros
          4 a 5 operações    → 8 terceiros
          6 a 7 operações    → 12 terceiros
          8 a 9 operações    → 16 terceiros
        Ou seja: a cada 2 operações adicionais, +4 terceirizados previstos —
-       floor(nOpsMdO / 2) * 4 reproduz exatamente essa escada. */
-    const nOpsMdO = calcs.filter(({ c }) => !c.paletizado).length;
+       floor(nOpsMdO / 2) * 4 reproduz exatamente essa escada.
+       "Exige MdO" não é só "não é paletizado": um tipo manual pode ter 0
+       pessoas cadastradas (ex.: Fracionado) e nesse caso também não exige
+       terceirizado — mesmo tratamento do paletizado. Contar esse tipo de
+       operação inflava a faixa indevidamente (bug real em 05/08/2026: 5
+       operações no dia, das quais só 1 exigia MdO, e o relatório mostrava
+       4 terceiros previstos em vez de 0). */
+    const nOpsMdO = calcs.filter(({ c }) => !c.paletizado && c.pessoasRef > 0).length;
     const tercPrevistos = Math.floor(nOpsMdO / 2) * 4;
     const custoPrevisto = tercPrevistos * params.custoTerceirizada;
     const tercRealizado = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
