@@ -6342,7 +6342,7 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         .map(g => ({ id: g.id || uid(), nome: g.nome.trim(), pin: g.pin.toString().trim() })),
       tipos: draft.tipos.map(t => ({ ...t, label: t.label.trim() || "Operação",
         modalidade: t.modalidade === "paletizado" ? "paletizado" : "manual",
-        pessoas: Math.max(1, parseInt(t.pessoas, 10) || 1),
+        pessoas: Math.max(0, parseInt(t.pessoas, 10) || 0),
         metaHoras: Math.max(0.1, parseFloat(t.metaHoras) || 0.1),
         baseVolume: Math.max(0, parseInt(t.baseVolume, 10) || 0),
         basePessoas: Math.max(0, parseInt(t.basePessoas, 10) || 0),
