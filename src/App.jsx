@@ -3332,7 +3332,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 8, marginBottom: 10, minWidth: 0 }}>
             {forecast.map(d => {
               const vazio = d.ops === 0;
-              const cor = d.subdim > 0 ? C.laranja : vazio ? C.prataClaro : C.navy2;
+              const cor = vazio ? C.prataClaro : C.navy2;
               return (
                 <div key={d.ts} onClick={() => setDiaSel(d)} style={{
                   background: d.hoje ? "#FFF9DB" : C.branco,
@@ -3361,26 +3361,11 @@ function Dashboard({ ops, params, now, diasTerc }) {
                       </div>
                     </div>
                   )}
-                  {d.subdim > 0 && (
-                    <div className="alerta-meta" style={{ marginTop: 6, padding: "3px 4px", borderRadius: 5,
-                      background: "#FFF4EB", color: C.laranjaEsc, fontSize: 9.5, fontWeight: 700, lineHeight: 1.3 }}>
-                      <AlertTriangle size={9} style={{ verticalAlign: -1 }} /> {d.subdim} sem equipe
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
-          {forecast.some(d => d.subdim > 0) && (
-            <div style={{ ...styles.alertBox, marginBottom: 22 }}>
-              <AlertTriangle size={16} />
-              <span>
-                Há operações programadas com equipe abaixo do indicado para o volume.
-                Reveja a alocação antes do dia — subdimensionar desgasta a equipe e compromete o fim do turno.
-              </span>
-            </div>
-          )}
-          {!forecast.some(d => d.subdim > 0) && <div style={{ marginBottom: 22 }} />}
+          <div style={{ marginBottom: 22 }} />
         </>
       )}
 
@@ -4152,10 +4137,9 @@ function abrirRomaneio(reg, pacote, dados) {
     if (!lista || lista.length === 0) {
       return `<div class="foto-box"><div class="foto-placeholder">Sem foto</div><div class="foto-legenda">${legenda}</div></div>`;
     }
-    return lista.map((f, i) => `
+    return lista.map(f => `
       <div class="foto-box">
-        <img src="${f.d}" style="width:100%;height:140px;object-fit:cover;border-radius:4px;margin-bottom:6px" />
-        <div class="foto-legenda">${legenda}${lista.length > 1 ? ` (${i + 1}/${lista.length})` : ""} — ${new Date(f.ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</div>
+        <img src="${f.d}" style="width:100%;height:140px;object-fit:cover;border-radius:4px" />
       </div>`).join("");
   };
 
@@ -4173,9 +4157,7 @@ function abrirRomaneio(reg, pacote, dados) {
   .cabecalho { display: flex; align-items: center; justify-content: space-between; border-bottom: 5px solid #00A651; padding-bottom: 14px; margin-bottom: 20px; }
   .cabecalho-esq { display: flex; align-items: center; gap: 14px; }
   .cabecalho-esq img { height: 44px; width: auto; }
-  .empresa-nome { font-family: 'Montserrat',Arial,sans-serif; font-weight: 800; font-size: 15px; color: #003d7a; }
-  .empresa-sub { font-size: 10px; color: #8A9BB0; }
-  .tipo-doc { font-family: 'Montserrat',Arial,sans-serif; font-weight: 800; font-size: 19px; color: #00A651; text-align: right; }
+  .tipo-doc { font-family: 'Montserrat',Arial,sans-serif; font-weight: 800; font-size: 19px; color: #2E7D32; text-align: right; }
   .data-doc { font-size: 10px; color: #8A9BB0; text-align: right; }
   .secao { margin-bottom: 16px; border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; }
   .secao-titulo { font-family: 'Montserrat',Arial,sans-serif; font-weight: 700; font-size: 10.5px; color: #003d7a; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
@@ -4198,7 +4180,7 @@ function abrirRomaneio(reg, pacote, dados) {
   .assinatura-nome { font-size: 9.5px; font-weight: 700; }
   .meta-col { font-size: 8.5px; color: #8A9BB0; line-height: 1.7; flex: 1; text-align: center; }
   .footer { margin-top: 28px; background: #003d7a; color: #fff; padding: 10px 16px; border-top: 3px solid #FF6B00; display: flex; align-items: center; justify-content: space-between; }
-  .footer img { height: 20px; vertical-align: middle; margin-right: 6px; opacity: .9; }
+  .footer img { height: 20px; vertical-align: middle; margin-right: 6px; opacity: .9; border-radius: 8px; }
   .footer-txt { font-size: 8px; }
 </style>
 </head>
@@ -4213,10 +4195,6 @@ function abrirRomaneio(reg, pacote, dados) {
   <div class="cabecalho">
     <div class="cabecalho-esq">
       <img src="${SUP_LOGO}" alt="Superior Transportes" />
-      <div>
-        <div class="empresa-nome">SUPERIOR TRANSPORTES</div>
-        <div class="empresa-sub">Gestão de Operações</div>
-      </div>
     </div>
     <div>
       <div class="tipo-doc">ROMANEIO DE ${tipoLabel}</div>
@@ -4231,7 +4209,7 @@ function abrirRomaneio(reg, pacote, dados) {
       ${dado("Referência Cliente / NF", reg.refCliente || reg.cliente)}
       ${dado("Cliente", reg.cliente)}
       ${dado("Doca", reg.doca)}
-      ${dado("Conferente", reg.conferenteInicio)}
+      ${dado("SKUs Planejados", reg.skus ? `${reg.skus.toLocaleString("pt-BR")} ref.` : null)}
     </div>
   </div>
 
@@ -4273,7 +4251,7 @@ function abrirRomaneio(reg, pacote, dados) {
     <div class="assinatura-col">
       <div class="assinatura-label">Assinado por</div>
       <div class="assinatura-linha"></div>
-      <div class="assinatura-nome">Operação Superior</div>
+      <div class="assinatura-nome">${reg.conferenteInicio || "Operação Superior"}</div>
     </div>
     <div class="meta-col">
       <div><strong>Referência:</strong> ${reg.ref}</div>
@@ -4283,7 +4261,6 @@ function abrirRomaneio(reg, pacote, dados) {
 
   <div class="footer">
     <div><img src="${SBS_LOGO}" alt="SBS" /><span class="footer-txt">Desenvolvido por SBS Solution</span></div>
-    <div class="footer-txt">Lean Manufacturing &amp; Logística</div>
   </div>
 </div>
 <script>document.title = "${nomeArquivo}_${(reg.ref || "").replace(/[^a-zA-Z0-9-]/g, "_")}";</script>
@@ -6231,6 +6208,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
   const toggle = (k) => setAberta(a => a === k ? null : k);
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
   const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
+  /* recalibragem: além de aceitar a sugestão do app, o gestor pode digitar
+     seu próprio tempo de referência — texto livre por tipo, guardado por id */
+  const [horasCustom, setHorasCustom] = useState({});
   const setV = (k, v) => { setDraft(d => ({ ...d, [k]: v })); setSalvo(false); };
   const setFotosMin = (direcao, etapa, v) => {
     const n = Math.max(0, parseInt(v, 10) || 0);
@@ -6920,14 +6900,32 @@ function Parametros({ params, persistParams, persistOps, ops }) {
                       Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
                       o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
                       <strong>{hhmm(a.horasSugeridas)}</strong>.
-                      <div style={{ marginTop: 8 }}>
+                      <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                         <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
                           onClick={() => { setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2)); }}>
-                          <CheckCircle2 size={14} /> Aplicar nos campos acima
+                          <CheckCircle2 size={14} /> Aplicar sugestão do app
                         </button>
                       </div>
-                      <div style={{ marginTop: 6, fontSize: 11.5 }}>
-                        O botão só preenche o campo — o valor passa a valer depois de <strong>Salvar parâmetros</strong>.
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.laranja}` }}>
+                        Prefere definir você mesmo o novo tempo de referência?
+                        <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <input style={{ ...styles.input, width: 100, padding: "5px 8px", fontSize: 12.5 }}
+                            type="number" min="0.1" step="0.25" placeholder="Ex.: 2.5"
+                            value={horasCustom[a.tipo.id] ?? ""}
+                            onChange={e => setHorasCustom(h => ({ ...h, [a.tipo.id]: e.target.value }))} />
+                          <span style={{ fontSize: 11.5 }}>horas</span>
+                          <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
+                            disabled={!(parseFloat(horasCustom[a.tipo.id]) > 0)}
+                            onClick={() => {
+                              setTipo(a.tipo.id, "baseHoras", horasCustom[a.tipo.id]);
+                              setHorasCustom(h => ({ ...h, [a.tipo.id]: "" }));
+                            }}>
+                            <CheckCircle2 size={14} /> Aplicar meu valor
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11.5 }}>
+                        Qualquer um dos botões só preenche o campo acima — o valor passa a valer depois de <strong>Salvar parâmetros</strong>.
                       </div>
                     </div>
                   )}
@@ -7244,6 +7242,7 @@ function CardOpAgora({ op, c, el, st, pausada }) {
       </div>
       <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
         {op.cliente} · {c.tipo?.label}
+        {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, fontSize: 11, flexWrap: "wrap" }}>
         <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 12, color: C.navy }}>
@@ -7293,6 +7292,7 @@ function CardOpFeita({ op, c, temFotos, onVerFotos }) {
       <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} /></div>
       <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
         {op.cliente} · {c.tipo?.label}
+        {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, fontSize: 11, flexWrap: "wrap" }}>
         <strong style={{ fontFamily: "'Roboto Mono',monospace", fontSize: 12, color: C.navy }}>
