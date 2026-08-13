@@ -3111,6 +3111,15 @@ function Dashboard({ ops, params, now, diasTerc }) {
   const [idxFotos, setIdxFotos] = useState([]);
   const [fotoAberta, setFotoAberta] = useState(null);
 
+  /* ---- Realizado — Período Anterior: mesma visão em quadradinhos do
+     Forecast, só que olhando pra trás. Fica escondida por padrão pra não
+     poluir a TV do CD; o gestor abre quando quer consultar um período. */
+  const [mostrarRealizado, setMostrarRealizado] = useState(false);
+  const hojeISO = new Date().toISOString().slice(0, 10);
+  const [realDe, setRealDe] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
+  const [realAte, setRealAte] = useState(hojeISO);
+  const [diaRealSel, setDiaRealSel] = useState(null);
+
   useEffect(() => {
     let vivo = true;
     lerIndiceFotos().then(r => { if (vivo) setIdxFotos(r); }).catch(() => {});
@@ -3266,6 +3275,56 @@ function Dashboard({ ops, params, now, diasTerc }) {
   /* A calibragem de metas saiu daqui para a aba Parâmetros: é ajuste de
      cadastro, não gestão à vista — e esta tela roda em TV no CD. */
 
+  /* ---- Realizado — Período Anterior ----
+     Agrupa pela data de CONCLUSÃO (op.fim), não pela data planejada — é o
+     que de fato aconteceu naquele dia, não o que estava programado. Limite
+     de 31 dias evita renderizar um calendário gigante se o gestor esticar
+     demais o período. */
+  const realizadoPeriodo = useMemo(() => {
+    const ini = inicioDoDia(new Date(realDe + "T00:00:00").getTime());
+    const fim = inicioDoDia(new Date(realAte + "T00:00:00").getTime());
+    if (!(ini <= fim) || (fim - ini) / 86400000 > 30) return [];
+    const porDia = {};
+    concluidas.forEach(({ op, c }) => {
+      const ts = inicioDoDia(op.fim);
+      if (ts < ini || ts > fim) return;
+      if (!porDia[ts]) porDia[ts] = {
+        ops: 0, volume: 0, pessoas: 0, horas: 0,
+        rec: { ops: 0, volume: 0, pessoas: 0 },
+        exp: { ops: 0, volume: 0, pessoas: 0 }
+      };
+      const d = porDia[ts];
+      d.ops += 1;
+      d.volume += op.volume || 0;
+      d.pessoas += c.pessoas || 0;
+      d.horas += c.tempoReal || 0;
+      const alvo = op.direcao === "recebimento" ? d.rec : d.exp;
+      alvo.ops += 1; alvo.volume += op.volume || 0; alvo.pessoas += c.pessoas || 0;
+    });
+    const dias = [];
+    for (let ts = ini; ts <= fim; ts += 86400000) {
+      const d = porDia[ts] || { ops: 0, volume: 0, pessoas: 0, horas: 0,
+        rec: { ops: 0, volume: 0, pessoas: 0 }, exp: { ops: 0, volume: 0, pessoas: 0 } };
+      dias.push({
+        ts,
+        curto: new Date(ts).toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
+        data: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        hoje: ehHoje(ts),
+        ...d
+      });
+    }
+    return dias;
+  }, [concluidas, realDe, realAte]);
+
+  const periodoInvalido = (() => {
+    const ini = inicioDoDia(new Date(realDe + "T00:00:00").getTime());
+    const fim = inicioDoDia(new Date(realAte + "T00:00:00").getTime());
+    return !(ini <= fim) || (fim - ini) / 86400000 > 30;
+  })();
+  const totalRealizado = realizadoPeriodo.reduce((s, d) => s + d.ops, 0);
+  const totalRealizadoRec = realizadoPeriodo.reduce((s, d) => s + d.rec.ops, 0);
+  const totalRealizadoExp = realizadoPeriodo.reduce((s, d) => s + d.exp.ops, 0);
+
   /* forecast: 7 dias à frente, a partir de hoje */
   const forecast = useMemo(() => {
     const hoje = inicioDoDia(Date.now());
@@ -3367,6 +3426,139 @@ function Dashboard({ ops, params, now, diasTerc }) {
           </div>
           <div style={{ marginBottom: 22 }} />
         </>
+      )}
+
+      {/* ===== REALIZADO — PERÍODO ANTERIOR =====
+         Mesma visão em quadradinhos do Forecast, só que pra trás: o gestor
+         escolhe um período já fechado e vê o que de fato aconteceu dia a
+         dia, agrupado pela data de CONCLUSÃO de cada operação. */}
+      <SectionTitle icon={Calendar}>
+        Realizado — Período Anterior
+        {mostrarRealizado && totalRealizado > 0 && <Badge>{totalRealizado} no período</Badge>}
+      </SectionTitle>
+      {!mostrarRealizado ? (
+        <div style={{ marginBottom: 22 }}>
+          <button style={styles.btnGhost} onClick={() => setMostrarRealizado(true)}>
+            <Calendar size={15} /> Consultar um período já realizado
+          </button>
+        </div>
+      ) : (
+        <>
+          <div style={{ ...styles.card, marginBottom: 14 }}>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <Field label="De">
+                <input type="date" style={styles.input} value={realDe} max={realAte}
+                  onChange={e => setRealDe(e.target.value)} />
+              </Field>
+              <Field label="Até">
+                <input type="date" style={styles.input} value={realAte} min={realDe} max={hojeISO}
+                  onChange={e => setRealAte(e.target.value)} />
+              </Field>
+              <button style={{ ...styles.btnGhost, padding: "11px 14px" }} onClick={() => setMostrarRealizado(false)}>
+                Fechar
+              </button>
+            </div>
+          </div>
+
+          {periodoInvalido ? (
+            <div style={{ marginBottom: 22 }}>
+              <EmptyState text="Selecione um período válido de até 31 dias." />
+            </div>
+          ) : totalRealizado === 0 ? (
+            <div style={{ marginBottom: 22 }}>
+              <EmptyState text="Nenhuma operação concluída nesse período." />
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                <span style={{ ...styles.pill, background: "#E3F2FD", color: "#0D47A1" }}>
+                  {totalRealizadoRec} recebimento{totalRealizadoRec !== 1 ? "s" : ""}
+                </span>
+                <span style={{ ...styles.pill, background: "#FDECEA", color: "#B71C1C" }}>
+                  {totalRealizadoExp} expediç{totalRealizadoExp !== 1 ? "ões" : "ão"}
+                </span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 8, marginBottom: 10 }}>
+                {realizadoPeriodo.map(d => {
+                  const vazio = d.ops === 0;
+                  const cor = vazio ? C.prataClaro : C.supVerde;
+                  return (
+                    <div key={d.ts} onClick={() => setDiaRealSel(d)} style={{
+                      background: d.hoje ? "#FFF9DB" : C.branco,
+                      border: `1px solid ${d.hoje ? "#F2CB4E" : C.prataClaro}`,
+                      borderTop: `4px solid ${cor}`,
+                      borderRadius: 9, padding: "10px 8px", textAlign: "center", minWidth: 0, cursor: "pointer"
+                    }}>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 11,
+                        color: d.hoje ? C.navy : C.prata, textTransform: "uppercase", letterSpacing: .3 }}>
+                        {d.hoje ? "HOJE" : d.curto}
+                      </div>
+                      <div style={{ fontSize: 10, color: C.prata, marginBottom: 6 }}>{d.data}</div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 22,
+                        color: vazio ? C.prataClaro : C.navy, lineHeight: 1.1 }}>
+                        {d.ops}
+                      </div>
+                      <div style={{ fontSize: 9.5, color: C.prata, marginBottom: 6 }}>
+                        {d.ops === 1 ? "operação" : "operações"}
+                      </div>
+                      {!vazio && (
+                        <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 5, display: "grid", gap: 3, textAlign: "left" }}>
+                          <FcDir sigla="REC" dados={d.rec} cor="#0D47A1" bg="#E3F2FD" />
+                          <FcDir sigla="EXP" dados={d.exp} cor="#B71C1C" bg="#FDECEA" />
+                          <div style={{ fontSize: 9.5, color: C.prata, textAlign: "center", marginTop: 2 }}>
+                            {d.pessoas}p · {hhmm(d.horas)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          <div style={{ marginBottom: 22 }} />
+        </>
+      )}
+
+      {diaRealSel && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(15,23,42,.55)", zIndex: 2000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16
+        }} onClick={() => setDiaRealSel(null)}>
+          <div style={{
+            background: C.branco, borderRadius: 12, maxWidth: 560, width: "100%",
+            maxHeight: "80vh", overflow: "auto", padding: "18px 20px", boxShadow: "0 10px 40px rgba(0,0,0,.3)"
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>
+                {diaRealSel.hoje ? "Hoje" : diaRealSel.curto} · {diaRealSel.data} — {diaRealSel.ops} {diaRealSel.ops === 1 ? "operação concluída" : "operações concluídas"}
+              </div>
+              <button onClick={() => setDiaRealSel(null)} style={{
+                border: "none", background: "transparent", fontSize: 22, lineHeight: 1, color: C.prata, cursor: "pointer"
+              }}>×</button>
+            </div>
+            {diaRealSel.ops === 0 ? (
+              <EmptyState text="Nenhuma operação concluída neste dia." />
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {concluidas.filter(({ op }) => inicioDoDia(op.fim) === diaRealSel.ts).map(({ op, c }) => (
+                  <div key={op.id} style={{ border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "10px 12px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <strong style={{ fontSize: 13, color: C.navy }}>{op.ref}</strong>
+                      <DirTag dir={op.direcao} />
+                    </div>
+                    <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente}</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
+                      <span>{c.tipo?.label}</span>
+                      {op.volume ? <span>{op.volume.toLocaleString("pt-BR")} un</span> : null}
+                      <span>{fmtDT(op.fim)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
@@ -3693,7 +3885,13 @@ function Dashboard({ ops, params, now, diasTerc }) {
                 <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="custoRealDia" fill={C.prata} radius={[4, 4, 0, 0]} name="Custo real do dia" />
-                <Bar dataKey="economiaDia" fill={C.supVerde} radius={[4, 4, 0, 0]} name="Economia do dia" />
+                <Bar dataKey="economiaDia" fill={C.supVerde} radius={[4, 4, 0, 0]} name="Economia do dia">
+                  {/* dia com economia negativa (custo real veio maior que a referência) pinta a
+                     coluna de vermelho — senão fica difícil enxergar o problema no meio do verde */}
+                  {porDiaMesGrafico.map((d, i) => (
+                    <Cell key={`eco-${d.rotulo}-${i}`} fill={d.economiaDia < 0 ? C.vermelho : C.supVerde} />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -4278,6 +4476,14 @@ function GaleriaFotos({ ops, params, persistOps }) {
   const [cliFiltro, setCliFiltro] = useState("");
   const [limpeza, setLimpeza] = useState(0);
 
+  /* ---- período: alternativa a "digitar a referência" quando o gestor
+     quer TODOS os romaneios de um intervalo de dias, não um processo
+     específico. Enquanto ativo, substitui a regra padrão de "só hoje". */
+  const hojeISO = new Date().toISOString().slice(0, 10);
+  const [usarPeriodo, setUsarPeriodo] = useState(false);
+  const [periodoDe, setPeriodoDe] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
+  const [periodoAte, setPeriodoAte] = useState(hojeISO);
+
   /* Este painel gera o romaneio (Recebimento/Expedição) — só interessa a
      operação já FINALIZADA (tem fotos de fechamento e volume conferido).
      Operações ainda em aberto (só fotos de início) não aparecem aqui. */
@@ -4307,16 +4513,20 @@ function GaleriaFotos({ ops, params, persistOps }) {
      fim do dia. Digitando algo na busca (referência/NF ou cliente), a
      restrição de dia cai, e ele pode resgatar romaneios de dias anteriores. */
   const buscando = busca.trim().length > 0;
+  const periodoValido = usarPeriodo && periodoDe && periodoAte
+    && new Date(periodoDe + "T00:00:00").getTime() <= new Date(periodoAte + "T00:00:00").getTime();
   const filtrado = useMemo(() => {
     const q = busca.trim().toLowerCase();
+    const ini = periodoValido ? new Date(periodoDe + "T00:00:00").getTime() : null;
+    const fim = periodoValido ? new Date(periodoAte + "T23:59:59").getTime() : null;
     return finalizadas
       .filter(r => !cliFiltro || r.cliente === cliFiltro)
-      .filter(r => buscando || ehHoje(r.tsFim))
+      .filter(r => periodoValido ? (r.tsFim >= ini && r.tsFim <= fim) : (buscando || ehHoje(r.tsFim)))
       .filter(r => !q ||
         String(r.ref || "").toLowerCase().includes(q) ||
         String(r.cliente || "").toLowerCase().includes(q))
       .sort((a, b) => (b.tsFim || 0) - (a.tsFim || 0));
-  }, [finalizadas, busca, buscando, cliFiltro]);
+  }, [finalizadas, busca, buscando, cliFiltro, periodoValido, periodoDe, periodoAte]);
 
   /* agrupa por dia para o gestor localizar pela data, que é como o
      cliente costuma pedir ("me manda as fotos de terça") */
@@ -4335,7 +4545,13 @@ function GaleriaFotos({ ops, params, persistOps }) {
     <div>
       <SectionTitle icon={FileText}>
         Gerar Romaneio <Badge>{plOp(filtrado.length)}</Badge>
-        {!buscando && (
+        {periodoValido ? (
+          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
+            {new Date(periodoDe + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
+            {" – "}
+            {new Date(periodoAte + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
+          </span>
+        ) : !buscando && (
           <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
             finalizadas hoje
           </span>
@@ -4345,8 +4561,15 @@ function GaleriaFotos({ ops, params, persistOps }) {
       <div style={{ ...styles.infoBox, marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 9 }}>
         <Timer size={16} color={C.laranjaEsc} style={{ flexShrink: 0, marginTop: 1 }} />
         <div>
-          Por padrão só aparecem as operações <strong>finalizadas hoje</strong>. Para resgatar
-          um romaneio de dias anteriores, digite a referência/NF do processo na busca abaixo.
+          {periodoValido ? (
+            <>Mostrando as operações finalizadas entre{" "}
+              <strong>{new Date(periodoDe + "T00:00:00").toLocaleDateString("pt-BR")}</strong> e{" "}
+              <strong>{new Date(periodoAte + "T00:00:00").toLocaleDateString("pt-BR")}</strong>. </>
+          ) : (
+            <>Por padrão só aparecem as operações <strong>finalizadas hoje</strong>. Para resgatar
+            um romaneio de dias anteriores, digite a referência/NF do processo na busca ou
+            selecione um período abaixo. </>
+          )}
           As fotos ficam disponíveis por <strong>{RETENCAO_DIAS} dias</strong> e depois são
           excluídas automaticamente — gere o romaneio antes do prazo.
           {limpeza > 0 && (
@@ -4357,7 +4580,7 @@ function GaleriaFotos({ ops, params, persistOps }) {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: usarPeriodo ? 10 : 16, alignItems: "center" }}>
         <div style={{ position: "relative", flex: "1 1 220px" }}>
           <Search size={15} color={C.prata} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }} />
           <input value={busca} onChange={e => setBusca(e.target.value)}
@@ -4369,10 +4592,28 @@ function GaleriaFotos({ ops, params, persistOps }) {
           <option value="">Todos os clientes</option>
           {clientes.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+        <button onClick={() => setUsarPeriodo(v => !v)} style={usarPeriodo
+          ? { ...styles.btnGhost, background: C.navy, color: C.branco, border: `1.5px solid ${C.navy}` }
+          : styles.btnGhost}>
+          <Calendar size={15} /> {usarPeriodo ? "Período ativo" : "Selecionar período"}
+        </button>
         <button onClick={recarregar} style={styles.btnGhost}>
           <RefreshCw size={15} style={{ animation: carregando ? "spin 1s linear infinite" : "none" }} /> Atualizar
         </button>
       </div>
+
+      {usarPeriodo && (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
+          <Field label="De">
+            <input type="date" style={styles.input} value={periodoDe} max={periodoAte}
+              onChange={e => setPeriodoDe(e.target.value)} />
+          </Field>
+          <Field label="Até">
+            <input type="date" style={styles.input} value={periodoAte} min={periodoDe} max={hojeISO}
+              onChange={e => setPeriodoAte(e.target.value)} />
+          </Field>
+        </div>
+      )}
 
       {carregando ? (
         <div style={{ textAlign: "center", padding: "40px 20px", color: C.prata, fontSize: 13.5 }}>
@@ -4382,6 +4623,7 @@ function GaleriaFotos({ ops, params, persistOps }) {
       ) : porDia.length === 0 ? (
         <EmptyState text={finalizadas.length === 0
           ? "Nenhuma operação finalizada ainda. Assim que o conferente concluir um recebimento ou expedição, ela aparece aqui para gerar o romaneio."
+          : periodoValido ? "Nenhuma operação finalizada nesse período."
           : buscando ? "Nenhum registro corresponde à busca."
           : "Nenhuma operação foi finalizada hoje ainda. Digite a referência na busca para localizar romaneios de dias anteriores."} />
       ) : (
