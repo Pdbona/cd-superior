@@ -79,7 +79,9 @@ function pinEmUsoGlobal(pin, params, exceto) {
   if (pin === (params.pinGestor || "1234")) return true;
   if ((params.gestores || []).some(g => g.pin === pin && g.id !== exceto)) return true;
   if ((params.conferentes || []).some(c => c.pin === pin && c.id !== exceto)) return true;
-  if ((params.perfis || []).some(p => p.pin === pin && p.id !== exceto)) return true;
+  /* PIN mora na pessoa vinculada ao perfil, não no perfil em si — ver
+     CadastroPerfis. */
+  if ((params.pessoasPerfil || []).some(p => p.pin === pin && p.id !== exceto)) return true;
   return false;
 }
 
@@ -322,10 +324,14 @@ const DEFAULT_PARAMS = {
     operacoes: true, acompanhar: true, dashboard: true, fotos: true,
     relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true
   },
-  /* perfis: cadastros próprios criados pelo Gestor ou pelo Administrador na
-     aba "Perfis" — cada um com PIN e telas escolhidas. Não inclui Gestor
+  /* perfis: papéis próprios criados pelo Gestor ou pelo Administrador na
+     aba "Perfis" — nome + telas escolhidas, SEM PIN. Não inclui Gestor
      (esse continua em "gestores", cadastro exclusivo do Administrador). */
   perfis: [],
+  /* pessoasPerfil: quem de fato tem acesso a cada perfil acima — nome +
+     PIN + perfilId. O PIN mora aqui, não no perfil, porque um mesmo
+     perfil pode ter várias pessoas, cada uma com o PIN dela. */
+  pessoasPerfil: [],
   clientes: ["GWT"],
   equipe: [],
   /* metaDinamica: quando ligada, a meta é calculada a partir do volume,
@@ -736,6 +742,11 @@ export default function App() {
         if (!Array.isArray(parsed.motivosPausa)) parsed.motivosPausa = DEFAULT_PARAMS.motivosPausa;
         /* params gravados antes do RBAC v2 fase 2 não têm perfis próprios */
         if (!Array.isArray(parsed.perfis)) parsed.perfis = [];
+        /* params gravados antes da fase 3 (perfil sem PIN) não têm pessoasPerfil;
+           e um perfil salvo na fase 2 pode ter vindo com PIN direto nele —
+           limpa esse campo velho pra não confundir com o novo modelo */
+        if (!Array.isArray(parsed.pessoasPerfil)) parsed.pessoasPerfil = [];
+        parsed.perfis = parsed.perfis.map(p => { const { pin, ...resto } = p; return resto; });
         setParams(parsed);
       }
     } catch (e) {}
@@ -836,6 +847,7 @@ function PortaEntrada({ params, onEntrar }) {
   const conferentes = params.conferentes || [];
   const gestores = params.gestores || [];
   const perfis = params.perfis || [];
+  const pessoasPerfil = params.pessoasPerfil || [];
   /* Sem conferente cadastrado, o acesso segue livre — senão o app trava
      numa instalação nova, antes de o gestor conseguir cadastrar alguém. */
   const exigePin = conferentes.length > 0;
@@ -846,7 +858,10 @@ function PortaEntrada({ params, onEntrar }) {
       setErro("PIN incorreto."); setPin(""); return;
     }
     if (pedirPin === "perfil") {
-      if (perfilAlvo && pin === perfilAlvo.pin) return onEntrar("perfil", perfilAlvo.nome, perfilAlvo);
+      /* PIN é da pessoa, não do perfil — cada perfil pode ter várias
+         pessoas, cada uma com o PIN dela (cadastro na aba Perfis). */
+      const pessoa = perfilAlvo && pessoasPerfil.find(p => p.perfilId === perfilAlvo.id && p.pin === pin);
+      if (pessoa) return onEntrar("perfil", pessoa.nome, perfilAlvo);
       setErro("PIN incorreto."); setPin(""); return;
     }
     if (pedirPin === "gestor") {
@@ -967,7 +982,9 @@ function PortaEntrada({ params, onEntrar }) {
                   : pedirPin === "administrador"
                   ? "Acesso restrito ao administrador do sistema."
                   : pedirPin === "perfil"
-                  ? "PIN definido na aba Perfis."
+                  ? (pessoasPerfil.some(p => p.perfilId === perfilAlvo?.id)
+                      ? "Cada pessoa tem seu PIN, cadastrado na aba Perfis."
+                      : "Nenhuma pessoa cadastrada neste perfil ainda — peça pro Gestor ou Administrador.")
                   : "Cada conferente tem seu PIN. Peça ao gestor se não souber o seu."}
               </div>
             </div>
@@ -1896,73 +1913,108 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 }
 
 /* ============================================================
-   CADASTRO DE PERFIS — RBAC v2 (fase 2)
+   CADASTRO DE PERFIS — RBAC v2 (fase 3)
    ------------------------------------------------------------
-   Combinado com Pablo em 14/ago/2026: tanto o Administrador quanto o
-   Gestor criam perfis próprios aqui (aba "Perfis" do Gestor e seção
-   equivalente do Administrador — mesmo componente nos dois lugares).
-   Cada perfil tem nome, PIN e as telas escolhidas dentre as do Gestor.
-   Não dá para cadastrar um perfil de Gestor por aqui: isso continua
-   exclusivo do Administrador, na seção "PIN dos Gestores" — o nome
-   "Gestor" (e "Administrador"/"Conferente") é bloqueado no cadastro.
+   Combinado com Pablo em 14/ago/2026: perfil (papel) e pessoa são
+   coisas separadas — igual o modelo pedido:
+     • Perfil = nome + telas liberadas. SEM PIN.
+     • Pessoa = nome + PIN, vinculada a um perfil. O PIN só existe
+       aqui, na hora de vincular alguém a um perfil.
+   Tanto o Administrador quanto o Gestor usam este mesmo componente
+   (aba "Perfis" do Gestor e seção equivalente do Administrador). Não
+   dá para cadastrar um perfil ou pessoa de "Gestor" por aqui — isso
+   continua exclusivo do Administrador, na seção "PIN dos Gestores".
    ============================================================ */
 function CadastroPerfis({ params, persistParams }) {
-  const [draft, setDraft] = useState(params.perfis || []);
-  const [novo, setNovo] = useState({ nome: "", pin: "", telas: {} });
-  const [erro, setErro] = useState("");
+  const [draftPerfis, setDraftPerfis] = useState(params.perfis || []);
+  const [draftPessoas, setDraftPessoas] = useState(params.pessoasPerfil || []);
+  const [novoPerfil, setNovoPerfil] = useState({ nome: "", telas: {} });
+  const [erroPerfil, setErroPerfil] = useState("");
+  /* form de nova pessoa fica um por perfil, guardado por perfilId */
+  const [novaPessoa, setNovaPessoa] = useState({});
+  const [erroPessoa, setErroPessoa] = useState({});
   const [salvo, setSalvo] = useState(false);
 
-  const toggleNovaTela = (id) => setNovo(n => ({ ...n, telas: { ...n.telas, [id]: !n.telas[id] } }));
+  /* --- perfil (papel): nome + telas, sem PIN --- */
+  const toggleNovaTela = (id) => setNovoPerfil(n => ({ ...n, telas: { ...n.telas, [id]: !n.telas[id] } }));
   const togglePerfilTela = (id, telaId) => {
-    setDraft(d => d.map(p => p.id === id ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
+    setDraftPerfis(d => d.map(p => p.id === id ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
     setSalvo(false);
   };
-  const setPerfilCampo = (id, campo, valor) => {
-    setDraft(d => d.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+  const setPerfilNome = (id, nome) => {
+    setDraftPerfis(d => d.map(p => p.id === id ? { ...p, nome } : p));
     setSalvo(false);
   };
-  const removerPerfil = (id) => { setDraft(d => d.filter(p => p.id !== id)); setSalvo(false); };
+  const removerPerfil = (id) => {
+    setDraftPerfis(d => d.filter(p => p.id !== id));
+    /* remove junto as pessoas vinculadas — um perfil apagado não pode
+       deixar gente com PIN órfão, sem tela nenhuma liberada */
+    setDraftPessoas(d => d.filter(pp => pp.perfilId !== id));
+    setSalvo(false);
+  };
 
   const adicionarPerfil = () => {
-    const nome = novo.nome.trim(), pin = novo.pin.trim();
-    if (!nome) return setErro("Dê um nome para o perfil.");
-    if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErro('Esse nome é reservado — use outro (ex.: "Administrativo").');
+    const nome = novoPerfil.nome.trim();
+    if (!nome) return setErroPerfil("Dê um nome para o perfil.");
+    if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErroPerfil('Esse nome é reservado — use outro (ex.: "Administrativo").');
+    if (draftPerfis.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErroPerfil("Já existe um perfil com esse nome.");
+    if (!Object.values(novoPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma tela para o novo perfil.");
+    setDraftPerfis(d => [...d, { id: uid(), nome, telas: { ...novoPerfil.telas } }]);
+    setNovoPerfil({ nome: "", telas: {} }); setErroPerfil(""); setSalvo(false);
+  };
+
+  /* --- pessoas: nome + PIN, vinculadas a um perfil já criado --- */
+  const setNovaPessoaCampo = (perfilId, campo, valor) =>
+    setNovaPessoa(n => ({ ...n, [perfilId]: { ...(n[perfilId] || { nome: "", pin: "" }), [campo]: valor } }));
+
+  const adicionarPessoa = (perfilId) => {
+    const dados = novaPessoa[perfilId] || { nome: "", pin: "" };
+    const nome = (dados.nome || "").trim(), pin = (dados.pin || "").trim();
+    const setErro = (msg) => setErroPessoa(e => ({ ...e, [perfilId]: msg }));
+    if (!nome) return setErro("Informe o nome da pessoa.");
     if (!/^\d{4,6}$/.test(pin)) return setErro("O PIN deve ter de 4 a 6 dígitos numéricos.");
-    if (draft.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErro("Já existe um perfil com esse nome.");
-    if (pinEmUsoGlobal(pin, { ...params, perfis: draft })) return setErro("Este PIN já está em uso por outro acesso do app.");
-    if (!Object.values(novo.telas).some(Boolean)) return setErro("Marque pelo menos uma tela para o novo perfil.");
-    setDraft(d => [...d, { id: uid(), nome, pin, telas: { ...novo.telas } }]);
-    setNovo({ nome: "", pin: "", telas: {} }); setErro(""); setSalvo(false);
+    if (draftPessoas.some(p => p.perfilId === perfilId && p.nome.toLowerCase() === nome.toLowerCase()))
+      return setErro("Já existe alguém com esse nome neste perfil.");
+    if (pinEmUsoGlobal(pin, { ...params, pessoasPerfil: draftPessoas })) return setErro("Este PIN já está em uso por outro acesso do app.");
+    setDraftPessoas(d => [...d, { id: uid(), nome, pin, perfilId }]);
+    setNovaPessoa(n => ({ ...n, [perfilId]: { nome: "", pin: "" } }));
+    setErro(""); setSalvo(false);
+  };
+  const removerPessoa = (id) => { setDraftPessoas(d => d.filter(p => p.id !== id)); setSalvo(false); };
+  const setPessoaCampo = (id, campo, valor) => {
+    setDraftPessoas(d => d.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+    setSalvo(false);
   };
 
   const salvar = () => {
-    const clean = draft.filter(p => p.nome && p.pin)
-      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), pin: p.pin.toString().trim(), telas: p.telas || {} }));
-    persistParams({ ...params, perfis: clean });
-    setDraft(clean); setSalvo(true); setTimeout(() => setSalvo(false), 2500);
+    const cleanPerfis = draftPerfis.filter(p => p.nome)
+      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {} }));
+    const idsValidos = new Set(cleanPerfis.map(p => p.id));
+    /* pessoa sem nome/PIN ou apontando pra um perfil que não existe mais
+       (removido nesta mesma edição) não é salva */
+    const cleanPessoas = draftPessoas.filter(p => p.nome && p.pin && idsValidos.has(p.perfilId))
+      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), pin: p.pin.toString().trim(), perfilId: p.perfilId }));
+    persistParams({ ...params, perfis: cleanPerfis, pessoasPerfil: cleanPessoas });
+    setDraftPerfis(cleanPerfis); setDraftPessoas(cleanPessoas);
+    setSalvo(true); setTimeout(() => setSalvo(false), 2500);
   };
 
   return (
     <div>
-      <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draft.length}</Badge></SectionTitle>
+      <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draftPerfis.length}</Badge></SectionTitle>
       <p style={styles.helper}>
-        Crie perfis próprios (ex.: Administrativo, Supervisor) com PIN e telas escolhidas dentre as do painel do
-        Gestor. PIN de Gestor continua exclusivo do Administrador — aqui não dá para cadastrar um novo Gestor.
+        Um <strong>perfil</strong> é só um papel — nome e telas liberadas, sem PIN. Depois de criado, vincule
+        cada <strong>pessoa</strong> a ele com nome e PIN próprios — é isso que ela vai digitar para entrar.
+        PIN de Gestor continua exclusivo do Administrador, na seção acima.
       </p>
 
       <div style={{ ...styles.card, marginBottom: 16 }}>
         <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, marginBottom: 12 }}>Novo perfil</div>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 14 }}>
+        <div style={{ marginBottom: 14, maxWidth: 340 }}>
           <Field label="Nome do perfil">
-            <input style={styles.input} value={novo.nome}
-              onChange={e => { setNovo(n => ({ ...n, nome: e.target.value })); setErro(""); }}
+            <input style={styles.input} value={novoPerfil.nome}
+              onChange={e => { setNovoPerfil(n => ({ ...n, nome: e.target.value })); setErroPerfil(""); }}
               placeholder="Ex.: Administrativo" />
-          </Field>
-          <Field label="PIN (4 a 6 dígitos)">
-            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-              inputMode="numeric" maxLength={6} value={novo.pin}
-              onChange={e => { setNovo(n => ({ ...n, pin: e.target.value.replace(/\D/g, "") })); setErro(""); }}
-              placeholder="0000" />
           </Field>
         </div>
         <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
@@ -1970,7 +2022,7 @@ function CadastroPerfis({ params, persistParams }) {
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
           {TABS_GESTOR.map(t => {
-            const ligada = !!novo.telas[t.id];
+            const ligada = !!novoPerfil.telas[t.id];
             return (
               <button key={t.id} onClick={() => toggleNovaTela(t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
                 {t.label}
@@ -1978,43 +2030,82 @@ function CadastroPerfis({ params, persistParams }) {
             );
           })}
         </div>
-        {erro && <div style={styles.erro}><AlertTriangle size={15} /> {erro}</div>}
+        {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
         <button style={styles.btnPrimary} onClick={adicionarPerfil}><Plus size={15} /> Adicionar perfil</button>
       </div>
 
-      {draft.length === 0 ? (
+      {draftPerfis.length === 0 ? (
         <div style={styles.empty}>Nenhum perfil próprio cadastrado ainda.</div>
       ) : (
         <div style={{ display: "grid", gap: 10, marginBottom: 8 }}>
-          {draft.map(p => (
-            <div key={p.id} style={{ ...styles.card, borderLeft: `4px solid ${C.verde}` }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <label style={styles.fieldLabel}>Nome</label>
-                  <input style={styles.input} value={p.nome} onChange={e => setPerfilCampo(p.id, "nome", e.target.value)} />
+          {draftPerfis.map(perfil => {
+            const pessoasDoPerfil = draftPessoas.filter(p => p.perfilId === perfil.id);
+            const formPessoa = novaPessoa[perfil.id] || { nome: "", pin: "" };
+            return (
+              <div key={perfil.id} style={{ ...styles.card, borderLeft: `4px solid ${C.verde}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <label style={styles.fieldLabel}>Nome do perfil</label>
+                    <input style={styles.input} value={perfil.nome} onChange={e => setPerfilNome(perfil.id, e.target.value)} />
+                  </div>
+                  <button style={styles.iconBtnDanger} title="Remover perfil" onClick={() => removerPerfil(perfil.id)}>
+                    <Trash2 size={14} />
+                  </button>
                 </div>
-                <div>
-                  <label style={styles.fieldLabel}>PIN</label>
-                  <input style={{ ...styles.input, width: 100, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5 }}
-                    inputMode="numeric" maxLength={6} value={p.pin}
-                    onChange={e => setPerfilCampo(p.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {TABS_GESTOR.map(t => {
+                    const ligada = !!perfil.telas?.[t.id];
+                    return (
+                      <button key={t.id} onClick={() => togglePerfilTela(perfil.id, t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
+                        {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
-                <button style={styles.iconBtnDanger} title="Remover perfil" onClick={() => removerPerfil(p.id)}>
-                  <Trash2 size={14} />
-                </button>
+
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy, marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
+                    <HardHat size={14} color={C.prata} /> Pessoas neste perfil <Badge>{pessoasDoPerfil.length}</Badge>
+                  </div>
+
+                  {pessoasDoPerfil.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8, marginBottom: 12 }}>
+                      {pessoasDoPerfil.map(pessoa => (
+                        <div key={pessoa.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
+                          <input style={{ ...styles.input, flex: 1, minWidth: 0, padding: "6px 8px", fontSize: 12.5 }}
+                            value={pessoa.nome} onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
+                          <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
+                            inputMode="numeric" maxLength={6} value={pessoa.pin}
+                            onChange={e => setPessoaCampo(pessoa.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                          <button style={styles.iconBtnDanger} title="Remover pessoa" onClick={() => removerPessoa(pessoa.id)}>
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
+                    <Field label="Nome da pessoa">
+                      <input style={styles.input} value={formPessoa.nome}
+                        onChange={e => { setNovaPessoaCampo(perfil.id, "nome", e.target.value); setErroPessoa(er => ({ ...er, [perfil.id]: "" })); }}
+                        onKeyDown={e => e.key === "Enter" && adicionarPessoa(perfil.id)}
+                        placeholder="Ex.: Maria Silva" />
+                    </Field>
+                    <Field label="PIN (4 a 6 dígitos)">
+                      <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                        inputMode="numeric" maxLength={6} value={formPessoa.pin}
+                        onChange={e => { setNovaPessoaCampo(perfil.id, "pin", e.target.value.replace(/\D/g, "")); setErroPessoa(er => ({ ...er, [perfil.id]: "" })); }}
+                        onKeyDown={e => e.key === "Enter" && adicionarPessoa(perfil.id)}
+                        placeholder="0000" />
+                    </Field>
+                    <button style={styles.btnPrimary} onClick={() => adicionarPessoa(perfil.id)}><Plus size={15} /> Adicionar</button>
+                  </div>
+                  {erroPessoa[perfil.id] && <div style={styles.erro}><AlertTriangle size={15} /> {erroPessoa[perfil.id]}</div>}
+                </div>
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {TABS_GESTOR.map(t => {
-                  const ligada = !!p.telas?.[t.id];
-                  return (
-                    <button key={t.id} onClick={() => togglePerfilTela(p.id, t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -6956,13 +7047,11 @@ function Parametros({ params, persistParams, persistOps, ops }) {
     if (!/^\d{4,6}$/.test(pin)) return setErroConf("O PIN deve ter de 4 a 6 dígitos numéricos.");
     const lista = draft.conferentes || [];
     if (lista.some(c => c.nome.toLowerCase() === nome.toLowerCase())) return setErroConf("Já existe um conferente com esse nome.");
-    if (lista.some(c => c.pin === pin)) return setErroConf("Este PIN já está em uso por outro conferente.");
-    if (pin === (draft.pinGestor || "1234")) return setErroConf("Este PIN é o do gestor. Escolha outro.");
-    /* gestores, perfis e o PIN do Administrador não ficam mais visíveis nem
-       editáveis aqui (RBAC v2 fase 2) — mas ainda entram na checagem de
-       unicidade, senão duas pessoas cairiam no mesmo PIN sem perceber. */
-    if ((params.perfis || []).some(p => p.pin === pin)) return setErroConf("Este PIN já está em uso por um perfil cadastrado.");
-    if (pin === PIN_ADMINISTRADOR) return setErroConf("Este PIN é reservado.");
+    /* gestores, pessoas de perfil e o PIN do Administrador não ficam mais
+       visíveis nem editáveis aqui (RBAC v2) — mas ainda entram na checagem
+       de unicidade, senão duas pessoas cairiam no mesmo PIN sem perceber. */
+    if (pinEmUsoGlobal(pin, { ...params, conferentes: lista, pinGestor: draft.pinGestor }))
+      return setErroConf("Este PIN já está em uso por outro acesso do app.");
     setDraft(d => ({ ...d, conferentes: [...(d.conferentes || []), { id: uid(), nome, pin }] }));
     setNovoConf({ nome: "", pin: "" }); setErroConf(""); setSalvo(false);
   };
