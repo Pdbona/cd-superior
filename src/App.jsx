@@ -46,8 +46,9 @@ const SHARED = true; // dados visíveis a todos que usam este app
 const PIN_ADMINISTRADOR = "130399";
 
 /* Abas do painel do Gestor — em escopo de módulo (não só dentro de
-   AppGestor) porque o painel do Administrador também precisa da lista,
-   para montar o checklist de telas liberadas por perfil. */
+   AppGestor) porque o painel do Administrador (e a própria aba "Perfis")
+   também precisam da lista, para montar o checklist de telas liberadas
+   por perfil. */
 const TABS_GESTOR = [
   { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
   { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
@@ -56,8 +57,31 @@ const TABS_GESTOR = [
   { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
   { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
   { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
-  { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings }
+  { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings },
+  /* RBAC v2 fase 2: cadastro de perfis próprios (PIN + telas). Fica no
+     mesmo TABS_GESTOR porque tanto o Gestor quanto o Administrador
+     enxergam essa aba — o que muda é quem pode desligá-la (só o
+     Administrador, em "Telas do Gestor"). */
+  { id: "perfis", label: "Perfis", sub: "Cadastro de acessos", icon: Lock }
 ];
+
+/* Nomes reservados para os perfis fixos do app — ninguém cria um perfil
+   novo com esses nomes, pra não confundir com Gestor/Administrador/
+   Conferente (que têm PIN e regras próprias, fora deste cadastro). */
+const NOMES_RESERVADOS = ["gestor", "administrador", "conferente"];
+
+/* Confere se um PIN já está em uso em qualquer porta de entrada do app —
+   conferente, gestor, perfil customizado ou os PINs fixos (Administrador
+   e emergência do Gestor). `exceto` deixa passar o próprio registro
+   quando é uma edição, não um cadastro novo. */
+function pinEmUsoGlobal(pin, params, exceto) {
+  if (pin === PIN_ADMINISTRADOR) return true;
+  if (pin === (params.pinGestor || "1234")) return true;
+  if ((params.gestores || []).some(g => g.pin === pin && g.id !== exceto)) return true;
+  if ((params.conferentes || []).some(c => c.pin === pin && c.id !== exceto)) return true;
+  if ((params.perfis || []).some(p => p.pin === pin && p.id !== exceto)) return true;
+  return false;
+}
 
 /* ============================================================
    EVIDÊNCIA FOTOGRÁFICA
@@ -296,8 +320,12 @@ const DEFAULT_PARAMS = {
      ausente ou true = aba liberada; só false esconde. */
   permissoesGestor: {
     operacoes: true, acompanhar: true, dashboard: true, fotos: true,
-    relatorios: true, ajustes: true, rateio: true, parametros: true
+    relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true
   },
+  /* perfis: cadastros próprios criados pelo Gestor ou pelo Administrador na
+     aba "Perfis" — cada um com PIN e telas escolhidas. Não inclui Gestor
+     (esse continua em "gestores", cadastro exclusivo do Administrador). */
+  perfis: [],
   clientes: ["GWT"],
   equipe: [],
   /* metaDinamica: quando ligada, a meta é calculada a partir do volume,
@@ -675,8 +703,11 @@ function variacao(atual, anterior) {
 
 /* ============================================================ */
 export default function App() {
-  const [modo, setModo] = useState(null); // null | "gestor" | "conferente" | "administrador"
+  const [modo, setModo] = useState(null); // null | "gestor" | "conferente" | "administrador" | "perfil"
   const [usuario, setUsuario] = useState(null); // nome do conferente logado
+  /* perfilAtivo: só preenchido quando modo === "perfil" — guarda o perfil
+     customizado (nome, PIN, telas) com o qual a pessoa entrou. */
+  const [perfilAtivo, setPerfilAtivo] = useState(null);
   const [ops, setOps] = useState([]);
   const [params, setParams] = useState(DEFAULT_PARAMS);
   /* diasTerc: { [tsInicioDoDia]: { qtd: number } } — terceirizados contratados
@@ -703,6 +734,8 @@ export default function App() {
         if (parsed.bonusRateio == null) parsed.bonusRateio = DEFAULT_PARAMS.bonusRateio;
         /* params gravados antes da função Pausar não têm motivosPausa */
         if (!Array.isArray(parsed.motivosPausa)) parsed.motivosPausa = DEFAULT_PARAMS.motivosPausa;
+        /* params gravados antes do RBAC v2 fase 2 não têm perfis próprios */
+        if (!Array.isArray(parsed.perfis)) parsed.perfis = [];
         setParams(parsed);
       }
     } catch (e) {}
@@ -744,9 +777,9 @@ export default function App() {
 
   if (loading) return <Splash />;
   if (!modo) return <PortaEntrada params={params}
-    onEntrar={(m, nome) => { setModo(m); setUsuario(nome || null); }} />;
+    onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
 
-  const sair = () => { setModo(null); setUsuario(null); };
+  const sair = () => { setModo(null); setUsuario(null); setPerfilAtivo(null); };
 
   return <>
     <AvisoSemConexao visivel={erroSalvar} />
@@ -756,6 +789,11 @@ export default function App() {
     : modo === "administrador"
     ? <AppAdmin params={params} persistParams={persistParams} usuario={usuario}
         sair={sair} sync={sync} recarregar={() => carregar(false)} />
+    : modo === "perfil"
+    ? <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
+        diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
+        permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome}
+        now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />}
@@ -790,12 +828,14 @@ function AvisoSemConexao({ visivel }) {
    PORTA DE ENTRADA — escolha do modo
    ============================================================ */
 function PortaEntrada({ params, onEntrar }) {
-  const [pedirPin, setPedirPin] = useState(null);   // null | "gestor" | "conferente" | "administrador"
+  const [pedirPin, setPedirPin] = useState(null);   // null | "gestor" | "conferente" | "administrador" | "perfil"
+  const [perfilAlvo, setPerfilAlvo] = useState(null); // perfil customizado escolhido, quando pedirPin === "perfil"
   const [pin, setPin] = useState("");
   const [erro, setErro] = useState("");
 
   const conferentes = params.conferentes || [];
   const gestores = params.gestores || [];
+  const perfis = params.perfis || [];
   /* Sem conferente cadastrado, o acesso segue livre — senão o app trava
      numa instalação nova, antes de o gestor conseguir cadastrar alguém. */
   const exigePin = conferentes.length > 0;
@@ -803,6 +843,10 @@ function PortaEntrada({ params, onEntrar }) {
   const validar = () => {
     if (pedirPin === "administrador") {
       if (pin === PIN_ADMINISTRADOR) return onEntrar("administrador", "Pablo Bona");
+      setErro("PIN incorreto."); setPin(""); return;
+    }
+    if (pedirPin === "perfil") {
+      if (perfilAlvo && pin === perfilAlvo.pin) return onEntrar("perfil", perfilAlvo.nome, perfilAlvo);
       setErro("PIN incorreto."); setPin(""); return;
     }
     if (pedirPin === "gestor") {
@@ -880,12 +924,30 @@ function PortaEntrada({ params, onEntrar }) {
                   <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfis, telas e PIN do Gestor</div>
                 </div>
               </button>
+              {/* Perfis próprios criados pelo Gestor ou pelo Administrador na
+                  aba "Perfis" — cada um vira um botão aqui, na ordem em que
+                  foi cadastrado. */}
+              {perfis.map(p => (
+                <button key={p.id} style={styles.portaBtn}
+                  onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); }}>
+                  <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
+                      {p.nome.toUpperCase()} <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
+                    </div>
+                    <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfil de acesso próprio</div>
+                  </div>
+                </button>
+              ))}
             </div>
           ) : (
             <div style={{ ...styles.card, textAlign: "center" }}>
-              <Lock size={26} color={pedirPin === "gestor" ? C.navy2 : pedirPin === "administrador" ? C.laranja : C.supVerde} />
+              <Lock size={26} color={pedirPin === "gestor" ? C.navy2 : pedirPin === "administrador" ? C.laranja : pedirPin === "perfil" ? C.verde : C.supVerde} />
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
-                {pedirPin === "gestor" ? "Acesso do Gestor" : pedirPin === "administrador" ? "Acesso do Administrador" : "Acesso do Conferente"}
+                {pedirPin === "gestor" ? "Acesso do Gestor"
+                  : pedirPin === "administrador" ? "Acesso do Administrador"
+                  : pedirPin === "perfil" ? `Acesso · ${perfilAlvo?.nome || ""}`
+                  : "Acesso do Conferente"}
               </div>
               <input type="password" inputMode="numeric" value={pin} autoFocus
                 onChange={e => { setPin(e.target.value); setErro(""); }}
@@ -894,16 +956,18 @@ function PortaEntrada({ params, onEntrar }) {
                 style={{ ...styles.input, textAlign: "center", fontSize: 22, letterSpacing: 8, fontFamily: "'Roboto Mono',monospace" }} />
               {erro && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erro}</div>}
               <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }} onClick={() => { setPedirPin(null); setPin(""); setErro(""); }}>Voltar</button>
+                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }} onClick={() => { setPedirPin(null); setPerfilAlvo(null); setPin(""); setErro(""); }}>Voltar</button>
                 <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={validar}>Entrar</button>
               </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>
                 {pedirPin === "gestor"
                   ? (gestores.length > 0
-                      ? "Cada gestor tem seu PIN. Cadastro em Parâmetros."
-                      : "PIN inicial: 1234 — cadastre os gestores em Parâmetros")
+                      ? "Cada gestor tem seu PIN. Cadastro com o Administrador."
+                      : "PIN inicial: 1234 — cadastre os gestores com o Administrador")
                   : pedirPin === "administrador"
                   ? "Acesso restrito ao administrador do sistema."
+                  : pedirPin === "perfil"
+                  ? "PIN definido na aba Perfis."
                   : "Cada conferente tem seu PIN. Peça ao gestor se não souber o seu."}
               </div>
             </div>
@@ -1532,13 +1596,22 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario }) {
+function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel }) {
   const [tab, setTab] = useState("operacoes");
-  /* Filtra pelas permissões definidas pelo Administrador em "Perfis e
-     Telas". Chave ausente ou true = liberada; só false esconde a aba —
+  /* permissoes: quando vem preenchido (perfil customizado logado via
+     modo "perfil"), filtra por ele; senão usa params.permissoesGestor —
+     o mesmo componente atende o Gestor e qualquer perfil criado na aba
+     "Perfis". Chave ausente ou true = liberada; só false esconde a aba —
      assim, um params antigo (sem permissoesGestor) continua mostrando tudo. */
-  const TABS = useMemo(() => TABS_GESTOR.filter(t => params.permissoesGestor?.[t.id] !== false),
-    [params.permissoesGestor]);
+  const permissoesEfetivas = permissoes || params.permissoesGestor;
+  /* Regra diferente pra cada caso: o Gestor é opt-out (chave ausente ou
+     true = liberada; só false esconde — preserva o comportamento de
+     quem já usava o app antes de existir permissoesGestor). Perfil
+     customizado é opt-in (só true libera; ausente/false esconde — um
+     perfil novo começa sem enxergar nada até alguém marcar a tela). */
+  const TABS = useMemo(() => TABS_GESTOR.filter(t =>
+      permissoes ? permissoesEfetivas?.[t.id] === true : permissoesEfetivas?.[t.id] !== false),
+    [permissoesEfetivas, permissoes]);
   /* Se a aba atual foi desligada pelo Administrador enquanto o gestor
      estava logado, cai para a primeira aba ainda liberada. */
   useEffect(() => {
@@ -1553,7 +1626,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
           <div style={styles.logoWrap}><img src={SBS_LOGO} alt="SBS Solution" style={{ height: 44 }} /></div>
           <div style={{ color: C.branco }}>
             <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
-              <Briefcase size={16} /> PAINEL DO GESTOR
+              <Briefcase size={16} /> {tituloPainel ? `PAINEL · ${tituloPainel.toUpperCase()}` : "PAINEL DO GESTOR"}
             </div>
             <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
               {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
@@ -1594,6 +1667,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
+        {tab === "perfis" && <CadastroPerfis params={params} persistParams={persistParams} />}
       </main>
 
       <footer style={styles.footer}>
@@ -1635,18 +1709,18 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
     setSalvo(false);
   };
 
-  /* PIN precisa ser único entre gestores e conferentes — mesma regra já
-     usada em Parâmetros, para o acesso nunca ficar ambíguo. */
+  /* PIN precisa ser único em qualquer porta do app — mesma regra do
+     helper global, só que checando contra o draft (edições ainda não
+     salvas) em vez do params persistido. */
   const pinEmUso = (pin, exceto) =>
-    (draft.gestores || []).some(x => x.pin === pin && x.id !== exceto)
-    || (params.conferentes || []).some(x => x.pin === pin);
+    pinEmUsoGlobal(pin, { ...params, gestores: draft.gestores }, exceto);
 
   const addGestor = () => {
     const nome = novoGestor.nome.trim(), pin = novoGestor.pin.trim();
     if (!nome) return setErroGestor("Informe o nome do gestor.");
     if (!/^\d{4,6}$/.test(pin)) return setErroGestor("O PIN deve ter de 4 a 6 dígitos numéricos.");
     if ((draft.gestores || []).some(g => g.nome.toLowerCase() === nome.toLowerCase())) return setErroGestor("Já existe um gestor com esse nome.");
-    if (pinEmUso(pin)) return setErroGestor("Este PIN já está em uso por outro gestor ou conferente.");
+    if (pinEmUso(pin)) return setErroGestor("Este PIN já está em uso por outro acesso do app.");
     setDraft(d => ({ ...d, gestores: [...(d.gestores || []), { id: uid(), nome, pin }] }));
     setNovoGestor({ nome: "", pin: "" }); setErroGestor(""); setSalvo(false);
   };
@@ -1694,8 +1768,8 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
       <main style={styles.main}>
         <SectionTitle icon={ShieldCheck}>Perfis</SectionTitle>
         <p style={styles.helper}>
-          Fase inicial do controle de acesso por perfil. Hoje existem dois perfis; os demais (ex.: Administrativo)
-          entram nas próximas etapas, combinadas com Pablo.
+          Gestor e Administrador são fixos, com PIN e regras próprias. Qualquer outro perfil (ex.: Administrativo,
+          Supervisor) se cadastra na seção "Perfis de Acesso", mais abaixo.
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14, marginBottom: 8 }}>
           <div style={{ ...styles.card, borderLeft: `4px solid ${C.navy2}` }}>
@@ -1711,7 +1785,7 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
               <ShieldCheck size={17} color={C.laranja} /> Administrador
             </div>
             <div style={{ fontSize: 12.5, color: C.prata, marginTop: 6, lineHeight: 1.5 }}>
-              Este perfil (Pablo Bona). Cadastra perfis, telas liberadas e PIN dos gestores.
+              Este perfil (Pablo Bona). Único que cadastra e vê o PIN dos gestores — o Gestor não enxerga essa lista.
             </div>
           </div>
         </div>
@@ -1742,8 +1816,8 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 
         <SectionTitle icon={Briefcase}>PIN dos Gestores</SectionTitle>
         <p style={styles.helper}>
-          Mesmo cadastro que já existe em Parâmetros → Acessos ao App → Gestores — aqui é só uma porta a mais
-          para o Administrador ajustar sem entrar no painel do Gestor.
+          Exclusivo do Administrador — o Gestor não vê nem edita o PIN de outros gestores. Este é o único
+          lugar do app onde isso é cadastrado.
         </p>
         <div style={{ ...styles.card, marginBottom: 8 }}>
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
@@ -1803,9 +1877,13 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8, marginBottom: 30 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8, marginBottom: 8 }}>
           {salvo && <span style={{ ...styles.pill, background: "#EAF6EE", color: C.verde }}><CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 3 }} /> Salvo</span>}
           <button style={styles.btnPrimary} onClick={salvar}>Salvar alterações</button>
+        </div>
+
+        <div style={{ marginTop: 30, paddingTop: 22, borderTop: `1px dashed ${C.prataClaro}` }}>
+          <CadastroPerfis params={params} persistParams={persistParams} />
         </div>
       </main>
 
@@ -1813,6 +1891,137 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
         <div><strong style={{ display: "block", fontWeight: 600 }}>Pablo Bona · SBS Solution</strong>Lean Manufacturing &amp; Logística</div>
         <div style={{ color: C.prata, textAlign: "right" }}>Monitor Operacional · Superior Transportes<br />Perfil Administrador</div>
       </footer>
+    </div>
+  );
+}
+
+/* ============================================================
+   CADASTRO DE PERFIS — RBAC v2 (fase 2)
+   ------------------------------------------------------------
+   Combinado com Pablo em 14/ago/2026: tanto o Administrador quanto o
+   Gestor criam perfis próprios aqui (aba "Perfis" do Gestor e seção
+   equivalente do Administrador — mesmo componente nos dois lugares).
+   Cada perfil tem nome, PIN e as telas escolhidas dentre as do Gestor.
+   Não dá para cadastrar um perfil de Gestor por aqui: isso continua
+   exclusivo do Administrador, na seção "PIN dos Gestores" — o nome
+   "Gestor" (e "Administrador"/"Conferente") é bloqueado no cadastro.
+   ============================================================ */
+function CadastroPerfis({ params, persistParams }) {
+  const [draft, setDraft] = useState(params.perfis || []);
+  const [novo, setNovo] = useState({ nome: "", pin: "", telas: {} });
+  const [erro, setErro] = useState("");
+  const [salvo, setSalvo] = useState(false);
+
+  const toggleNovaTela = (id) => setNovo(n => ({ ...n, telas: { ...n.telas, [id]: !n.telas[id] } }));
+  const togglePerfilTela = (id, telaId) => {
+    setDraft(d => d.map(p => p.id === id ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
+    setSalvo(false);
+  };
+  const setPerfilCampo = (id, campo, valor) => {
+    setDraft(d => d.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+    setSalvo(false);
+  };
+  const removerPerfil = (id) => { setDraft(d => d.filter(p => p.id !== id)); setSalvo(false); };
+
+  const adicionarPerfil = () => {
+    const nome = novo.nome.trim(), pin = novo.pin.trim();
+    if (!nome) return setErro("Dê um nome para o perfil.");
+    if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErro('Esse nome é reservado — use outro (ex.: "Administrativo").');
+    if (!/^\d{4,6}$/.test(pin)) return setErro("O PIN deve ter de 4 a 6 dígitos numéricos.");
+    if (draft.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErro("Já existe um perfil com esse nome.");
+    if (pinEmUsoGlobal(pin, { ...params, perfis: draft })) return setErro("Este PIN já está em uso por outro acesso do app.");
+    if (!Object.values(novo.telas).some(Boolean)) return setErro("Marque pelo menos uma tela para o novo perfil.");
+    setDraft(d => [...d, { id: uid(), nome, pin, telas: { ...novo.telas } }]);
+    setNovo({ nome: "", pin: "", telas: {} }); setErro(""); setSalvo(false);
+  };
+
+  const salvar = () => {
+    const clean = draft.filter(p => p.nome && p.pin)
+      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), pin: p.pin.toString().trim(), telas: p.telas || {} }));
+    persistParams({ ...params, perfis: clean });
+    setDraft(clean); setSalvo(true); setTimeout(() => setSalvo(false), 2500);
+  };
+
+  return (
+    <div>
+      <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draft.length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        Crie perfis próprios (ex.: Administrativo, Supervisor) com PIN e telas escolhidas dentre as do painel do
+        Gestor. PIN de Gestor continua exclusivo do Administrador — aqui não dá para cadastrar um novo Gestor.
+      </p>
+
+      <div style={{ ...styles.card, marginBottom: 16 }}>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, marginBottom: 12 }}>Novo perfil</div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 14 }}>
+          <Field label="Nome do perfil">
+            <input style={styles.input} value={novo.nome}
+              onChange={e => { setNovo(n => ({ ...n, nome: e.target.value })); setErro(""); }}
+              placeholder="Ex.: Administrativo" />
+          </Field>
+          <Field label="PIN (4 a 6 dígitos)">
+            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+              inputMode="numeric" maxLength={6} value={novo.pin}
+              onChange={e => { setNovo(n => ({ ...n, pin: e.target.value.replace(/\D/g, "") })); setErro(""); }}
+              placeholder="0000" />
+          </Field>
+        </div>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
+          Telas liberadas
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+          {TABS_GESTOR.map(t => {
+            const ligada = !!novo.telas[t.id];
+            return (
+              <button key={t.id} onClick={() => toggleNovaTela(t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {erro && <div style={styles.erro}><AlertTriangle size={15} /> {erro}</div>}
+        <button style={styles.btnPrimary} onClick={adicionarPerfil}><Plus size={15} /> Adicionar perfil</button>
+      </div>
+
+      {draft.length === 0 ? (
+        <div style={styles.empty}>Nenhum perfil próprio cadastrado ainda.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10, marginBottom: 8 }}>
+          {draft.map(p => (
+            <div key={p.id} style={{ ...styles.card, borderLeft: `4px solid ${C.verde}` }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <label style={styles.fieldLabel}>Nome</label>
+                  <input style={styles.input} value={p.nome} onChange={e => setPerfilCampo(p.id, "nome", e.target.value)} />
+                </div>
+                <div>
+                  <label style={styles.fieldLabel}>PIN</label>
+                  <input style={{ ...styles.input, width: 100, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5 }}
+                    inputMode="numeric" maxLength={6} value={p.pin}
+                    onChange={e => setPerfilCampo(p.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                </div>
+                <button style={styles.iconBtnDanger} title="Remover perfil" onClick={() => removerPerfil(p.id)}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {TABS_GESTOR.map(t => {
+                  const ligada = !!p.telas?.[t.id];
+                  return (
+                    <button key={t.id} onClick={() => togglePerfilTela(p.id, t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8 }}>
+        {salvo && <span style={{ ...styles.pill, background: "#EAF6EE", color: C.verde }}><CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 3 }} /> Salvo</span>}
+        <button style={styles.btnPrimary} onClick={salvar}>Salvar alterações</button>
+      </div>
     </div>
   );
 }
@@ -6749,38 +6958,16 @@ function Parametros({ params, persistParams, persistOps, ops }) {
     if (lista.some(c => c.nome.toLowerCase() === nome.toLowerCase())) return setErroConf("Já existe um conferente com esse nome.");
     if (lista.some(c => c.pin === pin)) return setErroConf("Este PIN já está em uso por outro conferente.");
     if (pin === (draft.pinGestor || "1234")) return setErroConf("Este PIN é o do gestor. Escolha outro.");
+    /* gestores, perfis e o PIN do Administrador não ficam mais visíveis nem
+       editáveis aqui (RBAC v2 fase 2) — mas ainda entram na checagem de
+       unicidade, senão duas pessoas cairiam no mesmo PIN sem perceber. */
+    if ((params.perfis || []).some(p => p.pin === pin)) return setErroConf("Este PIN já está em uso por um perfil cadastrado.");
+    if (pin === PIN_ADMINISTRADOR) return setErroConf("Este PIN é reservado.");
     setDraft(d => ({ ...d, conferentes: [...(d.conferentes || []), { id: uid(), nome, pin }] }));
     setNovoConf({ nome: "", pin: "" }); setErroConf(""); setSalvo(false);
   };
   const delConferente = (id) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).filter(c => c.id !== id) })); setSalvo(false); };
   const setConfPin = (id, pin) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).map(c => c.id === id ? { ...c, pin } : c) })); setSalvo(false); };
-
-  /* --- gestores ---
-     Mesma mecânica dos conferentes. O PIN precisa ser único no app inteiro:
-     um PIN repetido entre gestor e conferente tornaria o acesso ambíguo. */
-  const [novoGestor, setNovoGestor] = useState({ nome: "", pin: "" });
-  const [erroGestor, setErroGestor] = useState("");
-  const pinEmUso = (pin, exceto) => {
-    const g = (draft.gestores || []).some(x => x.pin === pin && x.id !== exceto);
-    const c = (draft.conferentes || []).some(x => x.pin === pin && x.id !== exceto);
-    return g || c;
-  };
-  const addGestor = () => {
-    const nome = novoGestor.nome.trim(), pin = novoGestor.pin.trim();
-    if (!nome) return setErroGestor("Informe o nome do gestor.");
-    if (!/^\d{4,6}$/.test(pin)) return setErroGestor("O PIN deve ter de 4 a 6 dígitos numéricos.");
-    if ((draft.gestores || []).some(g => g.nome.toLowerCase() === nome.toLowerCase())) return setErroGestor("Já existe um gestor com esse nome.");
-    if (pinEmUso(pin)) return setErroGestor("Este PIN já está em uso por outro gestor ou conferente.");
-    setDraft(d => ({ ...d, gestores: [...(d.gestores || []), { id: uid(), nome, pin }] }));
-    setNovoGestor({ nome: "", pin: "" }); setErroGestor(""); setSalvo(false);
-  };
-  const delGestor = (id) => {
-    /* nunca deixar a lista vazia sem aviso: sem gestor cadastrado o app
-       volta a aceitar o PIN de emergência, o que surpreende quem removeu */
-    setDraft(d => ({ ...d, gestores: (d.gestores || []).filter(g => g.id !== id) }));
-    setSalvo(false);
-  };
-  const setGestorPin = (id, pin) => { setDraft(d => ({ ...d, gestores: (d.gestores || []).map(g => g.id === id ? { ...g, pin } : g) })); setSalvo(false); };
 
   /* devolve o id para o chamador abrir o modal já no tipo recém-criado */
   const addTipo = () => {
@@ -6927,8 +7114,12 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       <SectionTitle icon={Lock}>Acessos ao App</SectionTitle>
       <p style={styles.helper}>
         Cada pessoa entra com o próprio PIN. Quem iniciou e quem finalizou cada operação fica registrado —
-        é o que permite apurar um desvio de tempo com a pessoa certa. Clique para abrir cada lista.
+        é o que permite apurar um desvio de tempo com a pessoa certa. Clique para abrir a lista.
       </p>
+      <div style={{ ...styles.infoBox, marginBottom: 14 }}>
+        PIN de gestor (cadastro e remoção) agora é exclusivo do perfil <strong>Administrador</strong>. Para criar
+        outros perfis de acesso (ex.: Administrativo), use a aba <strong>Perfis</strong>.
+      </div>
 
       <Sanfona titulo="Conferentes" icone={HardHat} cor={C.supVerde}
         contagem={(draft.conferentes || []).length}
@@ -6980,75 +7171,6 @@ function Parametros({ params, persistParams, persistOps, ops }) {
             ))}
           </div>
         )}
-      </Sanfona>
-
-      <Sanfona titulo="Gestores" icone={Briefcase} cor={C.navy2}
-        contagem={(draft.gestores || []).length}
-        sub="Acessam o painel completo: custos, metas, rateio e relatórios"
-        resumo={(draft.gestores || []).map(g => g.nome).join(" · ")}
-        aberto={aberta === "gestores"} onToggle={() => toggle("gestores")}>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-          <Field label="Nome do gestor">
-            <input style={styles.input} value={novoGestor.nome}
-              onChange={e => { setNovoGestor(v => ({ ...v, nome: e.target.value })); setErroGestor(""); }}
-              onKeyDown={e => e.key === "Enter" && addGestor()}
-              placeholder="Ex.: Pablo Bona" />
-          </Field>
-          <Field label="PIN (4 a 6 dígitos)">
-            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-              inputMode="numeric" maxLength={6} value={novoGestor.pin}
-              onChange={e => { setNovoGestor(v => ({ ...v, pin: e.target.value.replace(/\D/g, "") })); setErroGestor(""); }}
-              onKeyDown={e => e.key === "Enter" && addGestor()}
-              placeholder="0000" />
-          </Field>
-          <button style={styles.btnPrimary} onClick={addGestor}><Plus size={15} /> Adicionar</button>
-        </div>
-
-        {erroGestor && <div style={styles.erro}><AlertTriangle size={15} /> {erroGestor}</div>}
-
-        {(draft.gestores || []).length === 0 ? (
-          <div style={{ ...styles.infoBox, marginTop: 14, background: "#FFF4EB", border: `1px solid ${C.laranja}`, color: C.laranjaEsc }}>
-            <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
-            Nenhum gestor cadastrado — o app ainda aceita o <strong>PIN de emergência</strong> abaixo.
-            Cadastre os gestores para que cada um tenha o seu e o nome apareça no painel.
-          </div>
-        ) : (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8, marginTop: 16 }}>
-              {(draft.gestores || []).map(g => (
-                <div key={g.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
-                  <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EEF2F8", flexShrink: 0 }}>
-                    <Briefcase size={15} color={C.navy2} strokeWidth={2.2} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
-                      color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.nome}</div>
-                  </div>
-                  <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
-                    inputMode="numeric" maxLength={6} value={g.pin}
-                    onChange={e => setGestorPin(g.id, e.target.value.replace(/\D/g, ""))} />
-                  <button style={styles.iconBtnDanger} title="Remover gestor" onClick={() => delGestor(g.id)}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div style={{ ...styles.infoBox, marginTop: 14, fontSize: 12 }}>
-              Com gestores cadastrados, o PIN de emergência deixa de funcionar — só estes PINs entram no painel.
-              Se remover todos, o PIN de emergência volta a valer.
-            </div>
-          </>
-        )}
-
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
-          <Field label="PIN de emergência (só vale sem gestor cadastrado)">
-            <input style={{ ...styles.input, maxWidth: 200, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-              value={draft.pinGestor} onChange={e => setV("pinGestor", e.target.value)} placeholder="1234" />
-          </Field>
-          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.5 }}>
-            Serve para recuperar o acesso numa instalação nova ou caso a lista de gestores seja apagada.
-          </div>
-        </div>
       </Sanfona>
 
       <SectionTitle icon={Camera}>Fotos de Evidência</SectionTitle>
