@@ -65,6 +65,14 @@ const TABS_GESTOR = [
   { id: "perfis", label: "Perfis", sub: "Cadastro de acessos", icon: Lock }
 ];
 
+/* Tela do Coletor — o app do Conferente (registro de início/fim de operação
+   no celular). Não é uma aba de TABS_GESTOR porque não é um painel dentro do
+   Gestor; é outro app inteiro (AppConferente). Fica de fora dessa lista mas
+   entra como mais uma opção no checklist de acessos de qualquer perfil —
+   inclusive Gestor, que combinado com Pablo em 16/ago/2026 passa a poder
+   abrir a tela do coletor sem precisar sair e entrar de novo como conferente. */
+const TELA_COLETOR = { id: "coletor", label: "Tela do Coletor (Conferente)", icon: HardHat };
+
 /* Subitens controláveis por perfil, aba por aba (RBAC v2 fase 5) — granularidade
    fina, além do liga/desliga da aba inteira. A ordem de cada lista é a mesma
    ordem em que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026:
@@ -117,7 +125,6 @@ const SUBITENS_POR_ABA = {
     { id: "valores", label: "Valores de Mão de Obra" },
     { id: "clientes", label: "Clientes Cadastrados" },
     { id: "motivospausa", label: "Motivos de Pausa" },
-    { id: "acessos", label: "Acessos ao App" },
     { id: "fotosevidencia", label: "Fotos de Evidência" },
     { id: "tipos", label: "Tipos de Operação e Linha de Base" },
     { id: "calibragem", label: "Calibragem de Metas" }
@@ -412,7 +419,8 @@ const DEFAULT_PARAMS = {
      ausente ou true = aba liberada; só false esconde. */
   permissoesGestor: {
     operacoes: true, acompanhar: true, dashboard: true, fotos: true,
-    relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true
+    relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true,
+    coletor: true
   },
   /* perfis: papéis próprios criados pelo Gestor ou pelo Administrador na
      aba "Perfis" — nome + telas escolhidas, SEM PIN. Não inclui Gestor
@@ -841,6 +849,12 @@ export default function App() {
            limpa esse campo velho pra não confundir com o novo modelo */
         if (!Array.isArray(parsed.pessoasPerfil)) parsed.pessoasPerfil = [];
         parsed.perfis = parsed.perfis.map(p => { const { pin, ...resto } = p; return resto; });
+        /* idem para conferentes e permissoesGestor — nunca tiveram esse
+           reforço; sem ele, um documento salvo sem essas chaves (ex.: por um
+           persistParams antigo que não fazia merge) fica sem conferente
+           nenhum ou sem nenhuma tela liberada pro Gestor, silenciosamente. */
+        if (!Array.isArray(parsed.conferentes)) parsed.conferentes = DEFAULT_PARAMS.conferentes;
+        if (!parsed.permissoesGestor || typeof parsed.permissoesGestor !== "object") parsed.permissoesGestor = DEFAULT_PARAMS.permissoesGestor;
         setParams(parsed);
       }
     } catch (e) {}
@@ -1040,13 +1054,7 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
         </div>
       </div>
 
-      <footer style={styles.footer}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img src={SBS_LOGO} alt="SBS Solution" style={{ height: 22 }} />
-          <span>Desenvolvido pela SBS Solution.</span>
-        </div>
-        <div style={{ color: C.prata, textAlign: "right" }}>Superior Transportes</div>
-      </footer>
+      <RodapeSBS direita="Superior Transportes" />
     </div>
   );
 }
@@ -1082,11 +1090,11 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
   const [erroRedef, setErroRedef] = useState("");
   const [okRedef, setOkRedef] = useState(false);
 
+  /* pessoa bloqueada não aparece na lista de redefinição — senão redefiniria
+     o próprio PIN e voltaria a entrar, furando o bloqueio do Administrador */
   const listaRedefinir =
-    pedirPin === "conferente" ? conferentes
+    pedirPin === "conferente" ? conferentes.filter(c => !c.bloqueado)
     : pedirPin === "gestor" ? gestores
-    /* pessoa bloqueada não aparece aqui — senão redefiniria o próprio PIN
-       e voltaria a entrar, furando o bloqueio do Administrador */
     : pedirPin === "perfil" ? pessoasPerfil.filter(p => p.perfilId === perfilAlvo?.id && !p.bloqueado)
     : [];
 
@@ -1137,6 +1145,7 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
       setErro("PIN incorreto."); setPin(""); return;
     }
     const achado = conferentes.find(c => c.pin === pin);
+    if (achado?.bloqueado) { setErro("Acesso bloqueado. Procure o Administrador."); setPin(""); return; }
     if (achado) return onEntrar("conferente", achado.nome);
     setErro("PIN não encontrado. Confira com o gestor."); setPin("");
   };
@@ -1150,12 +1159,9 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
     <div style={{ ...styles.page, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <FontInject />
       <header style={styles.header}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={styles.logoWrap}><img src={SBS_LOGO} alt="SBS Solution" style={{ height: 44 }} /></div>
-          <div style={{ color: C.branco }}>
-            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14 }}>MONITOR OPERACIONAL</div>
-            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Recebimento &amp; Expedição</div>
-          </div>
+        <div style={{ color: C.branco }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14 }}>MONITOR OPERACIONAL</div>
+          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Recebimento &amp; Expedição</div>
         </div>
         <div style={{ ...styles.logoWrap, padding: "6px 10px" }}><img src={SUP_LOGO} alt="Superior Transportes" style={{ height: 28 }} /></div>
       </header>
@@ -1305,10 +1311,7 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
         </div>
       </div>
 
-      <footer style={styles.footer}>
-        <div><strong style={{ display: "block", fontWeight: 600 }}>Pablo Bona · SBS Solution</strong>Lean Manufacturing &amp; Logística</div>
-        <div style={{ color: C.prata, textAlign: "right" }}>Superior Transportes</div>
-      </footer>
+      <RodapeSBS direita="Superior Transportes" />
     </div>
   );
 }
@@ -1578,22 +1581,20 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     <div style={styles.page}>
       <FontInject />
       <header style={{ ...styles.header, padding: "14px 18px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ ...styles.logoWrap, padding: "5px 7px" }}><img src={SBS_LOGO} alt="SBS" style={{ height: 34 }} /></div>
-          <div style={{ color: C.branco }}>
-            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6 }}>
-              <HardHat size={16} /> CONFERENTE
-            </div>
-            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 10.5, color: C.prata }}>
-              {usuario ? usuario : "Registro de operações"}
-            </div>
+        <div style={{ color: C.branco }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6 }}>
+            <HardHat size={16} /> CONFERENTE
+          </div>
+          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 10.5, color: C.prata }}>
+            {usuario ? usuario : "Registro de operações"}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button style={styles.headerBtn} onClick={recarregar} title="Atualizar">
             <RefreshCw size={16} style={{ animation: sync ? "spin 1s linear infinite" : "none" }} />
           </button>
           <button style={styles.headerBtn} onClick={sair} title="Sair"><LogOut size={16} /></button>
+          <div style={{ ...styles.logoWrap, padding: "5px 8px" }}><img src={SUP_LOGO} alt="Superior Transportes" style={{ height: 24 }} /></div>
         </div>
       </header>
       <div style={styles.accentBar} />
@@ -1915,10 +1916,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
         )}
       </main>
 
-      <footer style={styles.footer}>
-        <div><strong style={{ display: "block", fontWeight: 600 }}>SBS Solution</strong>Monitor Operacional</div>
-        <div style={{ color: C.prata, textAlign: "right" }}>Superior Transportes</div>
-      </footer>
+      <RodapeSBS direita="Superior Transportes" />
     </div>
   );
 }
@@ -1951,19 +1949,34 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
      verdade recebe null e vê tudo (undefined em subLiberado = liberado). */
   const subAba = permissoes ? (sub?.[tab] || {}) : null;
 
+  /* Tela do Coletor dentro do painel — combinado com Pablo em 16/ago/2026:
+     quem tem esse acesso (Gestor por padrão, ou qualquer perfil que marque
+     "Tela do Coletor") abre o app do Conferente sem sair do painel. Mesma
+     regra opt-out/opt-in do resto: Gestor de verdade só perde se alguém
+     desligar explicitamente; perfil customizado só ganha se marcar. */
+  const podeColetor = permissoes ? permissoesEfetivas?.coletor === true : permissoesEfetivas?.coletor !== false;
+  const [modoColetor, setModoColetor] = useState(false);
+  /* Perfil cujo único acesso é o coletor (TABS vazio) cai direto nele —
+     senão a pessoa logaria e veria um painel em branco. */
+  useEffect(() => {
+    if (TABS.length === 0 && podeColetor) setModoColetor(true);
+  }, [TABS.length, podeColetor]);
+
+  if (modoColetor) {
+    return <AppConferente ops={ops} params={params} persistOps={persistOps} now={now} usuario={usuario}
+      sair={TABS.length > 0 ? () => setModoColetor(false) : sair} sync={sync} recarregar={recarregar} />;
+  }
+
   return (
     <div style={styles.page}>
       <FontInject />
       <header style={styles.header}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <div style={styles.logoWrap}><img src={SBS_LOGO} alt="SBS Solution" style={{ height: 44 }} /></div>
-          <div style={{ color: C.branco }}>
-            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
-              <Briefcase size={16} /> {tituloPainel ? `PAINEL · ${tituloPainel.toUpperCase()}` : "PAINEL DO GESTOR"}
-            </div>
-            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
-              {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
-            </div>
+        <div style={{ color: C.branco }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
+            <Briefcase size={16} /> {tituloPainel ? `PAINEL · ${tituloPainel.toUpperCase()}` : "PAINEL DO GESTOR"}
+          </div>
+          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
+            {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -1989,6 +2002,15 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
             </button>
           );
         })}
+        {podeColetor && (
+          <button onClick={() => setModoColetor(true)} style={styles.tabBtn}>
+            <HardHat size={18} strokeWidth={2.2} />
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
+              <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coletor</span>
+              <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>Tela do Conferente</span>
+            </span>
+          </button>
+        )}
       </nav>
 
       <main style={styles.main}>
@@ -2003,44 +2025,33 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
         {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
       </main>
 
-      <footer style={styles.footer}>
-        <div><strong style={{ display: "block", fontWeight: 600 }}>Pablo Bona · SBS Solution</strong>Lean Manufacturing &amp; Logística</div>
-        <div style={{ color: C.prata, textAlign: "right" }}>Monitor Operacional · Superior Transportes<br />Dados compartilhados entre gestor e conferentes</div>
-      </footer>
+      <RodapeSBS direita={<>Monitor Operacional · Superior Transportes<br />Dados compartilhados entre gestor e conferentes</>} />
     </div>
   );
 }
 
 /* ============================================================
-   APP DO ADMINISTRADOR — RBAC v2 (fase 1)
+   APP DO ADMINISTRADOR — RBAC v2 (fase 5)
    ------------------------------------------------------------
    Perfil novo, combinado com Pablo em 14/ago/2026: PIN próprio
    (PIN_ADMINISTRADOR), separado dos PINs de gestor/conferente já
    cadastrados — nada nesta tela altera esses PINs existentes.
-   Por hora cuida de três coisas:
-     1. Visão geral dos perfis (Gestor e Administrador)
-     2. Quais telas ficam ligadas no painel do Gestor
-     3. Cadastro de PIN dos gestores + PIN de emergência
-        (mesmo dado que já existe em Parâmetros → Acessos ao App →
-        Gestores; esta é só uma porta a mais para o Administrador,
-        sem precisar abrir o painel do Gestor)
-   Perfis adicionais (ex.: Administrativo) e o detalhamento fino de
-   permissões do Gestor ficam para quando Pablo pedir o próximo passo.
+   Cuida de duas coisas:
+     1. Gestão de Acessos (GestaoAcessos, souAdministrador) — perfis
+        próprios, Conferente e Gestor (inclusive o escopo de acesso do
+        Gestor, que era a antiga seção solta "Telas do Gestor") e
+        usuários, tudo numa lista só.
+     2. Cadastro de PIN dos gestores + PIN de emergência — o único
+        lugar do app onde isso é feito.
    ============================================================ */
 function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
   const [draft, setDraft] = useState({
-    permissoesGestor: { ...DEFAULT_PARAMS.permissoesGestor, ...(params.permissoesGestor || {}) },
     gestores: params.gestores || [],
     pinGestor: params.pinGestor || "1234"
   });
   const [salvo, setSalvo] = useState(false);
   const [novoGestor, setNovoGestor] = useState({ nome: "", pin: "" });
   const [erroGestor, setErroGestor] = useState("");
-
-  const toggleTela = (id) => {
-    setDraft(d => ({ ...d, permissoesGestor: { ...d.permissoesGestor, [id]: d.permissoesGestor[id] === false ? true : false } }));
-    setSalvo(false);
-  };
 
   /* PIN precisa ser único em qualquer porta do app — mesma regra do
      helper global, só que checando contra o draft (edições ainda não
@@ -2063,13 +2074,12 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
   const salvar = () => {
     const clean = {
       ...params,
-      permissoesGestor: { ...DEFAULT_PARAMS.permissoesGestor, ...draft.permissoesGestor },
       gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
         .map(g => ({ id: g.id || uid(), nome: g.nome.trim(), pin: g.pin.toString().trim() })),
       pinGestor: (draft.pinGestor || "1234").toString().trim() || "1234"
     };
     persistParams(clean);
-    setDraft({ permissoesGestor: clean.permissoesGestor, gestores: clean.gestores, pinGestor: clean.pinGestor });
+    setDraft({ gestores: clean.gestores, pinGestor: clean.pinGestor });
     setSalvo(true); setTimeout(() => setSalvo(false), 2500);
   };
 
@@ -2099,34 +2109,12 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 
       <main style={styles.main}>
         {/* Perfis e usuários vêm primeiro — é o que o Administrador abre a
-           tela para fazer. O mesmo componente da aba "Perfis" do Gestor,
-           só que aqui sem restrição de tela (o Administrador pode conceder
-           Parâmetros e Perfis, o Gestor não). */}
-        <GestaoAcessos params={params} persistParams={persistParams} telasRestritas={[]} />
-
-        <SectionTitle icon={LayoutDashboard}>Telas do Gestor</SectionTitle>
-        <p style={styles.helper}>Desligue uma tela para tirá-la do painel do Gestor. Hoje todas estão ligadas por combinado com Pablo.</p>
-        <div style={{ ...styles.card, marginBottom: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
-            {TABS_GESTOR.map(t => {
-              const Ic = t.icon;
-              const ligada = draft.permissoesGestor?.[t.id] !== false;
-              return (
-                <button key={t.id} onClick={() => toggleTela(t.id)}
-                  style={{ ...styles.opRow, cursor: "pointer", justifyContent: "space-between", textAlign: "left",
-                    width: "100%", font: "inherit", borderColor: ligada ? C.navy2 : C.prataClaro, opacity: ligada ? 1 : .6 }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <Ic size={16} color={ligada ? C.navy2 : C.prata} />
-                    <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>{t.label}</span>
-                  </span>
-                  <span style={{ ...styles.pill, background: ligada ? "#EAF6EE" : "#FFEBEE", color: ligada ? C.verde : C.vermelho }}>
-                    {ligada ? "Ligada" : "Oculta"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+           tela para fazer. O mesmo componente da aba "Perfis" do Gestor, só
+           que aqui sem restrição de tela (o Administrador pode conceder
+           Parâmetros e Perfis, o Gestor não) e com os cards de Conferente
+           e Gestor liberados para edição — inclusive o escopo de acesso do
+           Gestor, que substituiu a antiga seção solta "Telas do Gestor". */}
+        <GestaoAcessos params={params} persistParams={persistParams} telasRestritas={[]} souAdministrador />
 
         <SectionTitle icon={Briefcase}>PIN dos Gestores</SectionTitle>
         <p style={styles.helper}>
@@ -2226,7 +2214,7 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
    é `telasRestritas`: o Gestor não pode conceder Parâmetros/Perfis,
    senão fabricaria um "gestor" por fora do cadastro do Administrador.
    ============================================================ */
-function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_RESTRITAS_ADMIN }) {
+function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_RESTRITAS_ADMIN, souAdministrador = false }) {
   const subOn = (id) => subLiberado(sub, id);
   const [draftPerfis, setDraftPerfis] = useState(params.perfis || []);
   const [draftPessoas, setDraftPessoas] = useState(params.pessoasPerfil || []);
@@ -2243,9 +2231,57 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   const [formUsuario, setFormUsuario] = useState(null); // null | { perfilId, nome, pin }
   const [erroUsuario, setErroUsuario] = useState("");
 
-  const telasDisponiveis = TABS_GESTOR.filter(t => !telasRestritas.includes(t.id));
+  /* Conferente — perfil fixo (combinado com Pablo em 16/ago/2026): veio da
+     aba Parâmetros pra cá, pra ficar junto de todo o resto de acesso. O
+     acesso dele é sempre só a tela do coletor, não tem o que escolher —
+     por isso o cadastro aqui é só nome+PIN, igual já era em Parâmetros. */
+  const [draftConferentes, setDraftConferentes] = useState(params.conferentes || []);
+  const [conferenteAberto, setConferenteAberto] = useState(false);
+  const [novoConf, setNovoConf] = useState({ nome: "", pin: "" });
+  const [erroConf, setErroConf] = useState("");
+
+  /* Gestor — perfil fixo, acesso a tudo por padrão (inclusive a tela do
+     coletor). Só o Administrador enxerga isso editável aqui; o cadastro de
+     PIN dos gestores continua exclusivo dele, na tela do Administrador.
+     Substitui a antiga seção solta "Telas do Gestor". */
+  const [draftPermissoesGestor, setDraftPermissoesGestor] = useState({
+    ...DEFAULT_PARAMS.permissoesGestor, ...(params.permissoesGestor || {})
+  });
+  const [gestorAberto, setGestorAberto] = useState(false);
+
+  /* Tela do Coletor entra pra qualquer perfil poder pedir — não é
+     restringível pelo Gestor (não está em TELAS_RESTRITAS_ADMIN, não faz
+     sentido restringir: não dá superpoder nenhum, só abre o app do
+     conferente). */
+  const telasDisponiveis = [...TABS_GESTOR.filter(t => !telasRestritas.includes(t.id)), TELA_COLETOR];
   const perfilPorId = (id) => draftPerfis.find(p => p.id === id);
   const mudou = () => setSalvo(false);
+
+  /* ---------------- conferente (roster fixo) ---------------- */
+  const addConferente = () => {
+    const nome = novoConf.nome.trim(), pin = novoConf.pin.trim();
+    if (!nome) return setErroConf("Informe o nome do conferente.");
+    if (!/^\d{4,6}$/.test(pin)) return setErroConf("O PIN deve ter de 4 a 6 dígitos numéricos.");
+    if (draftConferentes.some(c => c.nome.toLowerCase() === nome.toLowerCase())) return setErroConf("Já existe um conferente com esse nome.");
+    if (pinEmUsoGlobal(pin, { ...params, conferentes: draftConferentes })) return setErroConf("Este PIN já está em uso por outro acesso do app.");
+    setDraftConferentes(d => [...d, { id: uid(), nome, pin }]);
+    setNovoConf({ nome: "", pin: "" }); setErroConf(""); mudou();
+  };
+  const delConferente = (id) => { setDraftConferentes(d => d.filter(c => c.id !== id)); mudou(); };
+  const setConfCampo = (id, campo, valor) => {
+    setDraftConferentes(d => d.map(c => c.id === id ? { ...c, [campo]: valor } : c));
+    mudou();
+  };
+  const alternarBloqueioConf = (id) => {
+    setDraftConferentes(d => d.map(c => c.id === id ? { ...c, bloqueado: !c.bloqueado } : c));
+    mudou();
+  };
+
+  /* ---------------- gestor (escopo de acesso) ---------------- */
+  const toggleGestorTela = (id) => {
+    setDraftPermissoesGestor(d => ({ ...d, [id]: d[id] === false ? true : false }));
+    mudou();
+  };
 
   /* ---------------- perfis ---------------- */
   const abrirFormPerfil = () => { setFormPerfil({ nome: "", telas: {}, sub: {} }); setErroPerfil(""); };
@@ -2354,8 +2390,21 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
         if (p.subCustom) base.subCustom = p.subCustom;
         return base;
       });
-    persistParams({ ...params, perfis: cleanPerfis, pessoasPerfil: cleanPessoas });
-    setDraftPerfis(cleanPerfis); setDraftPessoas(cleanPessoas);
+    const cleanConferentes = draftConferentes.filter(c => c.nome && c.pin)
+      .map(c => {
+        const base = { id: c.id || uid(), nome: c.nome.trim(), pin: c.pin.toString().trim() };
+        if (c.bloqueado) base.bloqueado = true;
+        return base;
+      });
+    const patch = { ...params, perfis: cleanPerfis, pessoasPerfil: cleanPessoas, conferentes: cleanConferentes };
+    /* o escopo de acesso do Gestor só é editável (e só é salvo) pelo
+       Administrador — um Gestor comum não pode se autoconceder mais telas */
+    if (souAdministrador) {
+      patch.permissoesGestor = { ...DEFAULT_PARAMS.permissoesGestor, ...draftPermissoesGestor };
+    }
+    persistParams(patch);
+    setDraftPerfis(cleanPerfis); setDraftPessoas(cleanPessoas); setDraftConferentes(cleanConferentes);
+    if (souAdministrador) setDraftPermissoesGestor(patch.permissoesGestor);
     setSalvo(true); setTimeout(() => setSalvo(false), 2500);
   };
 
@@ -2363,17 +2412,18 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      Usado tanto pelo perfil quanto pelo ajuste individual do usuário —
      a única diferença é de onde vêm os valores e para onde vão os
      cliques. */
-  const EditorAcessos = ({ telas, subMapa, onTela, onSub }) => (
+  const EditorAcessos = ({ telas, subMapa, onTela, onSub, semSubitens, somenteLeitura }) => (
     <div style={{ display: "grid", gap: 8 }}>
       {telasDisponiveis.map(t => {
         const ligada = !!telas?.[t.id];
-        const subitens = SUBITENS_POR_ABA[t.id] || [];
+        const subitens = semSubitens ? [] : (SUBITENS_POR_ABA[t.id] || []);
         const Ic = t.icon;
         return (
           <div key={t.id} style={{ border: `1px solid ${ligada ? C.navy2 : C.prataClaro}`, borderRadius: 9,
             padding: "10px 12px", background: ligada ? C.branco : C.bgLeve }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
-              <input type="checkbox" checked={ligada} onChange={() => onTela(t.id)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 9,
+              cursor: somenteLeitura ? "default" : "pointer" }}>
+              <input type="checkbox" checked={ligada} disabled={somenteLeitura} onChange={() => onTela(t.id)} />
               <Ic size={15} color={ligada ? C.navy2 : C.prata} />
               <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
                 color: ligada ? C.navy : C.prata }}>{t.label}</span>
@@ -2443,6 +2493,126 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
               </div>
             </div>
           )}
+        </div>
+
+        {/* ---- CONFERENTE e GESTOR — perfis fixos do app, trazidos pra cá
+           (combinado com Pablo em 16/ago/2026) pra aparecer junto de tudo
+           mais. Ficam antes dos perfis próprios, sempre nesta ordem. ---- */}
+        <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+          {/* CONFERENTE — acesso fixo: só a tela do coletor. O cadastro de
+             nome+PIN, que morava em Parâmetros → Acessos ao App, vive aqui. */}
+          <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+            borderLeft: `4px solid ${conferenteAberto ? C.laranja : C.supVerde}` }}>
+            <button onClick={() => setConferenteAberto(a => !a)}
+              style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                flexWrap: "wrap", font: "inherit" }}>
+              <HardHat size={17} color={C.supVerde} strokeWidth={2.3} />
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                  Conferente <Badge>{draftConferentes.length} usuário{draftConferentes.length !== 1 ? "s" : ""}</Badge>
+                  <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+                </div>
+                {!conferenteAberto && (
+                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>Tela do Coletor (Conferente)</div>
+                )}
+              </div>
+              <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{conferenteAberto ? "▲" : "▼"}</span>
+            </button>
+            {conferenteAberto && (
+              <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                <div style={{ ...styles.infoBox, margin: "14px 0" }}>
+                  Acesso fixo — Conferente sempre enxerga só a <strong>Tela do Coletor</strong>, para registrar
+                  início e fim das operações no celular. Não tem outras telas para escolher.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end", marginBottom: 14 }}>
+                  <Field label="Nome do conferente">
+                    <input style={styles.input} value={novoConf.nome}
+                      onChange={e => { setNovoConf(v => ({ ...v, nome: e.target.value })); setErroConf(""); }}
+                      onKeyDown={e => e.key === "Enter" && addConferente()}
+                      placeholder="Ex.: Carlos Andrade" />
+                  </Field>
+                  <Field label="PIN (4 a 6 dígitos)">
+                    <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                      inputMode="numeric" maxLength={6} value={novoConf.pin}
+                      onChange={e => { setNovoConf(v => ({ ...v, pin: e.target.value.replace(/\D/g, "") })); setErroConf(""); }}
+                      onKeyDown={e => e.key === "Enter" && addConferente()}
+                      placeholder="0000" />
+                  </Field>
+                  <button style={styles.btnPrimary} onClick={addConferente}><Plus size={15} /> Adicionar</button>
+                </div>
+                {erroConf && <div style={styles.erro}><AlertTriangle size={15} /> {erroConf}</div>}
+                {draftConferentes.length === 0 ? (
+                  <div style={styles.infoBox}>
+                    Nenhum conferente cadastrado — qualquer pessoa entra no app do conferente sem senha.
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8 }}>
+                    {draftConferentes.map(c => (
+                      <div key={c.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8, opacity: c.bloqueado ? .6 : 1 }}>
+                        <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EAF6EE", flexShrink: 0 }}>
+                          <HardHat size={15} color={C.supVerde} strokeWidth={2.2} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
+                            color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nome}</div>
+                        </div>
+                        <input style={{ ...styles.input, width: 70, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
+                          inputMode="numeric" maxLength={6} value={c.pin}
+                          onChange={e => setConfCampo(c.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                        <button title={c.bloqueado ? "Desbloquear" : "Bloquear"}
+                          onClick={() => alternarBloqueioConf(c.id)}
+                          style={{ ...styles.iconBtnDanger, background: c.bloqueado ? "#FFEBEE" : "#EEF2F8", color: c.bloqueado ? C.vermelho : C.navy2 }}>
+                          <Lock size={14} />
+                        </button>
+                        <button style={styles.iconBtnDanger} title="Remover conferente" onClick={() => delConferente(c.id)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* GESTOR — acesso a tudo por padrão, escopo editável só pelo
+             Administrador. O cadastro de PIN dos gestores continua na tela
+             do Administrador (fora daqui). */}
+          <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+            borderLeft: `4px solid ${gestorAberto ? C.laranja : C.navy2}` }}>
+            <button onClick={() => setGestorAberto(a => !a)}
+              style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                flexWrap: "wrap", font: "inherit" }}>
+              <Briefcase size={17} color={C.navy2} strokeWidth={2.3} />
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                  Gestor
+                  <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+                </div>
+                {!gestorAberto && (
+                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
+                    {[...TABS_GESTOR, TELA_COLETOR].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
+                  </div>
+                )}
+              </div>
+              <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{gestorAberto ? "▲" : "▼"}</span>
+            </button>
+            {gestorAberto && (
+              <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                <div style={{ ...styles.infoBox, margin: "14px 0" }}>
+                  {souAdministrador
+                    ? <>Acesso total por padrão — inclusive a <strong>Tela do Coletor</strong>. Desmarque só o que não fizer sentido.</>
+                    : <>Somente o Administrador altera o acesso do Gestor. O PIN de cada gestor também é cadastrado só por ele.</>}
+                </div>
+                <EditorAcessos
+                  telas={draftPermissoesGestor} onSub={() => {}} semSubitens
+                  somenteLeitura={!souAdministrador}
+                  onTela={souAdministrador ? toggleGestorTela : () => {}} />
+              </div>
+            )}
+          </div>
         </div>
 
         {draftPerfis.length === 0 ? (
@@ -7603,7 +7773,7 @@ ${plano ? `<main>
 function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const subOn = (id) => subLiberado(sub, id);
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
-    conferentes: params.conferentes || [], gestores: params.gestores || [],
+    gestores: params.gestores || [],
     motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa,
     fotosMin: {
       recebimento: { ...DEFAULT_PARAMS.fotosMin.recebimento, ...(params.fotosMin?.recebimento || {}) },
@@ -7612,9 +7782,6 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const [novoCliente, setNovoCliente] = useState("");
   const [novoMotivoPausa, setNovoMotivoPausa] = useState("");
   const [salvo, setSalvo] = useState(false);
-  /* seções recolhidas por padrão — a tela é longa demais com tudo aberto */
-  const [aberta, setAberta] = useState(null);   // "conferentes" | "gestores" | "tipos" | null
-  const toggle = (k) => setAberta(a => a === k ? null : k);
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
   const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
   /* recalibragem: além de aceitar a sugestão do app, o gestor pode digitar
@@ -7645,26 +7812,6 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
     setDraft(d => ({ ...d, motivosPausa: [...(d.motivosPausa || []), v] }));
     setNovoMotivoPausa(""); setSalvo(false);
   };
-  /* --- conferentes --- */
-  const [novoConf, setNovoConf] = useState({ nome: "", pin: "" });
-  const [erroConf, setErroConf] = useState("");
-  const addConferente = () => {
-    const nome = novoConf.nome.trim(), pin = novoConf.pin.trim();
-    if (!nome) return setErroConf("Informe o nome do conferente.");
-    if (!/^\d{4,6}$/.test(pin)) return setErroConf("O PIN deve ter de 4 a 6 dígitos numéricos.");
-    const lista = draft.conferentes || [];
-    if (lista.some(c => c.nome.toLowerCase() === nome.toLowerCase())) return setErroConf("Já existe um conferente com esse nome.");
-    /* gestores, pessoas de perfil e o PIN do Administrador não ficam mais
-       visíveis nem editáveis aqui (RBAC v2) — mas ainda entram na checagem
-       de unicidade, senão duas pessoas cairiam no mesmo PIN sem perceber. */
-    if (pinEmUsoGlobal(pin, { ...params, conferentes: lista, pinGestor: draft.pinGestor }))
-      return setErroConf("Este PIN já está em uso por outro acesso do app.");
-    setDraft(d => ({ ...d, conferentes: [...(d.conferentes || []), { id: uid(), nome, pin }] }));
-    setNovoConf({ nome: "", pin: "" }); setErroConf(""); setSalvo(false);
-  };
-  const delConferente = (id) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).filter(c => c.id !== id) })); setSalvo(false); };
-  const setConfPin = (id, pin) => { setDraft(d => ({ ...d, conferentes: (d.conferentes || []).map(c => c.id === id ? { ...c, pin } : c) })); setSalvo(false); };
-
   /* devolve o id para o chamador abrir o modal já no tipo recém-criado */
   const addTipo = () => {
     const id = uid();
@@ -7681,7 +7828,14 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const calibragem = useMemo(() => analisarProdutividade(ops || [], params), [ops, params]);
 
   const salvar = () => {
+    /* CORREÇÃO CRÍTICA (16/ago/2026): persistParams substitui o documento
+       inteiro, não faz merge (ver App() → persistParams). Sem o "...params"
+       aqui, qualquer campo que esta tela não edita — perfis, pessoasPerfil,
+       permissoesGestor, conferentes — seria apagado do banco toda vez que
+       alguém clicasse em "Salvar parâmetros". Isso já estava acontecendo
+       em produção antes desta correção. */
     const clean = {
+      ...params,
       custoTerceirizada: Math.max(0, parseFloat(draft.custoTerceirizada) || 0),
       bonusSuperior: Math.max(0, parseFloat(draft.bonusSuperior) || 0),
       bonusRateio: Math.max(0, parseFloat(draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior) || 0),
@@ -7701,8 +7855,6 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
           fim: Math.max(0, parseInt(draft.fotosMin?.expedicao?.fim, 10) || 0)
         }
       },
-      conferentes: (draft.conferentes || []).filter(c => c.nome && c.pin)
-        .map(c => ({ id: c.id || uid(), nome: c.nome.trim(), pin: c.pin.toString().trim() })),
       gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
         .map(g => ({ id: g.id || uid(), nome: g.nome.trim(), pin: g.pin.toString().trim() })),
       tipos: draft.tipos.map(t => ({ ...t, label: t.label.trim() || "Operação",
@@ -7813,71 +7965,6 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
           <button style={styles.btnGhost} onClick={addMotivoPausa}><Plus size={15} /> Adicionar motivo</button>
         </div>
       </div>
-
-      </>)}
-
-      {subOn("acessos") && (<>
-      <SectionTitle icon={Lock}>Acessos ao App</SectionTitle>
-      <p style={styles.helper}>
-        Cada pessoa entra com o próprio PIN. Quem iniciou e quem finalizou cada operação fica registrado —
-        é o que permite apurar um desvio de tempo com a pessoa certa. Clique para abrir a lista.
-      </p>
-      <div style={{ ...styles.infoBox, marginBottom: 14 }}>
-        PIN de gestor (cadastro e remoção) agora é exclusivo do perfil <strong>Administrador</strong>. Para criar
-        outros perfis de acesso (ex.: Administrativo), use a aba <strong>Perfis</strong>.
-      </div>
-
-      <Sanfona titulo="Conferentes" icone={HardHat} cor={C.supVerde}
-        contagem={(draft.conferentes || []).length}
-        sub="Registram início e fim das operações no celular"
-        resumo={(draft.conferentes || []).map(c => c.nome).join(" · ")}
-        aberto={aberta === "conferentes"} onToggle={() => toggle("conferentes")}>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-          <Field label="Nome do conferente">
-            <input style={styles.input} value={novoConf.nome}
-              onChange={e => { setNovoConf(v => ({ ...v, nome: e.target.value })); setErroConf(""); }}
-              onKeyDown={e => e.key === "Enter" && addConferente()}
-              placeholder="Ex.: Carlos Andrade" />
-          </Field>
-          <Field label="PIN (4 a 6 dígitos)">
-            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-              inputMode="numeric" maxLength={6} value={novoConf.pin}
-              onChange={e => { setNovoConf(v => ({ ...v, pin: e.target.value.replace(/\D/g, "") })); setErroConf(""); }}
-              onKeyDown={e => e.key === "Enter" && addConferente()}
-              placeholder="0000" />
-          </Field>
-          <button style={styles.btnPrimary} onClick={addConferente}><Plus size={15} /> Adicionar</button>
-        </div>
-
-        {erroConf && <div style={styles.erro}><AlertTriangle size={15} /> {erroConf}</div>}
-
-        {(draft.conferentes || []).length === 0 ? (
-          <div style={{ ...styles.infoBox, marginTop: 14 }}>
-            Nenhum conferente cadastrado — qualquer pessoa entra no app do conferente sem senha.
-            Cadastre acima para identificar quem registra cada operação.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8, marginTop: 16 }}>
-            {(draft.conferentes || []).map(c => (
-              <div key={c.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
-                <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EAF6EE", flexShrink: 0 }}>
-                  <HardHat size={15} color={C.supVerde} strokeWidth={2.2} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
-                    color: C.navy, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.nome}</div>
-                </div>
-                <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
-                  inputMode="numeric" maxLength={6} value={c.pin}
-                  onChange={e => setConfPin(c.id, e.target.value.replace(/\D/g, ""))} />
-                <button style={styles.iconBtnDanger} title="Remover conferente" onClick={() => delConferente(c.id)}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </Sanfona>
 
       </>)}
 
@@ -8420,6 +8507,23 @@ function Modal({ titulo, onFechar, children, largura }) {
         <div style={{ padding: "18px 20px 20px" }}>{children}</div>
       </div>
     </div>
+  );
+}
+
+/* Rodapé padrão SBS — combinado com Pablo em 16/ago/2026: toda tela, exceto
+   a do Administrador, leva a logo da SBS (bordas arredondadas) + "Desenvolvido
+   pela SBS Solution e Byplo." no rodapé. O cabeçalho, nessas mesmas telas,
+   fica só com a logo do cliente (Superior). `direita` é o texto opcional do
+   lado direito do rodapé (ex.: "Superior Transportes"). */
+function RodapeSBS({ direita }) {
+  return (
+    <footer style={styles.footer}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <img src={SBS_LOGO} alt="SBS Solution" style={{ height: 26, borderRadius: 8 }} />
+        <span>Desenvolvido pela SBS Solution e Byplo.</span>
+      </div>
+      {direita && <div style={{ color: C.prata, textAlign: "right" }}>{direita}</div>}
+    </footer>
   );
 }
 
