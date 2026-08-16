@@ -65,16 +65,88 @@ const TABS_GESTOR = [
   { id: "perfis", label: "Perfis", sub: "Cadastro de acessos", icon: Lock }
 ];
 
-/* Subitens do Dashboard controláveis por perfil (RBAC v2 fase 4) — granularidade
-   fina, além do liga/desliga da aba inteira. A ordem aqui é a mesma ordem em
-   que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026: Realizadas
-   Hoje vem antes de Realizado — Período Anterior). Só o Dashboard tem esse
-   detalhamento por hora — as outras abas ainda são liga/desliga inteiras. */
-const SUBITENS_DASHBOARD = [
-  { id: "forecast", label: "Forecast Operacional" },
-  { id: "hoje", label: "Realizadas Hoje" },
-  { id: "anterior", label: "Realizado — Período Anterior" }
-];
+/* Subitens controláveis por perfil, aba por aba (RBAC v2 fase 5) — granularidade
+   fina, além do liga/desliga da aba inteira. A ordem de cada lista é a mesma
+   ordem em que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026:
+   no Dashboard, Realizadas Hoje vem antes de Realizado — Período Anterior).
+   Regra de leitura em todo o app: subitem só some quando está explicitamente
+   `false`. undefined = ligado, o que mantém perfis salvos antes desta fase
+   funcionando exatamente como antes. */
+const SUBITENS_POR_ABA = {
+  operacoes: [
+    { id: "novo", label: "Novo Pré-Planejamento de Operação" },
+    { id: "terceirizados", label: "Terceirizados Contratados por Dia" }
+  ],
+  acompanhar: [
+    { id: "aovivo", label: "Acompanhamento ao Vivo" }
+  ],
+  dashboard: [
+    { id: "forecast", label: "Forecast Operacional" },
+    { id: "agora", label: "Operação Agora" },
+    { id: "hoje", label: "Realizadas Hoje" },
+    { id: "anterior", label: "Realizado — Período Anterior" },
+    { id: "indicadores", label: "Indicadores" },
+    { id: "evolucao", label: "Evolução Diária" },
+    { id: "fechamento", label: "Fechamento do Mês" },
+    { id: "cancelamentos", label: "Cancelamentos por Cliente" },
+    { id: "forameta", label: "Operações Fora da Meta" },
+    { id: "economiadia", label: "Economia por Dia" }
+  ],
+  fotos: [
+    { id: "romaneio", label: "Gerar Romaneio" }
+  ],
+  relatorios: [
+    { id: "diretoria", label: "Relatório para a Diretoria" },
+    { id: "cliente", label: "Relatórios para o Cliente" },
+    { id: "prestador", label: "Relatório para o Prestador de Serviço" },
+    { id: "consolidado", label: "Consolidado por Cliente" },
+    { id: "raiox", label: "Raio X da MdO" }
+  ],
+  ajustes: [
+    { id: "ajustemanual", label: "Ajuste Manual de Registros" }
+  ],
+  rateio: [
+    { id: "apuracao", label: "Apuração do Rateio" },
+    { id: "dodia", label: "Rateio — Operações do Dia" },
+    { id: "pendentes", label: "Aguardando Rateio — dias anteriores" },
+    { id: "rateados", label: "Já Rateadas" },
+    { id: "consolidadocolab", label: "Consolidado por Colaborador" },
+    { id: "equipe", label: "Cadastro da Equipe Superior" }
+  ],
+  parametros: [
+    { id: "valores", label: "Valores de Mão de Obra" },
+    { id: "clientes", label: "Clientes Cadastrados" },
+    { id: "motivospausa", label: "Motivos de Pausa" },
+    { id: "acessos", label: "Acessos ao App" },
+    { id: "fotosevidencia", label: "Fotos de Evidência" },
+    { id: "tipos", label: "Tipos de Operação e Linha de Base" },
+    { id: "calibragem", label: "Calibragem de Metas" }
+  ],
+  perfis: [
+    { id: "perfisacesso", label: "Perfis de Acesso" },
+    { id: "usuarios", label: "Usuários Cadastrados" }
+  ]
+};
+
+/* Lê a permissão de um subitem dentro da aba já aberta. `sub` é o recorte
+   { [subId]: bool } daquela aba, resolvido para quem está logado (perfil +
+   ajuste individual). null = sem restrição (Gestor/Administrador de verdade,
+   ou perfil salvo antes desta fase) e tudo aparece. */
+function subLiberado(sub, subId) {
+  if (!sub) return true;
+  return sub[subId] !== false;
+}
+
+/* Permissões que de fato valem para uma pessoa: o ajuste individual dela
+   (telasCustom/subCustom, gravado quando o Administrador edita os acessos
+   daquele usuário específico) tem prioridade sobre o que o perfil define.
+   Sem ajuste individual, herda o perfil — que é o caso normal. */
+function permissoesEfetivas(pessoa, perfil) {
+  return {
+    telas: pessoa?.telasCustom || perfil?.telas || {},
+    sub: pessoa?.subCustom || perfil?.sub || {}
+  };
+}
 
 /* Telas que só o Administrador libera para um perfil — nunca aparecem como
    opção no cadastro de Perfis (aba do Gestor). Sem isso, um Gestor comum
@@ -832,7 +904,7 @@ export default function App() {
     : modo === "perfil"
     ? <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
-        permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome} dashboardSub={perfilAtivo?.dashboardSub}
+        permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome} sub={perfilAtivo?.sub}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
@@ -1013,7 +1085,9 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
   const listaRedefinir =
     pedirPin === "conferente" ? conferentes
     : pedirPin === "gestor" ? gestores
-    : pedirPin === "perfil" ? pessoasPerfil.filter(p => p.perfilId === perfilAlvo?.id)
+    /* pessoa bloqueada não aparece aqui — senão redefiniria o próprio PIN
+       e voltaria a entrar, furando o bloqueio do Administrador */
+    : pedirPin === "perfil" ? pessoasPerfil.filter(p => p.perfilId === perfilAlvo?.id && !p.bloqueado)
     : [];
 
   const abrirRedefinir = () => {
@@ -1042,7 +1116,12 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
       /* PIN é da pessoa, não do perfil — cada perfil pode ter várias
          pessoas, cada uma com o PIN dela (cadastro na aba Perfis). */
       const pessoa = perfilAlvo && pessoasPerfil.find(p => p.perfilId === perfilAlvo.id && p.pin === pin);
-      if (pessoa) return onEntrar("perfil", pessoa.nome, perfilAlvo);
+      if (pessoa?.bloqueado) { setErro("Acesso bloqueado. Procure o Administrador."); setPin(""); return; }
+      if (pessoa) {
+        /* o que vale é o perfil + eventual ajuste individual desta pessoa */
+        const ef = permissoesEfetivas(pessoa, perfilAlvo);
+        return onEntrar("perfil", pessoa.nome, { ...perfilAlvo, telas: ef.telas, sub: ef.sub });
+      }
       setErro("PIN incorreto."); setPin(""); return;
     }
     if (pedirPin === "gestor") {
@@ -1847,7 +1926,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, dashboardSub }) {
+function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, sub }) {
   const [tab, setTab] = useState("operacoes");
   /* permissoes: quando vem preenchido (perfil customizado logado via
      modo "perfil"), filtra por ele; senão usa params.permissoesGestor —
@@ -1868,6 +1947,9 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
   useEffect(() => {
     if (TABS.length && !TABS.some(t => t.id === tab)) setTab(TABS[0].id);
   }, [TABS]);
+  /* Subitens da aba aberta. Só vale para perfil customizado — Gestor de
+     verdade recebe null e vê tudo (undefined em subLiberado = liberado). */
+  const subAba = permissoes ? (sub?.[tab] || {}) : null;
 
   return (
     <div style={styles.page}>
@@ -1910,16 +1992,15 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
       </nav>
 
       <main style={styles.main}>
-        {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
-        {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} />}
-        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc}
-          dashboardSub={permissoes ? dashboardSub : null} />}
-        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} />}
-        {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
-        {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
-        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} />}
-        {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} />}
-        {tab === "perfis" && <CadastroPerfis params={params} persistParams={persistParams} />}
+        {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
+        {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} sub={subAba} />}
+        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
+        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
+        {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
+        {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
+        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} />}
+        {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} sub={subAba} />}
+        {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
       </main>
 
       <footer style={styles.footer}>
@@ -2012,35 +2093,16 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
             <RefreshCw size={16} style={{ animation: sync ? "spin 1s linear infinite" : "none" }} />
           </button>
           <button style={styles.headerBtn} onClick={sair} title="Sair"><LogOut size={16} /></button>
-          <div style={{ ...styles.logoWrap, padding: "6px 10px" }}><img src={SUP_LOGO} alt="Superior Transportes" style={{ height: 28 }} /></div>
         </div>
       </header>
       <div style={styles.accentBar} />
 
       <main style={styles.main}>
-        <SectionTitle icon={ShieldCheck}>Perfis</SectionTitle>
-        <p style={styles.helper}>
-          Gestor e Administrador são fixos, com PIN e regras próprias. Qualquer outro perfil (ex.: Administrativo,
-          Supervisor) se cadastra na seção "Perfis de Acesso", mais abaixo.
-        </p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14, marginBottom: 8 }}>
-          <div style={{ ...styles.card, borderLeft: `4px solid ${C.navy2}` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 800, color: C.navy, fontSize: 14.5 }}>
-              <Briefcase size={17} color={C.navy2} /> Gestor
-            </div>
-            <div style={{ fontSize: 12.5, color: C.prata, marginTop: 6, lineHeight: 1.5 }}>
-              Acesso total por hora — todas as telas abaixo ligadas por padrão. Ajuste fino fica para quando Pablo decidir.
-            </div>
-          </div>
-          <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 800, color: C.navy, fontSize: 14.5 }}>
-              <ShieldCheck size={17} color={C.laranja} /> Administrador
-            </div>
-            <div style={{ fontSize: 12.5, color: C.prata, marginTop: 6, lineHeight: 1.5 }}>
-              Este perfil (Pablo Bona). Único que cadastra e vê o PIN dos gestores — o Gestor não enxerga essa lista.
-            </div>
-          </div>
-        </div>
+        {/* Perfis e usuários vêm primeiro — é o que o Administrador abre a
+           tela para fazer. O mesmo componente da aba "Perfis" do Gestor,
+           só que aqui sem restrição de tela (o Administrador pode conceder
+           Parâmetros e Perfis, o Gestor não). */}
+        <GestaoAcessos params={params} persistParams={persistParams} telasRestritas={[]} />
 
         <SectionTitle icon={LayoutDashboard}>Telas do Gestor</SectionTitle>
         <p style={styles.helper}>Desligue uma tela para tirá-la do painel do Gestor. Hoje todas estão ligadas por combinado com Pablo.</p>
@@ -2134,9 +2196,6 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
           <button style={styles.btnPrimary} onClick={salvar}>Salvar alterações</button>
         </div>
 
-        <div style={{ marginTop: 30, paddingTop: 22, borderTop: `1px dashed ${C.prataClaro}` }}>
-          <CadastroPerfis params={params} persistParams={persistParams} />
-        </div>
       </main>
 
       <footer style={styles.footer}>
@@ -2148,76 +2207,88 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 }
 
 /* ============================================================
-   CADASTRO DE PERFIS — RBAC v2 (fase 3)
+   GESTÃO DE ACESSOS — RBAC v2 (fase 5)
    ------------------------------------------------------------
-   Combinado com Pablo em 14/ago/2026: perfil (papel) e pessoa são
-   coisas separadas — igual o modelo pedido:
-     • Perfil = nome + telas liberadas. SEM PIN.
-     • Pessoa = nome + PIN, vinculada a um perfil. O PIN só existe
-       aqui, na hora de vincular alguém a um perfil.
-   Tanto o Administrador quanto o Gestor usam este mesmo componente
-   (aba "Perfis" do Gestor e seção equivalente do Administrador). Não
-   dá para cadastrar um perfil ou pessoa de "Gestor" por aqui — isso
-   continua exclusivo do Administrador, na seção "PIN dos Gestores".
+   Reorganizado com Pablo em 16/ago/2026. Duas listas, uma embaixo
+   da outra, cada linha abrindo o detalhe no clique:
+
+     1. PERFIS — o papel. Nome + quais abas e quais SUBITENS de cada
+        aba ele enxerga (ver SUBITENS_POR_ABA). Sem PIN.
+     2. USUÁRIOS — a pessoa. Nome + PIN + o perfil dela. Pode ter
+        ajuste individual de acesso: duas pessoas no mesmo perfil,
+        uma com uma tela a mais ou a menos que a outra. Esse ajuste
+        vira telasCustom/subCustom na pessoa e passa a valer no lugar
+        do perfil (ver permissoesEfetivas). "Voltar ao padrão do
+        perfil" apaga o ajuste. Também dá para bloquear (sem apagar,
+        mantém o histórico) e excluir de vez.
+
+   O mesmo componente atende o Administrador e o Gestor — o que muda
+   é `telasRestritas`: o Gestor não pode conceder Parâmetros/Perfis,
+   senão fabricaria um "gestor" por fora do cadastro do Administrador.
    ============================================================ */
-function CadastroPerfis({ params, persistParams }) {
+function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_RESTRITAS_ADMIN }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [draftPerfis, setDraftPerfis] = useState(params.perfis || []);
   const [draftPessoas, setDraftPessoas] = useState(params.pessoasPerfil || []);
-  const [novoPerfil, setNovoPerfil] = useState({ nome: "", telas: {}, dashboardSub: {} });
-  const [erroPerfil, setErroPerfil] = useState("");
-  /* Parâmetros e Perfis ficam de fora daqui — só o Administrador concede
-     essas duas, na sua própria tela. Ver TELAS_RESTRITAS_ADMIN. */
-  const telasDisponiveis = TABS_GESTOR.filter(t => !TELAS_RESTRITAS_ADMIN.includes(t.id));
-  /* Cadastro de usuário unificado (combinado com Pablo em 16/ago/2026):
-     primeiro escolhe o perfil já criado, depois nome completo e PIN — uma
-     única porta de entrada, em vez de um formulário dentro de cada card
-     de perfil. */
-  const [novoUsuario, setNovoUsuario] = useState({ perfilId: "", nome: "", pin: "" });
-  const [erroUsuario, setErroUsuario] = useState("");
   const [salvo, setSalvo] = useState(false);
 
-  /* --- perfil (papel): nome + telas, sem PIN --- */
-  const toggleNovaTela = (id) => setNovoPerfil(n => ({ ...n, telas: { ...n.telas, [id]: !n.telas[id] } }));
-  const togglePerfilTela = (id, telaId) => {
-    setDraftPerfis(d => d.map(p => p.id === id ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
-    setSalvo(false);
-  };
-  /* --- subitens do Dashboard: default ligado (undefined !== false) até o
-     gestor desmarcar algum --- */
-  const toggleNovaSubDash = (id) =>
-    setNovoPerfil(n => ({ ...n, dashboardSub: { ...n.dashboardSub, [id]: n.dashboardSub?.[id] === false } }));
-  const toggleSubDash = (perfilId, subId) => {
+  /* qual linha está expandida — só uma por vez, senão a tela vira um
+     paredão de checkbox */
+  const [perfilAberto, setPerfilAberto] = useState(null);
+  const [usuarioAberto, setUsuarioAberto] = useState(null);
+
+  /* formulários de inclusão só aparecem quando o botão é clicado */
+  const [formPerfil, setFormPerfil] = useState(null);   // null | { nome, telas, sub }
+  const [erroPerfil, setErroPerfil] = useState("");
+  const [formUsuario, setFormUsuario] = useState(null); // null | { perfilId, nome, pin }
+  const [erroUsuario, setErroUsuario] = useState("");
+
+  const telasDisponiveis = TABS_GESTOR.filter(t => !telasRestritas.includes(t.id));
+  const perfilPorId = (id) => draftPerfis.find(p => p.id === id);
+  const mudou = () => setSalvo(false);
+
+  /* ---------------- perfis ---------------- */
+  const abrirFormPerfil = () => { setFormPerfil({ nome: "", telas: {}, sub: {} }); setErroPerfil(""); };
+
+  const togglePerfilTela = (perfilId, telaId) => {
     setDraftPerfis(d => d.map(p => p.id === perfilId
-      ? { ...p, dashboardSub: { ...p.dashboardSub, [subId]: p.dashboardSub?.[subId] === false } }
+      ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
+    mudou();
+  };
+  const togglePerfilSub = (perfilId, abaId, subId) => {
+    setDraftPerfis(d => d.map(p => p.id === perfilId
+      ? { ...p, sub: { ...p.sub, [abaId]: { ...p.sub?.[abaId], [subId]: p.sub?.[abaId]?.[subId] === false } } }
       : p));
-    setSalvo(false);
+    mudou();
   };
-  const setPerfilNome = (id, nome) => {
-    setDraftPerfis(d => d.map(p => p.id === id ? { ...p, nome } : p));
-    setSalvo(false);
+  const setPerfilNome = (perfilId, nome) => {
+    setDraftPerfis(d => d.map(p => p.id === perfilId ? { ...p, nome } : p));
+    mudou();
   };
-  const removerPerfil = (id) => {
-    setDraftPerfis(d => d.filter(p => p.id !== id));
-    /* remove junto as pessoas vinculadas — um perfil apagado não pode
-       deixar gente com PIN órfão, sem tela nenhuma liberada */
-    setDraftPessoas(d => d.filter(pp => pp.perfilId !== id));
-    setSalvo(false);
+  const removerPerfil = (perfilId) => {
+    setDraftPerfis(d => d.filter(p => p.id !== perfilId));
+    /* pessoa sem perfil ficaria com PIN órfão e sem tela nenhuma */
+    setDraftPessoas(d => d.filter(pp => pp.perfilId !== perfilId));
+    setPerfilAberto(null); mudou();
   };
 
-  const adicionarPerfil = () => {
-    const nome = novoPerfil.nome.trim();
+  const criarPerfil = () => {
+    const nome = (formPerfil.nome || "").trim();
     if (!nome) return setErroPerfil("Dê um nome para o perfil.");
     if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErroPerfil('Esse nome é reservado — use outro (ex.: "Administrativo").');
     if (draftPerfis.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErroPerfil("Já existe um perfil com esse nome.");
-    if (!Object.values(novoPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma tela para o novo perfil.");
-    setDraftPerfis(d => [...d, { id: uid(), nome, telas: { ...novoPerfil.telas }, dashboardSub: { ...novoPerfil.dashboardSub } }]);
-    setNovoPerfil({ nome: "", telas: {}, dashboardSub: {} }); setErroPerfil(""); setSalvo(false);
+    if (!Object.values(formPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma aba para o novo perfil.");
+    const novo = { id: uid(), nome, telas: { ...formPerfil.telas }, sub: { ...formPerfil.sub } };
+    setDraftPerfis(d => [...d, novo]);
+    setFormPerfil(null); setErroPerfil(""); setPerfilAberto(novo.id); mudou();
   };
 
-  /* --- pessoas: nome + PIN, vinculadas a um perfil já criado --- */
-  const adicionarUsuario = () => {
-    const perfilId = novoUsuario.perfilId;
-    const nome = novoUsuario.nome.trim(), pin = novoUsuario.pin.trim();
+  /* ---------------- usuários ---------------- */
+  const abrirFormUsuario = () => { setFormUsuario({ perfilId: "", nome: "", pin: "" }); setErroUsuario(""); };
+
+  const criarUsuario = () => {
+    const { perfilId } = formUsuario;
+    const nome = (formUsuario.nome || "").trim(), pin = (formUsuario.pin || "").trim();
     if (!perfilId) return setErroUsuario("Selecione o perfil.");
     if (!nome) return setErroUsuario("Informe o nome completo.");
     if (!/^\d{4,6}$/.test(pin)) return setErroUsuario("O PIN deve ter de 4 a 6 dígitos numéricos.");
@@ -2225,182 +2296,358 @@ function CadastroPerfis({ params, persistParams }) {
       return setErroUsuario("Já existe alguém com esse nome neste perfil.");
     if (pinEmUsoGlobal(pin, { ...params, pessoasPerfil: draftPessoas })) return setErroUsuario("Este PIN já está em uso por outro acesso do app.");
     setDraftPessoas(d => [...d, { id: uid(), nome, pin, perfilId }]);
-    /* mantém o perfil selecionado — facilita cadastrar várias pessoas
-       seguidas no mesmo perfil */
-    setNovoUsuario(u => ({ perfilId: u.perfilId, nome: "", pin: "" }));
-    setErroUsuario(""); setSalvo(false);
-  };
-  const removerPessoa = (id) => { setDraftPessoas(d => d.filter(p => p.id !== id)); setSalvo(false); };
-  const setPessoaCampo = (id, campo, valor) => {
-    setDraftPessoas(d => d.map(p => p.id === id ? { ...p, [campo]: valor } : p));
-    setSalvo(false);
+    setFormUsuario(null); setErroUsuario(""); mudou();
   };
 
+  const setPessoaCampo = (id, campo, valor) => {
+    setDraftPessoas(d => d.map(p => p.id === id ? { ...p, [campo]: valor } : p));
+    mudou();
+  };
+  const removerPessoa = (id) => {
+    setDraftPessoas(d => d.filter(p => p.id !== id));
+    setUsuarioAberto(null); mudou();
+  };
+  const alternarBloqueio = (id) => {
+    setDraftPessoas(d => d.map(p => p.id === id ? { ...p, bloqueado: !p.bloqueado } : p));
+    mudou();
+  };
+
+  /* Ajuste individual: na primeira alteração copia o que o perfil dá hoje
+     para dentro da pessoa (telasCustom/subCustom) e passa a editar essa
+     cópia — assim mexer aqui não afeta os colegas do mesmo perfil. */
+  const togglePessoaTela = (pessoaId, telaId) => {
+    setDraftPessoas(d => d.map(p => {
+      if (p.id !== pessoaId) return p;
+      const base = p.telasCustom || { ...(perfilPorId(p.perfilId)?.telas || {}) };
+      return { ...p, telasCustom: { ...base, [telaId]: !base[telaId] } };
+    }));
+    mudou();
+  };
+  const togglePessoaSub = (pessoaId, abaId, subId) => {
+    setDraftPessoas(d => d.map(p => {
+      if (p.id !== pessoaId) return p;
+      const base = p.subCustom || JSON.parse(JSON.stringify(perfilPorId(p.perfilId)?.sub || {}));
+      const atual = base[abaId]?.[subId] !== false;
+      return { ...p, subCustom: { ...base, [abaId]: { ...base[abaId], [subId]: atual ? false : true } } };
+    }));
+    mudou();
+  };
+  const voltarAoPerfil = (pessoaId) => {
+    setDraftPessoas(d => d.map(p => {
+      if (p.id !== pessoaId) return p;
+      const { telasCustom, subCustom, ...resto } = p;
+      return resto;
+    }));
+    mudou();
+  };
+
+  /* ---------------- persistência ---------------- */
   const salvar = () => {
     const cleanPerfis = draftPerfis.filter(p => p.nome)
-      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, dashboardSub: p.dashboardSub || {} }));
+      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, sub: p.sub || {} }));
     const idsValidos = new Set(cleanPerfis.map(p => p.id));
-    /* pessoa sem nome/PIN ou apontando pra um perfil que não existe mais
-       (removido nesta mesma edição) não é salva */
     const cleanPessoas = draftPessoas.filter(p => p.nome && p.pin && idsValidos.has(p.perfilId))
-      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), pin: p.pin.toString().trim(), perfilId: p.perfilId }));
+      .map(p => {
+        const base = { id: p.id || uid(), nome: p.nome.trim(), pin: p.pin.toString().trim(), perfilId: p.perfilId };
+        if (p.bloqueado) base.bloqueado = true;
+        if (p.telasCustom) base.telasCustom = p.telasCustom;
+        if (p.subCustom) base.subCustom = p.subCustom;
+        return base;
+      });
     persistParams({ ...params, perfis: cleanPerfis, pessoasPerfil: cleanPessoas });
     setDraftPerfis(cleanPerfis); setDraftPessoas(cleanPessoas);
     setSalvo(true); setTimeout(() => setSalvo(false), 2500);
   };
 
+  /* ---------------- editor de acessos (compartilhado) ----------------
+     Usado tanto pelo perfil quanto pelo ajuste individual do usuário —
+     a única diferença é de onde vêm os valores e para onde vão os
+     cliques. */
+  const EditorAcessos = ({ telas, subMapa, onTela, onSub }) => (
+    <div style={{ display: "grid", gap: 8 }}>
+      {telasDisponiveis.map(t => {
+        const ligada = !!telas?.[t.id];
+        const subitens = SUBITENS_POR_ABA[t.id] || [];
+        const Ic = t.icon;
+        return (
+          <div key={t.id} style={{ border: `1px solid ${ligada ? C.navy2 : C.prataClaro}`, borderRadius: 9,
+            padding: "10px 12px", background: ligada ? C.branco : C.bgLeve }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+              <input type="checkbox" checked={ligada} onChange={() => onTela(t.id)} />
+              <Ic size={15} color={ligada ? C.navy2 : C.prata} />
+              <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5,
+                color: ligada ? C.navy : C.prata }}>{t.label}</span>
+            </label>
+            {ligada && subitens.length > 0 && (
+              <div style={{ marginTop: 8, marginLeft: 26, paddingLeft: 10, borderLeft: `2px solid ${C.prataClaro}`,
+                display: "grid", gap: 5 }}>
+                {subitens.map(s => (
+                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12,
+                    color: C.texto, cursor: "pointer" }}>
+                    <input type="checkbox" checked={subMapa?.[t.id]?.[s.id] !== false}
+                      onChange={() => onSub(t.id, s.id)} />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const resumoTelas = (telas) => {
+    const nomes = telasDisponiveis.filter(t => telas?.[t.id]).map(t => t.label);
+    return nomes.length ? nomes.join(" · ") : "Nenhuma aba liberada";
+  };
+
   return (
     <div>
-      <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draftPerfis.length}</Badge></SectionTitle>
-      <p style={styles.helper}>
-        Um <strong>perfil</strong> é só um papel — nome e telas liberadas, sem PIN. Depois de criado, vincule
-        cada <strong>pessoa</strong> a ele com nome e PIN próprios — é isso que ela vai digitar para entrar.
-        PIN de Gestor continua exclusivo do Administrador, na seção acima.
-      </p>
+      {/* ============ PERFIS ============ */}
+      {subOn("perfisacesso") && (<>
+        <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draftPerfis.length}</Badge></SectionTitle>
+        <p style={styles.helper}>
+          Um <strong>perfil</strong> é o papel: nome + quais abas e quais itens dentro de cada aba ele enxerga.
+          Clique num perfil para ver e alterar os acessos. Sem PIN — quem tem PIN é o usuário, na lista abaixo.
+        </p>
 
-      <div style={{ ...styles.card, marginBottom: 16 }}>
-        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, marginBottom: 12 }}>Novo perfil</div>
-        <div style={{ marginBottom: 14, maxWidth: 340 }}>
-          <Field label="Nome do perfil">
-            <input style={styles.input} value={novoPerfil.nome}
-              onChange={e => { setNovoPerfil(n => ({ ...n, nome: e.target.value })); setErroPerfil(""); }}
-              placeholder="Ex.: Administrativo" />
-          </Field>
+        <div style={{ marginBottom: 12 }}>
+          {!formPerfil ? (
+            <button style={styles.btnPrimary} onClick={abrirFormPerfil}><Plus size={15} /> Incluir perfil</button>
+          ) : (
+            <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
+                Novo perfil
+              </div>
+              <div style={{ maxWidth: 340, marginBottom: 14 }}>
+                <Field label="Nome do perfil">
+                  <input style={styles.input} value={formPerfil.nome} autoFocus
+                    onChange={e => { setFormPerfil(f => ({ ...f, nome: e.target.value })); setErroPerfil(""); }}
+                    placeholder="Ex.: Administrativo" />
+                </Field>
+              </div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
+                Acessos
+              </div>
+              <EditorAcessos
+                telas={formPerfil.telas} subMapa={formPerfil.sub}
+                onTela={id => setFormPerfil(f => ({ ...f, telas: { ...f.telas, [id]: !f.telas[id] } }))}
+                onSub={(abaId, subId) => setFormPerfil(f => ({ ...f,
+                  sub: { ...f.sub, [abaId]: { ...f.sub?.[abaId], [subId]: f.sub?.[abaId]?.[subId] === false } } }))} />
+              {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                <button style={styles.btnGhost} onClick={() => { setFormPerfil(null); setErroPerfil(""); }}>Cancelar</button>
+                <button style={styles.btnPrimary} onClick={criarPerfil}><Plus size={15} /> Criar perfil</button>
+              </div>
+            </div>
+          )}
         </div>
-        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
-          Telas liberadas
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: novoPerfil.telas.dashboard ? 4 : 14 }}>
-          {telasDisponiveis.map(t => {
-            const ligada = !!novoPerfil.telas[t.id];
-            return (
-              <button key={t.id} onClick={() => toggleNovaTela(t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-        {novoPerfil.telas.dashboard && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 4, marginBottom: 14, paddingLeft: 10, borderLeft: `2px solid ${C.prataClaro}` }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: C.prata, letterSpacing: .2 }}>Dentro do Dashboard</div>
-            {SUBITENS_DASHBOARD.map(s => (
-              <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.texto, cursor: "pointer" }}>
-                <input type="checkbox" checked={novoPerfil.dashboardSub?.[s.id] !== false} onChange={() => toggleNovaSubDash(s.id)} />
-                {s.label}
-              </label>
-            ))}
-          </div>
-        )}
-        {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
-        <button style={styles.btnPrimary} onClick={adicionarPerfil}><Plus size={15} /> Adicionar perfil</button>
-      </div>
 
-      <SectionTitle icon={HardHat}>Cadastrar novo usuário</SectionTitle>
-      <p style={styles.helper}>
-        Primeiro escolha o perfil (já criado acima), depois informe o nome completo e o PIN da pessoa.
-      </p>
-      <div style={{ ...styles.card, marginBottom: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.8fr 1fr auto", gap: 10, alignItems: "end" }}>
-          <Field label="Perfil">
-            <select style={styles.input} value={novoUsuario.perfilId}
-              onChange={e => { setNovoUsuario(u => ({ ...u, perfilId: e.target.value })); setErroUsuario(""); }}>
-              <option value="">Selecione…</option>
-              {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-            </select>
-          </Field>
-          <Field label="Nome completo">
-            <input style={styles.input} value={novoUsuario.nome}
-              onChange={e => { setNovoUsuario(u => ({ ...u, nome: e.target.value })); setErroUsuario(""); }}
-              onKeyDown={e => e.key === "Enter" && adicionarUsuario()}
-              placeholder="Ex.: Maria Silva" />
-          </Field>
-          <Field label="PIN (4 a 6 dígitos)">
-            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-              inputMode="numeric" maxLength={6} value={novoUsuario.pin}
-              onChange={e => { setNovoUsuario(u => ({ ...u, pin: e.target.value.replace(/\D/g, "") })); setErroUsuario(""); }}
-              onKeyDown={e => e.key === "Enter" && adicionarUsuario()}
-              placeholder="0000" />
-          </Field>
-          <button style={styles.btnPrimary} onClick={adicionarUsuario} disabled={draftPerfis.length === 0}>
-            <Plus size={15} /> Adicionar
-          </button>
-        </div>
-        {draftPerfis.length === 0 && (
-          <div style={{ ...styles.infoBox, marginTop: 14 }}>Crie um perfil acima antes de cadastrar pessoas.</div>
-        )}
-        {erroUsuario && <div style={styles.erro}><AlertTriangle size={15} /> {erroUsuario}</div>}
-      </div>
-
-      {draftPerfis.length === 0 ? (
-        <div style={styles.empty}>Nenhum perfil próprio cadastrado ainda.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 10, marginBottom: 8 }}>
-          {draftPerfis.map(perfil => {
-            const pessoasDoPerfil = draftPessoas.filter(p => p.perfilId === perfil.id);
-            return (
-              <div key={perfil.id} style={{ ...styles.card, borderLeft: `4px solid ${C.verde}` }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
-                  <div style={{ flex: 1, minWidth: 160 }}>
-                    <label style={styles.fieldLabel}>Nome do perfil</label>
-                    <input style={styles.input} value={perfil.nome} onChange={e => setPerfilNome(perfil.id, e.target.value)} />
-                  </div>
-                  <button style={styles.iconBtnDanger} title="Remover perfil" onClick={() => removerPerfil(perfil.id)}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {telasDisponiveis.map(t => {
-                    const ligada = !!perfil.telas?.[t.id];
-                    return (
-                      <button key={t.id} onClick={() => togglePerfilTela(perfil.id, t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
-                        {t.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {perfil.telas?.dashboard && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, marginLeft: 4, paddingLeft: 10, borderLeft: `2px solid ${C.prataClaro}` }}>
-                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: C.prata, letterSpacing: .2 }}>Dentro do Dashboard</div>
-                    {SUBITENS_DASHBOARD.map(s => (
-                      <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.texto, cursor: "pointer" }}>
-                        <input type="checkbox" checked={perfil.dashboardSub?.[s.id] !== false} onChange={() => toggleSubDash(perfil.id, s.id)} />
-                        {s.label}
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy, marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
-                    <HardHat size={14} color={C.prata} /> Pessoas neste perfil <Badge>{pessoasDoPerfil.length}</Badge>
-                  </div>
-
-                  {pessoasDoPerfil.length > 0 ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8 }}>
-                      {pessoasDoPerfil.map(pessoa => (
-                        <div key={pessoa.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
-                          <input style={{ ...styles.input, flex: 1, minWidth: 0, padding: "6px 8px", fontSize: 12.5 }}
-                            value={pessoa.nome} onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
-                          <input style={{ ...styles.input, width: 76, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 1.5, padding: "6px 6px", fontSize: 13 }}
-                            inputMode="numeric" maxLength={6} value={pessoa.pin}
-                            onChange={e => setPessoaCampo(pessoa.id, "pin", e.target.value.replace(/\D/g, ""))} />
-                          <button style={styles.iconBtnDanger} title="Remover pessoa" onClick={() => removerPessoa(pessoa.id)}>
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      ))}
+        {draftPerfis.length === 0 ? (
+          <div style={styles.empty}>Nenhum perfil cadastrado ainda.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
+            {draftPerfis.map(perfil => {
+              const aberto = perfilAberto === perfil.id;
+              const nUsuarios = draftPessoas.filter(p => p.perfilId === perfil.id).length;
+              return (
+                <div key={perfil.id} style={{ ...styles.card, padding: 0, overflow: "hidden",
+                  borderLeft: `4px solid ${aberto ? C.laranja : C.verde}` }}>
+                  <button onClick={() => setPerfilAberto(a => a === perfil.id ? null : perfil.id)}
+                    style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                      padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                      flexWrap: "wrap", font: "inherit" }}>
+                    <Lock size={17} color={C.verde} strokeWidth={2.3} />
+                    <div style={{ flex: 1, minWidth: 160 }}>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                        {perfil.nome} <Badge>{nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""}</Badge>
+                      </div>
+                      {!aberto && (
+                        <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>{resumoTelas(perfil.telas)}</div>
+                      )}
                     </div>
-                  ) : (
-                    <div style={{ fontSize: 12, color: C.prata }}>
-                      Ninguém cadastrado ainda — use "Cadastrar novo usuário", acima.
+                    <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{aberto ? "▲" : "▼"}</span>
+                  </button>
+                  {aberto && (
+                    <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", margin: "14px 0" }}>
+                        <div style={{ flex: 1, minWidth: 180 }}>
+                          <label style={styles.fieldLabel}>Nome do perfil</label>
+                          <input style={styles.input} value={perfil.nome}
+                            onChange={e => setPerfilNome(perfil.id, e.target.value)} />
+                        </div>
+                        <button style={styles.iconBtnDanger} title="Remover perfil"
+                          onClick={() => removerPerfil(perfil.id)}><Trash2 size={14} /></button>
+                      </div>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                        textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
+                        Acessos
+                      </div>
+                      <EditorAcessos
+                        telas={perfil.telas} subMapa={perfil.sub}
+                        onTela={telaId => togglePerfilTela(perfil.id, telaId)}
+                        onSub={(abaId, subId) => togglePerfilSub(perfil.id, abaId, subId)} />
+                      {nUsuarios > 0 && (
+                        <div style={{ ...styles.infoBox, marginTop: 12 }}>
+                          Vale para {nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""} — menos quem tiver ajuste
+                          individual, que aparece marcado na lista de usuários.
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
+              );
+            })}
+          </div>
+        )}
+      </>)}
+
+      {/* ============ USUÁRIOS ============ */}
+      {subOn("usuarios") && (<>
+        <SectionTitle icon={HardHat}>Usuários Cadastrados <Badge>{draftPessoas.length}</Badge></SectionTitle>
+        <p style={styles.helper}>
+          Cada usuário entra com o próprio PIN. Clique num nome para trocar o PIN, ajustar os acessos só dele,
+          bloquear ou excluir.
+        </p>
+
+        <div style={{ marginBottom: 12 }}>
+          {!formUsuario ? (
+            <button style={styles.btnPrimary} onClick={abrirFormUsuario} disabled={draftPerfis.length === 0}>
+              <Plus size={15} /> Incluir usuário
+            </button>
+          ) : (
+            <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
+                Novo usuário
               </div>
-            );
-          })}
+              <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.8fr 1fr", gap: 10, alignItems: "end" }}>
+                <Field label="Perfil">
+                  <select style={styles.input} value={formUsuario.perfilId}
+                    onChange={e => { setFormUsuario(f => ({ ...f, perfilId: e.target.value })); setErroUsuario(""); }}>
+                    <option value="">Selecione…</option>
+                    {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                  </select>
+                </Field>
+                <Field label="Nome completo">
+                  <input style={styles.input} value={formUsuario.nome}
+                    onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}
+                    onKeyDown={e => e.key === "Enter" && criarUsuario()}
+                    placeholder="Ex.: Maria Silva" />
+                </Field>
+                <Field label="PIN (4 a 6 dígitos)">
+                  <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                    inputMode="numeric" maxLength={6} value={formUsuario.pin}
+                    onChange={e => { setFormUsuario(f => ({ ...f, pin: e.target.value.replace(/\D/g, "") })); setErroUsuario(""); }}
+                    onKeyDown={e => e.key === "Enter" && criarUsuario()}
+                    placeholder="0000" />
+                </Field>
+              </div>
+              {erroUsuario && <div style={styles.erro}><AlertTriangle size={15} /> {erroUsuario}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                <button style={styles.btnGhost} onClick={() => { setFormUsuario(null); setErroUsuario(""); }}>Cancelar</button>
+                <button style={styles.btnPrimary} onClick={criarUsuario}><Plus size={15} /> Criar usuário</button>
+              </div>
+            </div>
+          )}
+          {draftPerfis.length === 0 && (
+            <div style={{ ...styles.infoBox, marginTop: 10 }}>Crie um perfil antes de cadastrar usuários.</div>
+          )}
         </div>
-      )}
+
+        {draftPessoas.length === 0 ? (
+          <div style={styles.empty}>Nenhum usuário cadastrado ainda.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
+            {draftPessoas.map(pessoa => {
+              const aberto = usuarioAberto === pessoa.id;
+              const perfil = perfilPorId(pessoa.perfilId);
+              const ef = permissoesEfetivas(pessoa, perfil);
+              const custom = !!(pessoa.telasCustom || pessoa.subCustom);
+              return (
+                <div key={pessoa.id} style={{ ...styles.card, padding: 0, overflow: "hidden",
+                  borderLeft: `4px solid ${pessoa.bloqueado ? C.vermelho : aberto ? C.laranja : C.navy2}`,
+                  opacity: pessoa.bloqueado ? .75 : 1 }}>
+                  <button onClick={() => setUsuarioAberto(a => a === pessoa.id ? null : pessoa.id)}
+                    style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                      padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                      flexWrap: "wrap", font: "inherit" }}>
+                    <HardHat size={17} color={pessoa.bloqueado ? C.vermelho : C.navy2} strokeWidth={2.3} />
+                    <div style={{ flex: 1, minWidth: 160 }}>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy,
+                        display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                        {pessoa.nome}
+                        {pessoa.bloqueado && (
+                          <span style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho }}>Bloqueado</span>
+                        )}
+                        {custom && !pessoa.bloqueado && (
+                          <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Acesso ajustado</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
+                        {perfil ? perfil.nome : "Perfil removido"} · {resumoTelas(ef.telas)}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{aberto ? "▲" : "▼"}</span>
+                  </button>
+                  {aberto && (
+                    <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10,
+                        alignItems: "end", margin: "14px 0" }}>
+                        <Field label="Nome completo">
+                          <input style={styles.input} value={pessoa.nome}
+                            onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
+                        </Field>
+                        <Field label="Perfil">
+                          <select style={styles.input} value={pessoa.perfilId}
+                            onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
+                            {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="PIN">
+                          <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                            inputMode="numeric" maxLength={6} value={pessoa.pin}
+                            onChange={e => setPessoaCampo(pessoa.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                        </Field>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                        <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => alternarBloqueio(pessoa.id)}>
+                          {pessoa.bloqueado ? <><CheckCircle2 size={14} /> Desbloquear</> : <><Lock size={14} /> Bloquear acesso</>}
+                        </button>
+                        {custom && (
+                          <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => voltarAoPerfil(pessoa.id)}>
+                            <RefreshCw size={14} /> Voltar ao padrão do perfil
+                          </button>
+                        )}
+                        <button style={{ ...styles.btnGhost, fontSize: 12.5, color: C.vermelho, borderColor: C.vermelho }}
+                          onClick={() => removerPessoa(pessoa.id)}>
+                          <Trash2 size={14} /> Excluir usuário
+                        </button>
+                      </div>
+
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                        textTransform: "uppercase", color: C.navy2, marginBottom: 6, letterSpacing: .2 }}>
+                        Acessos deste usuário
+                      </div>
+                      <div style={{ fontSize: 11.5, color: C.prata, marginBottom: 10, lineHeight: 1.5 }}>
+                        {custom
+                          ? "Ajuste individual — vale só para esta pessoa, não afeta os outros do mesmo perfil."
+                          : `Herdado do perfil ${perfil?.nome || ""}. Ao alterar algo aqui, vira um ajuste individual desta pessoa.`}
+                      </div>
+                      <EditorAcessos
+                        telas={ef.telas} subMapa={ef.sub}
+                        onTela={telaId => togglePessoaTela(pessoa.id, telaId)}
+                        onSub={(abaId, subId) => togglePessoaSub(pessoa.id, abaId, subId)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </>)}
 
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8 }}>
         {salvo && <span style={{ ...styles.pill, background: "#EAF6EE", color: C.verde }}><CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 3 }} /> Salvo</span>}
@@ -2413,7 +2660,8 @@ function CadastroPerfis({ params, persistParams }) {
 /* ============================================================
    GESTOR — ABA 1: OPERAÇÕES (cadastro)
    ============================================================ */
-function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
+function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   /* Nenhum campo de seleção vem pré-preenchido: um cliente ou tipo herdado
      por descuido gera registro errado que só aparece no fechamento. */
   const empty = { ref: "", idCliente: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
@@ -2512,6 +2760,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
 
   return (
     <div>
+      {subOn("novo") && (<>
       <SectionTitle icon={ClipboardList}>Novo Pré-Planejamento de Operação</SectionTitle>
       <div style={styles.card}>
         {/* Data em destaque: define quando a operação entra para o conferente
@@ -2750,7 +2999,9 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
           <button style={styles.btnPrimary} onClick={salvar}><Plus size={17} strokeWidth={2.5} /> Cadastrar Operação</button>
         </div>
       </div>
+      </>)}
 
+      {subOn("terceirizados") && (<>
       <SectionTitle icon={Calendar}>Terceirizados Contratados por Dia <Badge>{datasFuturas.length}</Badge></SectionTitle>
       <p style={styles.helper}>
         Diferente da MdO terceirizada de cada operação (que serve só pra calcular meta/tempo), aqui você registra
@@ -2792,6 +3043,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
           )}
         </div>
       )}
+      </>)}
     </div>
   );
 }
@@ -2835,7 +3087,8 @@ function Coluna({ titulo, lista, cor, icone: Ic, render, rodape, alerta }) {
   );
 }
 
-function Acompanhamento({ ops, params, now }) {
+function Acompanhamento({ ops, params, now, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const hoje = inicioDoDia(Date.now());
 
   /* Pendentes: só o dia corrente e o que já venceu sem rodar. O que está
@@ -2854,6 +3107,8 @@ function Acompanhamento({ ops, params, now }) {
     .filter(o => o.status === "concluida" && ehHoje(o.fim))
     .sort((a, b) => b.fim - a.fim);
   const ocultas = ops.filter(o => o.status === "concluida" && !ehHoje(o.fim)).length;
+
+  if (!subOn("aovivo")) return <EmptyState text="Sem permissão para ver esta tela." />;
 
   return (
     <div>
@@ -3039,7 +3294,8 @@ function CardRateio({ op, c, equipe, params, onToggle }) {
   );
 }
 
-function Rateio({ ops, params, persistOps, persistParams }) {
+function Rateio({ ops, params, persistOps, persistParams, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [novoNome, setNovoNome] = useState("");
   const [msg, setMsg] = useState("");
   const [mesFiltro, setMesFiltro] = useState(mesAtual());
@@ -3191,6 +3447,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
   return (
     <div>
       {/* ===== APURAÇÃO — dia e mês em cards separados ===== */}
+      {subOn("apuracao") && (<>
       <SectionTitle icon={Calendar}>Apuração do Rateio</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14, marginBottom: 20 }}>
         {/* --- card do dia --- */}
@@ -3261,8 +3518,10 @@ function Rateio({ ops, params, persistOps, persistParams }) {
           </div>
         </div>
       </div>
+      </>)}
 
       {/* ===== OPERAÇÕES DO DIA — editáveis o dia todo ===== */}
+      {subOn("dodia") && (<>
       <SectionTitle icon={Clock}>
         Rateio — Operações do Dia <Badge>{doDia.length}</Badge>
         {doDiaPendentes > 0 && (
@@ -3290,9 +3549,10 @@ function Rateio({ ops, params, persistOps, persistParams }) {
           </div>
         </>
       )}
+      </>)}
 
       {/* ===== PENDENTES DE DIAS ANTERIORES ===== */}
-      {pendentes.length > 0 && equipe.length > 0 && (
+      {pendentes.length > 0 && equipe.length > 0 && subOn("pendentes") && (
         <>
           <SectionTitle icon={AlertTriangle}>
             Aguardando Rateio — dias anteriores <Badge>{pendentes.length}</Badge>
@@ -3314,7 +3574,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
       )}
 
       {/* ===== JÁ RATEADAS — recolhido, abre sob demanda para ajuste ===== */}
-      {rateados.length > 0 && (
+      {rateados.length > 0 && subOn("rateados") && (
         <>
           <SectionTitle icon={CheckCircle2}>
             Já Rateadas <Badge>{rateados.length}</Badge>
@@ -3403,6 +3663,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
         </>
       )}
 
+      {subOn("consolidadocolab") && (<>
       <SectionTitle icon={Award}>Consolidado por Colaborador — {nomeMes(mesFiltro)}</SectionTitle>
       {porColaborador.length === 0 ? (
         <EmptyState text="Nenhum bônus rateado ainda neste período." />
@@ -3441,10 +3702,12 @@ function Rateio({ ops, params, persistOps, persistParams }) {
           </div>
         </>
       )}
+      </>)}
 
       {/* ===== CADASTRO DA EQUIPE — no fim, é manutenção esporádica =====
          Ficava no topo e empurrava a fila de rateio para baixo da dobra,
          embora só seja mexido quando alguém entra ou sai da equipe. */}
+      {subOn("equipe") && (<>
       <SectionTitle icon={Users}>Cadastro da Equipe Superior <Badge>{equipe.length}</Badge></SectionTitle>
       <p style={styles.helper}>
         Os nomes cadastrados aqui são os que aparecem para marcação em cada operação com bônus.
@@ -3470,6 +3733,7 @@ function Rateio({ ops, params, persistOps, persistParams }) {
           </div>
         )}
       </div>
+      </>)}
     </div>
   );
 }
@@ -3479,7 +3743,8 @@ function Rateio({ ops, params, persistOps, persistParams }) {
    Correção manual de horários que o conferente errou ou esqueceu.
    Toda alteração fica auditada em op.ajustes[].
    ============================================================ */
-function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc }) {
+function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [editId, setEditId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busca, setBusca] = useState("");
@@ -3647,6 +3912,8 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
         o.cliente.toLowerCase().includes(busca.toLowerCase()))
     : recentes;
   const anteriores = todas.length - recentes.length;
+
+  if (!subOn("ajustemanual")) return <EmptyState text="Sem permissão para ver esta tela." />;
 
   return (
     <div>
@@ -3956,12 +4223,10 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
 /* ============================================================
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
-function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
-  /* dashboardSub: quais blocos do Dashboard aparecem para o perfil logado —
-     vem de perfil.dashboardSub (RBAC v2 fase 4, granularidade por subitem,
-     não só por aba). null/undefined = sem restrição, mostra tudo (Gestor
-     de verdade e perfis antigos salvos antes desta fase). */
-  const subOn = (id) => !dashboardSub || dashboardSub[id] !== false;
+function Dashboard({ ops, params, now, diasTerc, sub }) {
+  /* sub: quais blocos desta aba aparecem para o perfil logado (ver
+     SUBITENS_POR_ABA). null = sem restrição, mostra tudo. */
+  const subOn = (id) => subLiberado(sub, id);
   const [diaSel, setDiaSel] = useState(null);
   /* índice leve das fotos — só metadados, para saber quais operações
      têm evidência e habilitar o clique. As imagens só descem quando
@@ -4291,7 +4556,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
       )}
 
       {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
-      {emAndamento.length > 0 && (
+      {emAndamento.length > 0 && subOn("agora") && (
         <>
           <SectionTitle icon={Gauge}>
             Operação Agora
@@ -4535,6 +4800,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
          dia responde "como estamos agora", o do mês responde "como está o
          fechamento". Separar em duas seções obrigava o gestor a comparar
          cartões distantes na tela. */}
+      {subOn("indicadores") && (<>
       <SectionTitle icon={Gauge}>
         Indicadores <Badge>{nomeMes(mAtual)}</Badge>
         {aggMesAnt.n > 0 && <span style={{ fontSize: 12, fontWeight: 500, color: C.prata }}>mês vs {nomeMes(mAnterior)}</span>}
@@ -4573,9 +4839,10 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
           variacao={variacao(aggMes.bonusPago, aggMesAnt.bonusPago)} melhorMaior
           rodape={`Custo lançado na economia (${brl(params.bonusSuperior)}/bônus). O valor distribuído à equipe (${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)}/bônus) fica na aba Rateio.`} />
       </div>
+      </>)}
 
       {/* ===== EVOLUÇÃO — PERFORMANCE E ECONOMIA LADO A LADO ===== */}
-      {evolucaoDiaria.length > 0 && (
+      {evolucaoDiaria.length > 0 && subOn("evolucao") && (
         <>
           <SectionTitle icon={Activity}>Evolução Diária — {nomeMes(mAtual)}</SectionTitle>
           <p style={styles.helper}>Clique numa coluna ou num ponto do gráfico para ver as operações daquele dia.</p>
@@ -4659,6 +4926,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
       )}
 
       {/* ===== FECHAMENTO DO MÊS — números de apoio ===== */}
+      {subOn("fechamento") && (<>
       <SectionTitle icon={ClipboardList}>Fechamento do Mês <Badge>{nomeMes(mAtual)}</Badge></SectionTitle>
       <div style={styles.kpiGrid}>
         <KpiComparativo label="Operações Concluídas" valor={aggMes.n} variacao={variacao(aggMes.n, aggMesAnt.n)}
@@ -4671,11 +4939,12 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
         <Kpi label="Bônus Não Pago (mês)" valor={brl(aggMes.bonusPerdido)} nota={`${plOp(foraMeta.length)} fora da meta`}
           icon={AlertTriangle} color={aggMes.bonusPerdido > 0 ? C.vermelho : C.prata} />
       </div>
+      </>)}
 
       {/* ===== CANCELAMENTOS POR CLIENTE + FORA DA META — sanfonas lado a lado ===== */}
-      {(cancelamentosCliente.length > 0 || foraMeta.length > 0) && (
+      {((cancelamentosCliente.length > 0 && subOn("cancelamentos")) || (foraMeta.length > 0 && subOn("forameta"))) && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 16, marginBottom: 22, alignItems: "start" }}>
-          {cancelamentosCliente.length > 0 && (
+          {cancelamentosCliente.length > 0 && subOn("cancelamentos") && (
             <Sanfona titulo="Cancelamentos por Cliente" icone={Building2} cor={C.vermelho}
               contagem={cancelamentosCliente.reduce((s, [, n]) => s + n, 0)}
               sub="Histórico para negociação futura"
@@ -4699,7 +4968,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
             </Sanfona>
           )}
 
-          {foraMeta.length > 0 && (
+          {foraMeta.length > 0 && subOn("forameta") && (
             <Sanfona titulo={`Operações Fora da Meta — ${nomeMes(mAtual)}`} icone={AlertTriangle} cor={C.vermelho}
               contagem={foraMeta.length}
               aberto={secaoAberta === "foraMeta"}
@@ -4740,6 +5009,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
          economia veio de produtividade ou de corte de headcount. */}
 
       {/* ===== VISÃO POR DIA ===== */}
+      {subOn("economiadia") && (<>
       <SectionTitle icon={Calendar}>Economia por Dia — {nomeMes(mAtual)}</SectionTitle>
       <p style={styles.helper}>
         Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
@@ -4791,6 +5061,7 @@ function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
           </div>
         </>
       )}
+      </>)}
 
       {/* O histórico completo, os gráficos por operação e a tabela detalhada
          ficam em Relatórios. Esta tela é gestão à vista — pensada para TV. */}
@@ -5347,7 +5618,8 @@ function abrirRomaneio(reg, pacote, dados) {
   if (w) { w.document.write(html); w.document.close(); }
 }
 
-function GaleriaFotos({ ops, params, persistOps }) {
+function GaleriaFotos({ ops, params, persistOps, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [idx, setIdx] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [aberta, setAberta] = useState(null);
@@ -5419,6 +5691,8 @@ function GaleriaFotos({ ops, params, persistOps }) {
       .map(([ts, lista]) => ({ ts: Number(ts), lista }))
       .sort((a, b) => b.ts - a.ts);
   }, [filtrado]);
+
+  if (!subOn("romaneio")) return <EmptyState text="Sem permissão para ver esta tela." />;
 
   return (
     <div>
@@ -5591,7 +5865,8 @@ function GaleriaFotos({ ops, params, persistOps }) {
   );
 }
 
-function Relatorios({ ops, params, diasTerc }) {
+function Relatorios({ ops, params, diasTerc, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const hoje = new Date();
   const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
   const toISO = (d) => d.toISOString().slice(0, 10);
@@ -5986,6 +6261,7 @@ function Relatorios({ ops, params, diasTerc }) {
 
   return (
     <div>
+      {subOn("diretoria") && (<>
       <SectionTitle icon={FileSpreadsheet}>Relatório para a Diretoria</SectionTitle>
       <p style={styles.helper}>
         Peça interna: além da performance operacional, traz <strong>custo, economia e bônus</strong> —
@@ -6031,7 +6307,10 @@ function Relatorios({ ops, params, diasTerc }) {
         </div>
       </div>
 
+      </>)}
+
       {/* ===== RELATÓRIOS PARA O CLIENTE — duas peças ===== */}
+      {subOn("cliente") && (<>
       <SectionTitle icon={Building2}>Relatórios para o Cliente</SectionTitle>
       <p style={styles.helper}>
         Peças de apresentação para enviar ao cliente. <strong>Nenhuma delas contém custo, bônus ou
@@ -6111,7 +6390,10 @@ function Relatorios({ ops, params, diasTerc }) {
         </div>
       </div>
 
+      </>)}
+
       {/* ===== RELATÓRIO PARA O PRESTADOR DE SERVIÇO ===== */}
+      {subOn("prestador") && (<>
       <SectionTitle icon={HardHat}>Relatório para o Prestador de Serviço</SectionTitle>
       <p style={styles.helper}>
         Fechamento diário para conferência com a prestadora: quantas pessoas foram demandadas em cada dia,
@@ -6150,7 +6432,10 @@ function Relatorios({ ops, params, diasTerc }) {
         </div>
       </div>
 
+      </>)}
+
       {/* Prévia consolidada por cliente */}
+      {subOn("consolidado") && (<>
       <SectionTitle icon={Building2}>Consolidado por Cliente <Badge>{porCliente.length}</Badge></SectionTitle>
       {porCliente.length === 0 ? (
         <EmptyState text="Nenhuma operação concluída no período selecionado." />
@@ -6197,8 +6482,10 @@ function Relatorios({ ops, params, diasTerc }) {
         </div>
       )}
 
+      </>)}
+
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
-      <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />
+      {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
     </div>
   );
 }
@@ -7313,7 +7600,8 @@ ${plano ? `<main>
 /* ============================================================
    GESTOR — ABA 4: PARÂMETROS
    ============================================================ */
-function Parametros({ params, persistParams, persistOps, ops }) {
+function Parametros({ params, persistParams, persistOps, ops, sub }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
     conferentes: params.conferentes || [], gestores: params.gestores || [],
     motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa,
@@ -7430,6 +7718,7 @@ function Parametros({ params, persistParams, persistOps, ops }) {
 
   return (
     <div>
+      {subOn("valores") && (<>
       <SectionTitle icon={Settings}>Valores de Mão de Obra</SectionTitle>
       <p style={styles.helper}>Todos os valores e metas são livres para ajuste — negocie com a terceirizada ou refine metas conforme o histórico.</p>
       <div style={styles.card}>
@@ -7469,6 +7758,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </div>
       </div>
 
+      </>)}
+
+      {subOn("clientes") && (<>
       <SectionTitle icon={Building2}>Clientes Cadastrados <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>Os clientes aqui aparecem como opção no cadastro de operações e viram base da consolidação por cliente nos relatórios.</p>
       <div style={styles.card}>
@@ -7494,6 +7786,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </div>
       </div>
 
+      </>)}
+
+      {subOn("motivospausa") && (<>
       <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria etc.). O tempo pausado não conta contra a meta/bônus.</p>
       <div style={styles.card}>
@@ -7519,6 +7814,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </div>
       </div>
 
+      </>)}
+
+      {subOn("acessos") && (<>
       <SectionTitle icon={Lock}>Acessos ao App</SectionTitle>
       <p style={styles.helper}>
         Cada pessoa entra com o próprio PIN. Quem iniciou e quem finalizou cada operação fica registrado —
@@ -7581,6 +7879,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         )}
       </Sanfona>
 
+      </>)}
+
+      {subOn("fotosevidencia") && (<>
       <SectionTitle icon={Camera}>Fotos de Evidência</SectionTitle>
       <p style={styles.helper}>
         Controla se o app do conferente trava sem as fotos obrigatórias. Desligue temporariamente quando o
@@ -7653,6 +7954,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
         </div>
       </div>
 
+      </>)}
+
+      {subOn("tipos") && (<>
       <SectionTitle icon={Truck}>Tipos de Operação e Linha de Base</SectionTitle>
       <p style={styles.helper}>
         A <strong>linha de base</strong> é uma operação de referência: quantas unidades, com quantas pessoas,
@@ -7866,6 +8170,9 @@ function Parametros({ params, persistParams, persistOps, ops }) {
       })()}
 
       {/* ===== CALIBRAGEM DE METAS ===== */}
+      </>)}
+
+      {subOn("calibragem") && (<>
       <SectionTitle icon={Gauge}>Calibragem de Metas</SectionTitle>
       <p style={styles.helper}>
         O app compara a produtividade realizada com a linha de base de cada tipo. A meta de cada operação
@@ -7992,6 +8299,8 @@ function Parametros({ params, persistParams, persistOps, ops }) {
           );
         })}
       </div>
+
+      </>)}
 
       <div style={{ marginTop: 22, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button style={styles.btnPrimary} onClick={salvar}><CheckCircle2 size={17} /> Salvar parâmetros</button>
