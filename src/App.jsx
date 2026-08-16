@@ -709,6 +709,10 @@ function variacao(atual, anterior) {
 
 /* ============================================================ */
 export default function App() {
+  /* area: qual "quadrante" do Sistema de Gestão está aberto — null mostra
+     o hub (SISTEMA DE GESTÃO); "operacional" mostra a porta de entrada do
+     Monitor Operacional que já existia (Conferente/Gestor/perfis). */
+  const [area, setArea] = useState(null); // null | "operacional"
   const [modo, setModo] = useState(null); // null | "gestor" | "conferente" | "administrador" | "perfil"
   const [usuario, setUsuario] = useState(null); // nome do conferente logado
   /* perfilAtivo: só preenchido quando modo === "perfil" — guarda o perfil
@@ -787,8 +791,15 @@ export default function App() {
   }, []);
 
   if (loading) return <Splash />;
-  if (!modo) return <PortaEntrada params={params}
-    onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
+  if (!modo) {
+    if (area === "operacional") {
+      return <PortaEntrada params={params} onVoltar={() => setArea(null)}
+        onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
+    }
+    return <HubEntrada
+      onOperacional={() => setArea("operacional")}
+      onEntrarAdmin={() => { setModo("administrador"); setUsuario("Pablo Bona"); }} />;
+  }
 
   const sair = () => { setModo(null); setUsuario(null); setPerfilAtivo(null); };
 
@@ -835,11 +846,126 @@ function AvisoSemConexao({ visivel }) {
   );
 }
 
+/* URL do App de Gestão Comercial — projeto separado, publicado à parte
+   (GitHub Pages). O botão COMERCIAL só abre essa URL numa nova aba. */
+const URL_APP_COMERCIAL = "https://Pdbona.github.io/gestao-comercial-superior/";
+
+/* ============================================================
+   HUB — SISTEMA DE GESTÃO
+   Porta de entrada de mais alto nível: escolhe a área (Comercial,
+   Operacional, Administrativo, Recursos Humanos) antes de cair na porta
+   de entrada de cada uma. ADMIN do Sistema fica à parte, num canto —
+   é quem antes era o botão ADMINISTRADOR aqui dentro do Operacional.
+   ============================================================ */
+function HubEntrada({ onOperacional, onEntrarAdmin }) {
+  const [pedirPinAdmin, setPedirPinAdmin] = useState(false);
+  const [pin, setPin] = useState("");
+  const [erro, setErro] = useState("");
+
+  const validarAdmin = () => {
+    if (pin === PIN_ADMINISTRADOR) return onEntrarAdmin();
+    setErro("PIN incorreto."); setPin("");
+  };
+
+  const hubBtn = (disabled) => ({
+    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+    gap: 10, background: disabled ? "#F2F3F5" : C.branco,
+    border: `1.5px solid ${disabled ? "#E2E5EA" : C.prataClaro}`, borderRadius: 12,
+    padding: "26px 16px", cursor: disabled ? "not-allowed" : "pointer",
+    boxShadow: disabled ? "none" : "0 2px 10px rgba(30,58,95,.07)", textAlign: "center", width: "100%"
+  });
+
+  return (
+    <div style={{ ...styles.page, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <FontInject />
+      <header style={{ ...styles.header, position: "relative", justifyContent: "center" }}>
+        <div style={{ color: C.branco, textAlign: "center" }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17, letterSpacing: .3 }}>SISTEMA DE GESTÃO</div>
+          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Superior Transportes</div>
+        </div>
+        <div style={{ ...styles.logoWrap, padding: "6px 10px", position: "absolute", right: 26, top: "50%", transform: "translateY(-50%)" }}>
+          <img src={SUP_LOGO} alt="Superior Transportes" style={{ height: 28 }} />
+        </div>
+      </header>
+      <div style={styles.accentBar} />
+
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ width: "100%", maxWidth: 520 }}>
+          {!pedirPinAdmin ? (
+            <>
+              <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 19, fontWeight: 800, color: C.navy, textAlign: "center", marginBottom: 6 }}>
+                Como você vai acessar?
+              </h2>
+              <p style={{ textAlign: "center", color: C.prata, fontSize: 13, marginTop: 0, marginBottom: 24 }}>
+                Selecione a área do sistema
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <button style={hubBtn(false)} onClick={() => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer")}>
+                  <div style={{ ...styles.portaIcon, background: "#EEF2F8" }}><DollarSign size={26} color={C.navy2} strokeWidth={2.2} /></div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>COMERCIAL</div>
+                </button>
+                <button style={hubBtn(false)} onClick={onOperacional}>
+                  <div style={{ ...styles.portaIcon, background: "#EAF6EE" }}><Truck size={26} color={C.supVerde} strokeWidth={2.2} /></div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>OPERACIONAL</div>
+                </button>
+                <button style={hubBtn(true)} disabled title="Em desenvolvimento">
+                  <div style={{ ...styles.portaIcon, background: "#E9EBEE" }}><FileText size={26} color={C.prata} strokeWidth={2.2} /></div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.prata }}>ADMINISTRATIVO</div>
+                  <div style={{ fontSize: 11, color: C.prata }}>Em desenvolvimento</div>
+                </button>
+                <button style={hubBtn(true)} disabled title="Em desenvolvimento">
+                  <div style={{ ...styles.portaIcon, background: "#E9EBEE" }}><Users size={26} color={C.prata} strokeWidth={2.2} /></div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.prata }}>RECURSOS HUMANOS</div>
+                  <div style={{ fontSize: 11, color: C.prata }}>Em desenvolvimento</div>
+                </button>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+                <button style={{ ...styles.btnGhost, fontSize: 12.5 }}
+                  onClick={() => { setPedirPinAdmin(true); setPin(""); setErro(""); }}>
+                  <ShieldCheck size={15} /> ADMIN do Sistema
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <ShieldCheck size={26} color={C.laranja} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
+                Acesso do Administrador
+              </div>
+              <input type="password" inputMode="numeric" value={pin} autoFocus
+                onChange={e => { setPin(e.target.value); setErro(""); }}
+                onKeyDown={e => e.key === "Enter" && validarAdmin()}
+                placeholder="PIN"
+                style={{ ...styles.input, textAlign: "center", fontSize: 22, letterSpacing: 8, fontFamily: "'Roboto Mono',monospace" }} />
+              {erro && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erro}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }} onClick={() => { setPedirPinAdmin(false); setPin(""); setErro(""); }}>Voltar</button>
+                <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={validarAdmin}>Entrar</button>
+              </div>
+              <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>Acesso restrito ao administrador do sistema.</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <footer style={styles.footer}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img src={SBS_LOGO} alt="SBS Solution" style={{ height: 22 }} />
+          <span>Desenvolvido pela SBS Solution.</span>
+        </div>
+        <div style={{ color: C.prata, textAlign: "right" }}>Superior Transportes</div>
+      </footer>
+    </div>
+  );
+}
+
 /* ============================================================
    PORTA DE ENTRADA — escolha do modo
    ============================================================ */
-function PortaEntrada({ params, onEntrar }) {
-  const [pedirPin, setPedirPin] = useState(null);   // null | "gestor" | "conferente" | "administrador" | "perfil"
+function PortaEntrada({ params, onVoltar, onEntrar }) {
+  const [pedirPin, setPedirPin] = useState(null);   // null | "gestor" | "conferente" | "perfil"
   const [perfilAlvo, setPerfilAlvo] = useState(null); // perfil customizado escolhido, quando pedirPin === "perfil"
   const [pin, setPin] = useState("");
   const [erro, setErro] = useState("");
@@ -853,10 +979,6 @@ function PortaEntrada({ params, onEntrar }) {
   const exigePin = conferentes.length > 0;
 
   const validar = () => {
-    if (pedirPin === "administrador") {
-      if (pin === PIN_ADMINISTRADOR) return onEntrar("administrador", "Pablo Bona");
-      setErro("PIN incorreto."); setPin(""); return;
-    }
     if (pedirPin === "perfil") {
       /* PIN é da pessoa, não do perfil — cada perfil pode ter várias
          pessoas, cada uma com o PIN dela (cadastro na aba Perfis). */
@@ -903,6 +1025,11 @@ function PortaEntrada({ params, onEntrar }) {
 
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div style={{ width: "100%", maxWidth: 460 }}>
+          {onVoltar && (
+            <button style={{ ...styles.btnGhost, fontSize: 12.5, marginBottom: 16 }} onClick={onVoltar}>
+              ← Voltar ao Sistema de Gestão
+            </button>
+          )}
           <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 19, fontWeight: 800, color: C.navy, textAlign: "center", marginBottom: 6 }}>
             Como você vai acessar?
           </h2>
@@ -930,15 +1057,6 @@ function PortaEntrada({ params, onEntrar }) {
                   <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Cadastro, acompanhamento, custos e metas</div>
                 </div>
               </button>
-              <button style={styles.portaBtn} onClick={() => { setPedirPin("administrador"); setPin(""); setErro(""); }}>
-                <div style={{ ...styles.portaIcon, background: "#FFF4EB" }}><ShieldCheck size={26} color={C.laranja} strokeWidth={2.2} /></div>
-                <div style={{ textAlign: "left" }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
-                    ADMINISTRADOR <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
-                  </div>
-                  <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfis, telas e PIN do Gestor</div>
-                </div>
-              </button>
               {/* Perfis próprios criados pelo Gestor ou pelo Administrador na
                   aba "Perfis" — cada um vira um botão aqui, na ordem em que
                   foi cadastrado. */}
@@ -957,10 +1075,9 @@ function PortaEntrada({ params, onEntrar }) {
             </div>
           ) : (
             <div style={{ ...styles.card, textAlign: "center" }}>
-              <Lock size={26} color={pedirPin === "gestor" ? C.navy2 : pedirPin === "administrador" ? C.laranja : pedirPin === "perfil" ? C.verde : C.supVerde} />
+              <Lock size={26} color={pedirPin === "gestor" ? C.navy2 : pedirPin === "perfil" ? C.verde : C.supVerde} />
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
                 {pedirPin === "gestor" ? "Acesso do Gestor"
-                  : pedirPin === "administrador" ? "Acesso do Administrador"
                   : pedirPin === "perfil" ? `Acesso · ${perfilAlvo?.nome || ""}`
                   : "Acesso do Conferente"}
               </div>
@@ -979,8 +1096,6 @@ function PortaEntrada({ params, onEntrar }) {
                   ? (gestores.length > 0
                       ? "Cada gestor tem seu PIN. Cadastro com o Administrador."
                       : "PIN inicial: 1234 — cadastre os gestores com o Administrador")
-                  : pedirPin === "administrador"
-                  ? "Acesso restrito ao administrador do sistema."
                   : pedirPin === "perfil"
                   ? (pessoasPerfil.some(p => p.perfilId === perfilAlvo?.id)
                       ? "Cada pessoa tem seu PIN, cadastrado na aba Perfis."
