@@ -65,6 +65,24 @@ const TABS_GESTOR = [
   { id: "perfis", label: "Perfis", sub: "Cadastro de acessos", icon: Lock }
 ];
 
+/* Subitens do Dashboard controláveis por perfil (RBAC v2 fase 4) — granularidade
+   fina, além do liga/desliga da aba inteira. A ordem aqui é a mesma ordem em
+   que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026: Realizadas
+   Hoje vem antes de Realizado — Período Anterior). Só o Dashboard tem esse
+   detalhamento por hora — as outras abas ainda são liga/desliga inteiras. */
+const SUBITENS_DASHBOARD = [
+  { id: "forecast", label: "Forecast Operacional" },
+  { id: "hoje", label: "Realizadas Hoje" },
+  { id: "anterior", label: "Realizado — Período Anterior" }
+];
+
+/* Telas que só o Administrador libera para um perfil — nunca aparecem como
+   opção no cadastro de Perfis (aba do Gestor). Sem isso, um Gestor comum
+   poderia criar um perfil próprio com acesso a Parâmetros/Perfis e, na
+   prática, fabricar um "gestor" novo por fora do cadastro exclusivo do
+   Administrador. Combinado com Pablo em 16/ago/2026. */
+const TELAS_RESTRITAS_ADMIN = ["parametros", "perfis"];
+
 /* Nomes reservados para os perfis fixos do app — ninguém cria um perfil
    novo com esses nomes, pra não confundir com Gestor/Administrador/
    Conferente (que têm PIN e regras próprias, fora deste cadastro). */
@@ -793,7 +811,7 @@ export default function App() {
   if (loading) return <Splash />;
   if (!modo) {
     if (area === "operacional") {
-      return <PortaEntrada params={params} onVoltar={() => setArea(null)}
+      return <PortaEntrada params={params} persistParams={persistParams} onVoltar={() => setArea(null)}
         onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
     }
     return <HubEntrada
@@ -814,7 +832,7 @@ export default function App() {
     : modo === "perfil"
     ? <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
-        permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome}
+        permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome} dashboardSub={perfilAtivo?.dashboardSub}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
@@ -964,7 +982,7 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
 /* ============================================================
    PORTA DE ENTRADA — escolha do modo
    ============================================================ */
-function PortaEntrada({ params, onVoltar, onEntrar }) {
+function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
   const [pedirPin, setPedirPin] = useState(null);   // null | "gestor" | "conferente" | "perfil"
   const [perfilAlvo, setPerfilAlvo] = useState(null); // perfil customizado escolhido, quando pedirPin === "perfil"
   const [pin, setPin] = useState("");
@@ -977,6 +995,47 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
   /* Sem conferente cadastrado, o acesso segue livre — senão o app trava
      numa instalação nova, antes de o gestor conseguir cadastrar alguém. */
   const exigePin = conferentes.length > 0;
+
+  /* ---- "Esqueci meu PIN" — autoatendimento (combinado com Pablo em
+     16/ago/2026): a pessoa se identifica pelo próprio nome (a mesma lista
+     que o gestor/administrador já cadastrou) e define um PIN novo. Não
+     existe e-mail/SMS neste app, então a verificação é o nome — mesmo
+     nível de confiança que o app já usa para tudo mais (PIN sem usuário).
+     Só existe onde há PIN individual: não serve para o PIN de emergência
+     do Gestor (pinGestor) nem para o Administrador (fixo, no código). */
+  const [modoRedefinir, setModoRedefinir] = useState(false);
+  const [pessoaRedefId, setPessoaRedefId] = useState("");
+  const [novoPin1, setNovoPin1] = useState("");
+  const [novoPin2, setNovoPin2] = useState("");
+  const [erroRedef, setErroRedef] = useState("");
+  const [okRedef, setOkRedef] = useState(false);
+
+  const listaRedefinir =
+    pedirPin === "conferente" ? conferentes
+    : pedirPin === "gestor" ? gestores
+    : pedirPin === "perfil" ? pessoasPerfil.filter(p => p.perfilId === perfilAlvo?.id)
+    : [];
+
+  const abrirRedefinir = () => {
+    setModoRedefinir(true); setPessoaRedefId(""); setNovoPin1(""); setNovoPin2(""); setErroRedef(""); setOkRedef(false);
+  };
+  const fecharRedefinir = () => { setModoRedefinir(false); setErroRedef(""); setOkRedef(false); };
+
+  const redefinirPin = () => {
+    if (!pessoaRedefId) return setErroRedef("Selecione seu nome.");
+    if (!/^\d{4,6}$/.test(novoPin1)) return setErroRedef("O PIN deve ter de 4 a 6 dígitos numéricos.");
+    if (novoPin1 !== novoPin2) return setErroRedef("Os dois PINs digitados são diferentes.");
+    if (pinEmUsoGlobal(novoPin1, params, pessoaRedefId)) return setErroRedef("Este PIN já está em uso por outro acesso do app.");
+    if (pedirPin === "conferente") {
+      persistParams({ ...params, conferentes: conferentes.map(c => c.id === pessoaRedefId ? { ...c, pin: novoPin1 } : c) });
+    } else if (pedirPin === "gestor") {
+      persistParams({ ...params, gestores: gestores.map(g => g.id === pessoaRedefId ? { ...g, pin: novoPin1 } : g) });
+    } else if (pedirPin === "perfil") {
+      persistParams({ ...params, pessoasPerfil: pessoasPerfil.map(p => p.id === pessoaRedefId ? { ...p, pin: novoPin1 } : p) });
+    }
+    setErroRedef(""); setOkRedef(true);
+    setTimeout(() => { fecharRedefinir(); setPin(""); }, 1800);
+  };
 
   const validar = () => {
     if (pedirPin === "perfil") {
@@ -1005,7 +1064,7 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
 
   const entrarConferente = () => {
     if (!exigePin) return onEntrar("conferente", null);
-    setPedirPin("conferente"); setPin(""); setErro("");
+    setPedirPin("conferente"); setPin(""); setErro(""); setModoRedefinir(false);
   };
 
   return (
@@ -1048,7 +1107,7 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
                   </div>
                 </div>
               </button>
-              <button style={styles.portaBtn} onClick={() => { setPedirPin("gestor"); setPin(""); setErro(""); }}>
+              <button style={styles.portaBtn} onClick={() => { setPedirPin("gestor"); setPin(""); setErro(""); setModoRedefinir(false); }}>
                 <div style={{ ...styles.portaIcon, background: "#EEF2F8" }}><Briefcase size={26} color={C.navy2} strokeWidth={2.2} /></div>
                 <div style={{ textAlign: "left" }}>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
@@ -1062,7 +1121,7 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
                   foi cadastrado. */}
               {perfis.map(p => (
                 <button key={p.id} style={styles.portaBtn}
-                  onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); }}>
+                  onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); setModoRedefinir(false); }}>
                   <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
                   <div style={{ textAlign: "left" }}>
                     <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
@@ -1072,6 +1131,60 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
                   </div>
                 </button>
               ))}
+            </div>
+          ) : modoRedefinir ? (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <Lock size={26} color={C.laranja} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 4px", fontSize: 15 }}>
+                Esqueci meu PIN
+              </div>
+              {okRedef ? (
+                <div style={{ ...styles.infoBox, marginTop: 14, textAlign: "left" }}>
+                  <CheckCircle2 size={14} style={{ verticalAlign: -2, marginRight: 6, color: C.verde }} />
+                  PIN redefinido! Volte e entre com o PIN novo.
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12.5, color: C.prata, marginBottom: 14 }}>
+                    Escolha seu nome e defina um PIN novo.
+                  </div>
+                  <div style={{ textAlign: "left", marginBottom: 12 }}>
+                    <Field label="Seu nome">
+                      <select style={styles.input} value={pessoaRedefId}
+                        onChange={e => { setPessoaRedefId(e.target.value); setErroRedef(""); }}>
+                        <option value="">Selecione…</option>
+                        {listaRedefinir.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 4 }}>
+                    <div style={{ flex: 1, textAlign: "left" }}>
+                      <Field label="Novo PIN">
+                        <input type="password" inputMode="numeric" maxLength={6} value={novoPin1}
+                          onChange={e => { setNovoPin1(e.target.value.replace(/\D/g, "")); setErroRedef(""); }}
+                          style={{ ...styles.input, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 4 }} />
+                      </Field>
+                    </div>
+                    <div style={{ flex: 1, textAlign: "left" }}>
+                      <Field label="Confirmar">
+                        <input type="password" inputMode="numeric" maxLength={6} value={novoPin2}
+                          onChange={e => { setNovoPin2(e.target.value.replace(/\D/g, "")); setErroRedef(""); }}
+                          onKeyDown={e => e.key === "Enter" && redefinirPin()}
+                          style={{ ...styles.input, textAlign: "center", fontFamily: "'Roboto Mono',monospace", letterSpacing: 4 }} />
+                      </Field>
+                    </div>
+                  </div>
+                  {erroRedef && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erroRedef}</div>}
+                </>
+              )}
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }} onClick={fecharRedefinir}>
+                  {okRedef ? "Voltar" : "Cancelar"}
+                </button>
+                {!okRedef && (
+                  <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={redefinirPin}>Redefinir PIN</button>
+                )}
+              </div>
             </div>
           ) : (
             <div style={{ ...styles.card, textAlign: "center" }}>
@@ -1102,6 +1215,12 @@ function PortaEntrada({ params, onVoltar, onEntrar }) {
                       : "Nenhuma pessoa cadastrada neste perfil ainda — peça pro Gestor ou Administrador.")
                   : "Cada conferente tem seu PIN. Peça ao gestor se não souber o seu."}
               </div>
+              {listaRedefinir.length > 0 && (
+                <button style={{ background: "none", border: "none", color: C.navy2, fontSize: 12, fontWeight: 600,
+                  cursor: "pointer", marginTop: 10, textDecoration: "underline" }} onClick={abrirRedefinir}>
+                  Esqueci meu PIN
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1728,7 +1847,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel }) {
+function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, dashboardSub }) {
   const [tab, setTab] = useState("operacoes");
   /* permissoes: quando vem preenchido (perfil customizado logado via
      modo "perfil"), filtra por ele; senão usa params.permissoesGestor —
@@ -1793,7 +1912,8 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
       <main style={styles.main}>
         {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} />}
-        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} />}
+        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc}
+          dashboardSub={permissoes ? dashboardSub : null} />}
         {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} />}
@@ -2043,17 +2163,33 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 function CadastroPerfis({ params, persistParams }) {
   const [draftPerfis, setDraftPerfis] = useState(params.perfis || []);
   const [draftPessoas, setDraftPessoas] = useState(params.pessoasPerfil || []);
-  const [novoPerfil, setNovoPerfil] = useState({ nome: "", telas: {} });
+  const [novoPerfil, setNovoPerfil] = useState({ nome: "", telas: {}, dashboardSub: {} });
   const [erroPerfil, setErroPerfil] = useState("");
-  /* form de nova pessoa fica um por perfil, guardado por perfilId */
-  const [novaPessoa, setNovaPessoa] = useState({});
-  const [erroPessoa, setErroPessoa] = useState({});
+  /* Parâmetros e Perfis ficam de fora daqui — só o Administrador concede
+     essas duas, na sua própria tela. Ver TELAS_RESTRITAS_ADMIN. */
+  const telasDisponiveis = TABS_GESTOR.filter(t => !TELAS_RESTRITAS_ADMIN.includes(t.id));
+  /* Cadastro de usuário unificado (combinado com Pablo em 16/ago/2026):
+     primeiro escolhe o perfil já criado, depois nome completo e PIN — uma
+     única porta de entrada, em vez de um formulário dentro de cada card
+     de perfil. */
+  const [novoUsuario, setNovoUsuario] = useState({ perfilId: "", nome: "", pin: "" });
+  const [erroUsuario, setErroUsuario] = useState("");
   const [salvo, setSalvo] = useState(false);
 
   /* --- perfil (papel): nome + telas, sem PIN --- */
   const toggleNovaTela = (id) => setNovoPerfil(n => ({ ...n, telas: { ...n.telas, [id]: !n.telas[id] } }));
   const togglePerfilTela = (id, telaId) => {
     setDraftPerfis(d => d.map(p => p.id === id ? { ...p, telas: { ...p.telas, [telaId]: !p.telas?.[telaId] } } : p));
+    setSalvo(false);
+  };
+  /* --- subitens do Dashboard: default ligado (undefined !== false) até o
+     gestor desmarcar algum --- */
+  const toggleNovaSubDash = (id) =>
+    setNovoPerfil(n => ({ ...n, dashboardSub: { ...n.dashboardSub, [id]: n.dashboardSub?.[id] === false } }));
+  const toggleSubDash = (perfilId, subId) => {
+    setDraftPerfis(d => d.map(p => p.id === perfilId
+      ? { ...p, dashboardSub: { ...p.dashboardSub, [subId]: p.dashboardSub?.[subId] === false } }
+      : p));
     setSalvo(false);
   };
   const setPerfilNome = (id, nome) => {
@@ -2074,26 +2210,25 @@ function CadastroPerfis({ params, persistParams }) {
     if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErroPerfil('Esse nome é reservado — use outro (ex.: "Administrativo").');
     if (draftPerfis.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErroPerfil("Já existe um perfil com esse nome.");
     if (!Object.values(novoPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma tela para o novo perfil.");
-    setDraftPerfis(d => [...d, { id: uid(), nome, telas: { ...novoPerfil.telas } }]);
-    setNovoPerfil({ nome: "", telas: {} }); setErroPerfil(""); setSalvo(false);
+    setDraftPerfis(d => [...d, { id: uid(), nome, telas: { ...novoPerfil.telas }, dashboardSub: { ...novoPerfil.dashboardSub } }]);
+    setNovoPerfil({ nome: "", telas: {}, dashboardSub: {} }); setErroPerfil(""); setSalvo(false);
   };
 
   /* --- pessoas: nome + PIN, vinculadas a um perfil já criado --- */
-  const setNovaPessoaCampo = (perfilId, campo, valor) =>
-    setNovaPessoa(n => ({ ...n, [perfilId]: { ...(n[perfilId] || { nome: "", pin: "" }), [campo]: valor } }));
-
-  const adicionarPessoa = (perfilId) => {
-    const dados = novaPessoa[perfilId] || { nome: "", pin: "" };
-    const nome = (dados.nome || "").trim(), pin = (dados.pin || "").trim();
-    const setErro = (msg) => setErroPessoa(e => ({ ...e, [perfilId]: msg }));
-    if (!nome) return setErro("Informe o nome da pessoa.");
-    if (!/^\d{4,6}$/.test(pin)) return setErro("O PIN deve ter de 4 a 6 dígitos numéricos.");
+  const adicionarUsuario = () => {
+    const perfilId = novoUsuario.perfilId;
+    const nome = novoUsuario.nome.trim(), pin = novoUsuario.pin.trim();
+    if (!perfilId) return setErroUsuario("Selecione o perfil.");
+    if (!nome) return setErroUsuario("Informe o nome completo.");
+    if (!/^\d{4,6}$/.test(pin)) return setErroUsuario("O PIN deve ter de 4 a 6 dígitos numéricos.");
     if (draftPessoas.some(p => p.perfilId === perfilId && p.nome.toLowerCase() === nome.toLowerCase()))
-      return setErro("Já existe alguém com esse nome neste perfil.");
-    if (pinEmUsoGlobal(pin, { ...params, pessoasPerfil: draftPessoas })) return setErro("Este PIN já está em uso por outro acesso do app.");
+      return setErroUsuario("Já existe alguém com esse nome neste perfil.");
+    if (pinEmUsoGlobal(pin, { ...params, pessoasPerfil: draftPessoas })) return setErroUsuario("Este PIN já está em uso por outro acesso do app.");
     setDraftPessoas(d => [...d, { id: uid(), nome, pin, perfilId }]);
-    setNovaPessoa(n => ({ ...n, [perfilId]: { nome: "", pin: "" } }));
-    setErro(""); setSalvo(false);
+    /* mantém o perfil selecionado — facilita cadastrar várias pessoas
+       seguidas no mesmo perfil */
+    setNovoUsuario(u => ({ perfilId: u.perfilId, nome: "", pin: "" }));
+    setErroUsuario(""); setSalvo(false);
   };
   const removerPessoa = (id) => { setDraftPessoas(d => d.filter(p => p.id !== id)); setSalvo(false); };
   const setPessoaCampo = (id, campo, valor) => {
@@ -2103,7 +2238,7 @@ function CadastroPerfis({ params, persistParams }) {
 
   const salvar = () => {
     const cleanPerfis = draftPerfis.filter(p => p.nome)
-      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {} }));
+      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, dashboardSub: p.dashboardSub || {} }));
     const idsValidos = new Set(cleanPerfis.map(p => p.id));
     /* pessoa sem nome/PIN ou apontando pra um perfil que não existe mais
        (removido nesta mesma edição) não é salva */
@@ -2135,8 +2270,8 @@ function CadastroPerfis({ params, persistParams }) {
         <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
           Telas liberadas
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-          {TABS_GESTOR.map(t => {
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: novoPerfil.telas.dashboard ? 4 : 14 }}>
+          {telasDisponiveis.map(t => {
             const ligada = !!novoPerfil.telas[t.id];
             return (
               <button key={t.id} onClick={() => toggleNovaTela(t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
@@ -2145,8 +2280,55 @@ function CadastroPerfis({ params, persistParams }) {
             );
           })}
         </div>
+        {novoPerfil.telas.dashboard && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 4, marginBottom: 14, paddingLeft: 10, borderLeft: `2px solid ${C.prataClaro}` }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: C.prata, letterSpacing: .2 }}>Dentro do Dashboard</div>
+            {SUBITENS_DASHBOARD.map(s => (
+              <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.texto, cursor: "pointer" }}>
+                <input type="checkbox" checked={novoPerfil.dashboardSub?.[s.id] !== false} onChange={() => toggleNovaSubDash(s.id)} />
+                {s.label}
+              </label>
+            ))}
+          </div>
+        )}
         {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
         <button style={styles.btnPrimary} onClick={adicionarPerfil}><Plus size={15} /> Adicionar perfil</button>
+      </div>
+
+      <SectionTitle icon={HardHat}>Cadastrar novo usuário</SectionTitle>
+      <p style={styles.helper}>
+        Primeiro escolha o perfil (já criado acima), depois informe o nome completo e o PIN da pessoa.
+      </p>
+      <div style={{ ...styles.card, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.8fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <Field label="Perfil">
+            <select style={styles.input} value={novoUsuario.perfilId}
+              onChange={e => { setNovoUsuario(u => ({ ...u, perfilId: e.target.value })); setErroUsuario(""); }}>
+              <option value="">Selecione…</option>
+              {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+            </select>
+          </Field>
+          <Field label="Nome completo">
+            <input style={styles.input} value={novoUsuario.nome}
+              onChange={e => { setNovoUsuario(u => ({ ...u, nome: e.target.value })); setErroUsuario(""); }}
+              onKeyDown={e => e.key === "Enter" && adicionarUsuario()}
+              placeholder="Ex.: Maria Silva" />
+          </Field>
+          <Field label="PIN (4 a 6 dígitos)">
+            <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+              inputMode="numeric" maxLength={6} value={novoUsuario.pin}
+              onChange={e => { setNovoUsuario(u => ({ ...u, pin: e.target.value.replace(/\D/g, "") })); setErroUsuario(""); }}
+              onKeyDown={e => e.key === "Enter" && adicionarUsuario()}
+              placeholder="0000" />
+          </Field>
+          <button style={styles.btnPrimary} onClick={adicionarUsuario} disabled={draftPerfis.length === 0}>
+            <Plus size={15} /> Adicionar
+          </button>
+        </div>
+        {draftPerfis.length === 0 && (
+          <div style={{ ...styles.infoBox, marginTop: 14 }}>Crie um perfil acima antes de cadastrar pessoas.</div>
+        )}
+        {erroUsuario && <div style={styles.erro}><AlertTriangle size={15} /> {erroUsuario}</div>}
       </div>
 
       {draftPerfis.length === 0 ? (
@@ -2155,7 +2337,6 @@ function CadastroPerfis({ params, persistParams }) {
         <div style={{ display: "grid", gap: 10, marginBottom: 8 }}>
           {draftPerfis.map(perfil => {
             const pessoasDoPerfil = draftPessoas.filter(p => p.perfilId === perfil.id);
-            const formPessoa = novaPessoa[perfil.id] || { nome: "", pin: "" };
             return (
               <div key={perfil.id} style={{ ...styles.card, borderLeft: `4px solid ${C.verde}` }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
@@ -2168,7 +2349,7 @@ function CadastroPerfis({ params, persistParams }) {
                   </button>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {TABS_GESTOR.map(t => {
+                  {telasDisponiveis.map(t => {
                     const ligada = !!perfil.telas?.[t.id];
                     return (
                       <button key={t.id} onClick={() => togglePerfilTela(perfil.id, t.id)} style={{ ...styles.chip, ...(ligada ? styles.chipOn : {}) }}>
@@ -2177,14 +2358,25 @@ function CadastroPerfis({ params, persistParams }) {
                     );
                   })}
                 </div>
+                {perfil.telas?.dashboard && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, marginLeft: 4, paddingLeft: 10, borderLeft: `2px solid ${C.prataClaro}` }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: C.prata, letterSpacing: .2 }}>Dentro do Dashboard</div>
+                    {SUBITENS_DASHBOARD.map(s => (
+                      <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.texto, cursor: "pointer" }}>
+                        <input type="checkbox" checked={perfil.dashboardSub?.[s.id] !== false} onChange={() => toggleSubDash(perfil.id, s.id)} />
+                        {s.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
 
                 <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy, marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
                     <HardHat size={14} color={C.prata} /> Pessoas neste perfil <Badge>{pessoasDoPerfil.length}</Badge>
                   </div>
 
-                  {pessoasDoPerfil.length > 0 && (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8, marginBottom: 12 }}>
+                  {pessoasDoPerfil.length > 0 ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8 }}>
                       {pessoasDoPerfil.map(pessoa => (
                         <div key={pessoa.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8 }}>
                           <input style={{ ...styles.input, flex: 1, minWidth: 0, padding: "6px 8px", fontSize: 12.5 }}
@@ -2198,25 +2390,11 @@ function CadastroPerfis({ params, persistParams }) {
                         </div>
                       ))}
                     </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.prata }}>
+                      Ninguém cadastrado ainda — use "Cadastrar novo usuário", acima.
+                    </div>
                   )}
-
-                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end" }}>
-                    <Field label="Nome da pessoa">
-                      <input style={styles.input} value={formPessoa.nome}
-                        onChange={e => { setNovaPessoaCampo(perfil.id, "nome", e.target.value); setErroPessoa(er => ({ ...er, [perfil.id]: "" })); }}
-                        onKeyDown={e => e.key === "Enter" && adicionarPessoa(perfil.id)}
-                        placeholder="Ex.: Maria Silva" />
-                    </Field>
-                    <Field label="PIN (4 a 6 dígitos)">
-                      <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                        inputMode="numeric" maxLength={6} value={formPessoa.pin}
-                        onChange={e => { setNovaPessoaCampo(perfil.id, "pin", e.target.value.replace(/\D/g, "")); setErroPessoa(er => ({ ...er, [perfil.id]: "" })); }}
-                        onKeyDown={e => e.key === "Enter" && adicionarPessoa(perfil.id)}
-                        placeholder="0000" />
-                    </Field>
-                    <button style={styles.btnPrimary} onClick={() => adicionarPessoa(perfil.id)}><Plus size={15} /> Adicionar</button>
-                  </div>
-                  {erroPessoa[perfil.id] && <div style={styles.erro}><AlertTriangle size={15} /> {erroPessoa[perfil.id]}</div>}
                 </div>
               </div>
             );
@@ -3778,13 +3956,22 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc })
 /* ============================================================
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
-function Dashboard({ ops, params, now, diasTerc }) {
+function Dashboard({ ops, params, now, diasTerc, dashboardSub }) {
+  /* dashboardSub: quais blocos do Dashboard aparecem para o perfil logado —
+     vem de perfil.dashboardSub (RBAC v2 fase 4, granularidade por subitem,
+     não só por aba). null/undefined = sem restrição, mostra tudo (Gestor
+     de verdade e perfis antigos salvos antes desta fase). */
+  const subOn = (id) => !dashboardSub || dashboardSub[id] !== false;
   const [diaSel, setDiaSel] = useState(null);
   /* índice leve das fotos — só metadados, para saber quais operações
      têm evidência e habilitar o clique. As imagens só descem quando
      o gestor abre o visualizador. */
   const [idxFotos, setIdxFotos] = useState([]);
   const [fotoAberta, setFotoAberta] = useState(null);
+  /* Cancelamentos por Cliente e Fora da Meta ficam em sanfonas lado a
+     lado, fechadas por padrão — evita poluir a tela com listas longas
+     que não são o foco principal do dashboard. */
+  const [secaoAberta, setSecaoAberta] = useState(null); // null | "cancelamentos" | "foraMeta"
 
   /* ---- Realizado — Período Anterior: mesma visão em quadradinhos do
      Forecast, só que olhando pra trás. Fica escondida por padrão pra não
@@ -4052,7 +4239,7 @@ function Dashboard({ ops, params, now, diasTerc }) {
       {/* ===== FORECAST OPERACIONAL — 7 DIAS =====
          Vem antes de tudo: o gestor abre o painel para decidir o que fazer
          com o dia que ainda não aconteceu, não para revisar o que passou. */}
-      {totalForecast > 0 && (
+      {totalForecast > 0 && subOn("forecast") && (
         <>
           <SectionTitle icon={Calendar}>
             Forecast Operacional <Badge>{totalForecast} nos próximos 7 dias</Badge>
@@ -4103,10 +4290,69 @@ function Dashboard({ ops, params, now, diasTerc }) {
         </>
       )}
 
+      {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
+      {emAndamento.length > 0 && (
+        <>
+          <SectionTitle icon={Gauge}>
+            Operação Agora
+            <Badge>{emAndamento.length} em andamento</Badge>
+            {emRisco.length > 0 && (
+              <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
+                <AlertTriangle size={11} /> {emRisco.length} em risco
+              </span>
+            )}
+          </SectionTitle>
+          <div style={styles.opCardGrid}>
+            {emAndamento.map(({ op, c, el, st, pausada }) => (
+              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* ===== REALIZADAS HOJE — fechamento do dia em andamento =====
+         Vem antes de "Realizado — Período Anterior" (combinado com Pablo em
+         16/ago/2026): o gestor quer ver primeiro o que já fechou hoje, e só
+         depois, se precisar, consultar um período passado. */}
+      {subOn("hoje") && (
+        <>
+          <SectionTitle icon={CheckCircle2}>
+            Realizadas Hoje
+            <Badge>{realizadasHoje.length} concluída{realizadasHoje.length !== 1 ? "s" : ""}</Badge>
+            {realizadasHoje.length > 0 && (
+              <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
+                {realizadasHoje.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un
+              </span>
+            )}
+          </SectionTitle>
+          {realizadasHoje.length === 0 ? (
+            <div style={{ marginBottom: 22 }}>
+              <EmptyState text="Nenhuma operação concluída hoje ainda." />
+            </div>
+          ) : (
+            <div style={styles.opCardGrid}>
+              {realizadasHoje.map(({ op, c }) => {
+                const reg = fotosPorOp[op.id];
+                const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
+                return (
+                  <CardOpFeita key={op.id} op={op} c={c}
+                    temFotos={n > 0 ? n : null}
+                    onVerFotos={() => setFotoAberta(reg)} />
+                );
+              })}
+            </div>
+          )}
+
+          {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
+        </>
+      )}
+
       {/* ===== REALIZADO — PERÍODO ANTERIOR =====
          Mesma visão em quadradinhos do Forecast, só que pra trás: o gestor
          escolhe um período já fechado e vê o que de fato aconteceu dia a
          dia, agrupado pela data de CONCLUSÃO de cada operação. */}
+      {subOn("anterior") && (
+      <>
       <SectionTitle icon={Calendar}>
         Realizado — Período Anterior
         {mostrarRealizado && totalRealizado > 0 && <Badge>{totalRealizado} no período</Badge>}
@@ -4194,6 +4440,8 @@ function Dashboard({ ops, params, now, diasTerc }) {
           <div style={{ marginBottom: 22 }} />
         </>
       )}
+      </>
+      )}
 
       {diaRealSel && (
         <div style={{
@@ -4235,56 +4483,6 @@ function Dashboard({ ops, params, now, diasTerc }) {
           </div>
         </div>
       )}
-
-      {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
-      {emAndamento.length > 0 && (
-        <>
-          <SectionTitle icon={Gauge}>
-            Operação Agora
-            <Badge>{emAndamento.length} em andamento</Badge>
-            {emRisco.length > 0 && (
-              <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
-                <AlertTriangle size={11} /> {emRisco.length} em risco
-              </span>
-            )}
-          </SectionTitle>
-          <div style={styles.opCardGrid}>
-            {emAndamento.map(({ op, c, el, st, pausada }) => (
-              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* ===== REALIZADAS HOJE — fechamento do dia em andamento ===== */}
-      <SectionTitle icon={CheckCircle2}>
-        Realizadas Hoje
-        <Badge>{realizadasHoje.length} concluída{realizadasHoje.length !== 1 ? "s" : ""}</Badge>
-        {realizadasHoje.length > 0 && (
-          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
-            {realizadasHoje.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un
-          </span>
-        )}
-      </SectionTitle>
-      {realizadasHoje.length === 0 ? (
-        <div style={{ marginBottom: 22 }}>
-          <EmptyState text="Nenhuma operação concluída hoje ainda." />
-        </div>
-      ) : (
-        <div style={styles.opCardGrid}>
-          {realizadasHoje.map(({ op, c }) => {
-            const reg = fotosPorOp[op.id];
-            const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
-            return (
-              <CardOpFeita key={op.id} op={op} c={c}
-                temFotos={n > 0 ? n : null}
-                onVerFotos={() => setFotoAberta(reg)} />
-            );
-          })}
-        </div>
-      )}
-
-      {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
 
       {diaSel && (
         <div style={{
@@ -4474,61 +4672,67 @@ function Dashboard({ ops, params, now, diasTerc }) {
           icon={AlertTriangle} color={aggMes.bonusPerdido > 0 ? C.vermelho : C.prata} />
       </div>
 
-      {/* ===== CANCELAMENTOS POR CLIENTE — indicador para negociação ===== */}
-      {cancelamentosCliente.length > 0 && (
-        <>
-          <SectionTitle icon={Building2}>Cancelamentos por Cliente <Badge>{cancelamentosCliente.reduce((s, [, n]) => s + n, 0)}</Badge></SectionTitle>
-          <div style={{ ...styles.card, marginBottom: 22 }}>
-            <div style={{ fontSize: 12, color: C.prata, marginBottom: 12, lineHeight: 1.5 }}>
-              Operações canceladas pelo cliente antes da execução. Não entram em custo, economia ou
-              produtividade — servem como histórico para negociação futura.
-            </div>
-            <div style={{ display: "grid", gap: 8 }}>
-              {cancelamentosCliente.map(([cliente, n]) => (
-                <div key={cliente} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "8px 12px", background: "#FFF9F9", borderRadius: 8, border: `1px solid ${C.prataClaro}` }}>
-                  <span style={{ fontFamily: "'Roboto',sans-serif", fontSize: 13, fontWeight: 500, color: C.texto }}>{cliente}</span>
-                  <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, color: C.vermelho }}>
-                    {n} cancelamento{n !== 1 ? "s" : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ===== OPERAÇÕES FORA DA META NO MÊS ===== */}
-      {foraMeta.length > 0 && (
-        <>
-          <SectionTitle icon={AlertTriangle}>Operações Fora da Meta — {nomeMes(mAtual)} <Badge>{foraMeta.length}</Badge></SectionTitle>
-          <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
-            {foraMeta.slice().reverse().map(({ op, c }) => (
-              <div key={op.id} style={{ ...styles.opRow, borderLeft: `4px solid ${C.vermelho}`, background: "#FFF9F9" }}>
-                <TipoIcon tipo={c.tipo} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <strong style={{ color: C.navy, fontFamily: "'Montserrat',sans-serif", fontSize: 13.5 }}>{op.ref}</strong>
-                    <span style={{ fontSize: 12, color: C.texto }}>{op.cliente}</span>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
-                    {fmtDT(op.fim)} · perdeu {brl(c.bonusPotencial)} em bônus
-                  </div>
-                  {op.observacao && (
-                    <div style={{ fontSize: 11.5, color: C.texto, marginTop: 4, fontStyle: "italic" }}>
-                      <MessageSquare size={11} style={{ verticalAlign: -1 }} /> {op.observacao}
-                    </div>
-                  )}
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: C.vermelho }}>{hhmm(c.tempoReal)}</div>
-                  <div style={{ fontSize: 10.5, color: C.prata }}>meta {hhmm(c.metaHoras)}</div>
-                  <div style={{ fontSize: 10.5, color: C.vermelho, fontWeight: 700 }}>+{hhmm(c.tempoReal - c.metaHoras)}</div>
-                </div>
+      {/* ===== CANCELAMENTOS POR CLIENTE + FORA DA META — sanfonas lado a lado ===== */}
+      {(cancelamentosCliente.length > 0 || foraMeta.length > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 16, marginBottom: 22, alignItems: "start" }}>
+          {cancelamentosCliente.length > 0 && (
+            <Sanfona titulo="Cancelamentos por Cliente" icone={Building2} cor={C.vermelho}
+              contagem={cancelamentosCliente.reduce((s, [, n]) => s + n, 0)}
+              sub="Histórico para negociação futura"
+              aberto={secaoAberta === "cancelamentos"}
+              onToggle={() => setSecaoAberta(s => s === "cancelamentos" ? null : "cancelamentos")}>
+              <div style={{ fontSize: 12, color: C.prata, marginBottom: 12, lineHeight: 1.5 }}>
+                Operações canceladas pelo cliente antes da execução. Não entram em custo, economia ou
+                produtividade — servem como histórico para negociação futura.
               </div>
-            ))}
-          </div>
-        </>
+              <div style={{ display: "grid", gap: 8 }}>
+                {cancelamentosCliente.map(([cliente, n]) => (
+                  <div key={cliente} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "8px 12px", background: "#FFF9F9", borderRadius: 8, border: `1px solid ${C.prataClaro}` }}>
+                    <span style={{ fontFamily: "'Roboto',sans-serif", fontSize: 13, fontWeight: 500, color: C.texto }}>{cliente}</span>
+                    <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, color: C.vermelho }}>
+                      {n} cancelamento{n !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Sanfona>
+          )}
+
+          {foraMeta.length > 0 && (
+            <Sanfona titulo={`Operações Fora da Meta — ${nomeMes(mAtual)}`} icone={AlertTriangle} cor={C.vermelho}
+              contagem={foraMeta.length}
+              aberto={secaoAberta === "foraMeta"}
+              onToggle={() => setSecaoAberta(s => s === "foraMeta" ? null : "foraMeta")}>
+              <div style={{ display: "grid", gap: 8 }}>
+                {foraMeta.slice().reverse().map(({ op, c }) => (
+                  <div key={op.id} style={{ ...styles.opRow, borderLeft: `4px solid ${C.vermelho}`, background: "#FFF9F9" }}>
+                    <TipoIcon tipo={c.tipo} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <strong style={{ color: C.navy, fontFamily: "'Montserrat',sans-serif", fontSize: 13.5 }}>{op.ref}</strong>
+                        <span style={{ fontSize: 12, color: C.texto }}>{op.cliente}</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
+                        {fmtDT(op.fim)} · perdeu {brl(c.bonusPotencial)} em bônus
+                      </div>
+                      {op.observacao && (
+                        <div style={{ fontSize: 11.5, color: C.texto, marginTop: 4, fontStyle: "italic" }}>
+                          <MessageSquare size={11} style={{ verticalAlign: -1 }} /> {op.observacao}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: C.vermelho }}>{hhmm(c.tempoReal)}</div>
+                      <div style={{ fontSize: 10.5, color: C.prata }}>meta {hhmm(c.metaHoras)}</div>
+                      <div style={{ fontSize: 10.5, color: C.vermelho, fontWeight: 700 }}>+{hhmm(c.tempoReal - c.metaHoras)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Sanfona>
+          )}
+        </div>
       )}
 
       {/* A evolução do saving subiu para a seção "Evolução Diária", ao lado
