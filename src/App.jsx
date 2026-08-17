@@ -151,6 +151,22 @@ const SUBITENS_POR_ABA = {
   perfis: [
     { id: "perfisacesso", label: "Perfis de Acesso" },
     { id: "usuarios", label: "Usuários Cadastrados" }
+  ],
+  /* Telas do App_Gestao_Comercial (outro repo/deploy) — combinado com Pablo
+     em 17/ago/2026: o Comercial não tem mais login/PIN próprio (abre direto,
+     acesso liberado pra quem tem o link), então esses subitens não têm
+     ENFORCEMENT nenhum ainda — servem pra planejar quem deveria enxergar o
+     quê, até o dia em que o Comercial ganhar cadastro de usuário de verdade
+     e passar a consultar isso daqui. Lista extraída de TODAS_ABAS em
+     GestaoComercialSuperior.jsx — mantenha as duas em sincronia manualmente
+     (repos diferentes, sem import compartilhado). */
+  comercial: [
+    { id: "clientes", label: "Clientes" },
+    { id: "tabela", label: "Gestão Comercial (valores por cliente)" },
+    { id: "reajuste", label: "Reajuste" },
+    { id: "padroes", label: "Proposta Padrão" },
+    { id: "notif", label: "Notificações" },
+    { id: "logs", label: "Logs" }
   ]
 };
 
@@ -452,6 +468,11 @@ const DEFAULT_PARAMS = {
     relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true,
     coletor: true, comercial: true
   },
+  /* permissoesGestorSub: subitens do Gestor, mesmo formato de perfil.sub —
+     { [abaId]: { [subId]: bool } }. Ausente/undefined = tudo liberado
+     (mesma regra opt-out do resto do Gestor). Editável só pelo
+     Administrador, junto com permissoesGestor, na aba Perfis. */
+  permissoesGestorSub: {},
   /* perfis: papéis próprios criados pelo Gestor ou pelo Administrador na
      aba "Perfis" — nome + telas escolhidas, SEM PIN. Não inclui Gestor
      (esse continua em "gestores", cadastro exclusivo do Administrador). */
@@ -1971,9 +1992,12 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
   useEffect(() => {
     if (TABS.length && !TABS.some(t => t.id === tab)) setTab(TABS[0].id);
   }, [TABS]);
-  /* Subitens da aba aberta. Só vale para perfil customizado — Gestor de
-     verdade recebe null e vê tudo (undefined em subLiberado = liberado). */
-  const subAba = permissoes ? (sub?.[tab] || {}) : null;
+  /* Subitens da aba aberta — perfil customizado usa `sub` (perfilAtivo.sub);
+     Gestor de verdade usa params.permissoesGestorSub, editado pelo
+     Administrador no card "Gestor" (combinado com Pablo em 17/ago/2026: o
+     card ganhou a mesma granularidade dos perfis próprios). Ausente em
+     qualquer um dos dois casos = undefined em subLiberado = liberado. */
+  const subAba = (permissoes ? sub : params.permissoesGestorSub)?.[tab];
 
   /* Tela do Coletor dentro do painel — combinado com Pablo em 16/ago/2026:
      quem tem esse acesso (Gestor por padrão, ou qualquer perfil que marque
@@ -2285,6 +2309,14 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   const [draftPermissoesGestor, setDraftPermissoesGestor] = useState({
     ...DEFAULT_PARAMS.permissoesGestor, ...(params.permissoesGestor || {})
   });
+  /* Subitens do Gestor — combinado com Pablo em 17/ago/2026: o card dele
+     passa a ter a mesma granularidade dos demais perfis (antes só dava pra
+     ligar/desligar a aba inteira). Formato { [abaId]: { [subId]: bool } },
+     igual perfil.sub. Só vale de verdade (é aplicado no painel de um Gestor
+     de verdade) pras abas que o Gestor realmente abre aqui dentro — pro
+     Comercial ainda não tem enforcement nenhum (ver comentário em
+     SUBITENS_POR_ABA.comercial), fica só de referência por hora. */
+  const [draftPermissoesGestorSub, setDraftPermissoesGestorSub] = useState({ ...(params.permissoesGestorSub || {}) });
   const [gestorAberto, setGestorAberto] = useState(false);
 
   /* Tela do Coletor entra pra qualquer perfil poder pedir — não é
@@ -2318,6 +2350,12 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   /* ---------------- gestor (escopo de acesso) ---------------- */
   const toggleGestorTela = (id) => {
     setDraftPermissoesGestor(d => ({ ...d, [id]: d[id] === false ? true : false }));
+    mudou();
+  };
+  const toggleGestorSub = (abaId, subId) => {
+    setDraftPermissoesGestorSub(d => ({
+      ...d, [abaId]: { ...d[abaId], [subId]: d[abaId]?.[subId] === false }
+    }));
     mudou();
   };
 
@@ -2439,10 +2477,11 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
        Administrador — um Gestor comum não pode se autoconceder mais telas */
     if (souAdministrador) {
       patch.permissoesGestor = { ...DEFAULT_PARAMS.permissoesGestor, ...draftPermissoesGestor };
+      patch.permissoesGestorSub = draftPermissoesGestorSub;
     }
     persistParams(patch);
     setDraftPerfis(cleanPerfis); setDraftPessoas(cleanPessoas); setDraftConferentes(cleanConferentes);
-    if (souAdministrador) setDraftPermissoesGestor(patch.permissoesGestor);
+    if (souAdministrador) { setDraftPermissoesGestor(patch.permissoesGestor); setDraftPermissoesGestorSub(patch.permissoesGestorSub); }
     setSalvo(true); setTimeout(() => setSalvo(false), 2500);
   };
 
@@ -2471,8 +2510,8 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 display: "grid", gap: 5 }}>
                 {subitens.map(s => (
                   <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12,
-                    color: C.texto, cursor: "pointer" }}>
-                    <input type="checkbox" checked={subMapa?.[t.id]?.[s.id] !== false}
+                    color: C.texto, cursor: somenteLeitura ? "default" : "pointer" }}>
+                    <input type="checkbox" checked={subMapa?.[t.id]?.[s.id] !== false} disabled={somenteLeitura}
                       onChange={() => onSub(t.id, s.id)} />
                     {s.label}
                   </label>
@@ -2648,9 +2687,10 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                     : <>Somente o Administrador altera o acesso do Gestor. O PIN de cada gestor também é cadastrado só por ele.</>}
                 </div>
                 <EditorAcessos
-                  telas={draftPermissoesGestor} onSub={() => {}} semSubitens
+                  telas={draftPermissoesGestor} subMapa={draftPermissoesGestorSub}
                   somenteLeitura={!souAdministrador}
-                  onTela={souAdministrador ? toggleGestorTela : () => {}} />
+                  onTela={souAdministrador ? toggleGestorTela : () => {}}
+                  onSub={souAdministrador ? toggleGestorSub : () => {}} />
               </div>
             )}
           </div>
