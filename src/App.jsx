@@ -73,6 +73,24 @@ const TABS_GESTOR = [
    abrir a tela do coletor sem precisar sair e entrar de novo como conferente. */
 const TELA_COLETOR = { id: "coletor", label: "Tela do Coletor (Conferente)", icon: HardHat };
 
+/* URL do App de Gestão Comercial — projeto separado, publicado à parte
+   (GitHub Pages, repo próprio). Usado tanto pelo botão COMERCIAL do Hub
+   (HubEntrada, acesso livre, sem checar perfil) quanto pelo acesso
+   "Comercial" abaixo (dentro do painel do Gestor, só pra quem tiver a
+   tela liberada no perfil). */
+const URL_APP_COMERCIAL = "https://Pdbona.github.io/gestao-comercial-superior/";
+
+/* Acesso ao App de Gestão Comercial — igual à Tela do Coletor, não é uma
+   aba de TABS_GESTOR (é outro app, outro repo, outro deploy). Combinado
+   com Pablo em 17/ago/2026: em vez de portar o RBAC inteiro pro Comercial
+   (que hoje só tem 2 senhas fixas, sem cadastro de usuário), o acesso
+   entra como mais uma opção de tela no perfil daqui — quem tiver marcado
+   ganha um atalho no painel do Gestor que abre o Comercial numa aba nova.
+   Não mexe na autenticação própria do Comercial (continua com as 2 portas
+   fixas dela) nem no botão livre do Hub (HubEntrada), que continua sem
+   checar perfil nenhum. */
+const TELA_COMERCIAL = { id: "comercial", label: "App Gestão Comercial (link externo)", icon: DollarSign };
+
 /* Subitens controláveis por perfil, aba por aba (RBAC v2 fase 5) — granularidade
    fina, além do liga/desliga da aba inteira. A ordem de cada lista é a mesma
    ordem em que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026:
@@ -432,7 +450,7 @@ const DEFAULT_PARAMS = {
   permissoesGestor: {
     operacoes: true, acompanhar: true, dashboard: true, fotos: true,
     relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true,
-    coletor: true
+    coletor: true, comercial: true
   },
   /* perfis: papéis próprios criados pelo Gestor ou pelo Administrador na
      aba "Perfis" — nome + telas escolhidas, SEM PIN. Não inclui Gestor
@@ -961,10 +979,6 @@ function AvisoSemConexao({ visivel }) {
     </div>
   );
 }
-
-/* URL do App de Gestão Comercial — projeto separado, publicado à parte
-   (GitHub Pages). O botão COMERCIAL só abre essa URL numa nova aba. */
-const URL_APP_COMERCIAL = "https://Pdbona.github.io/gestao-comercial-superior/";
 
 /* ============================================================
    HUB — SISTEMA DE GESTÃO
@@ -1968,6 +1982,12 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
      desligar explicitamente; perfil customizado só ganha se marcar. */
   const podeColetor = permissoes ? permissoesEfetivas?.coletor === true : permissoesEfetivas?.coletor !== false;
   const [modoColetor, setModoColetor] = useState(false);
+  /* Acesso ao App Gestão Comercial — mesma regra opt-out/opt-in do coletor,
+     só que aqui não tem tela pra "entrar": é um link externo (outro app,
+     outro deploy), abre em nova aba. Não mexe na autenticação do Comercial
+     nem no botão livre do Hub — só dá um atalho pra quem já está logado
+     aqui e tem a tela liberada no perfil. */
+  const podeComercial = permissoes ? permissoesEfetivas?.comercial === true : permissoesEfetivas?.comercial !== false;
   /* Perfil cujo único acesso é o coletor (TABS vazio) cai direto nele —
      senão a pessoa logaria e veria um painel em branco. */
   useEffect(() => {
@@ -2020,6 +2040,15 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
             <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
               <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coletor</span>
               <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>Tela do Conferente</span>
+            </span>
+          </button>
+        )}
+        {podeComercial && (
+          <button onClick={() => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer")} style={styles.tabBtn}>
+            <DollarSign size={18} strokeWidth={2.2} />
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
+              <span style={{ fontWeight: 700, fontSize: 13.5 }}>Comercial</span>
+              <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>Abre em nova aba</span>
             </span>
           </button>
         )}
@@ -2262,7 +2291,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      restringível pelo Gestor (não está em TELAS_RESTRITAS_ADMIN, não faz
      sentido restringir: não dá superpoder nenhum, só abre o app do
      conferente). */
-  const telasDisponiveis = [...TABS_GESTOR.filter(t => !telasRestritas.includes(t.id)), TELA_COLETOR];
+  const telasDisponiveis = [...TABS_GESTOR.filter(t => !telasRestritas.includes(t.id)), TELA_COLETOR, TELA_COMERCIAL];
   const perfilPorId = (id) => draftPerfis.find(p => p.id === id);
   const mudou = () => setSalvo(false);
 
@@ -2605,7 +2634,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 </div>
                 {!gestorAberto && (
                   <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
-                    {[...TABS_GESTOR, TELA_COLETOR].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
+                    {[...TABS_GESTOR, TELA_COLETOR, TELA_COMERCIAL].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
                   </div>
                 )}
               </div>
