@@ -142,7 +142,8 @@ const SUBITENS_POR_ABA = {
     { id: "diretoria", label: "Relatório para a Diretoria" },
     { id: "cliente", label: "Relatórios para o Cliente" },
     { id: "prestador", label: "Relatório para o Prestador de Serviço" },
-    { id: "raiox", label: "Raio X da MdO" }
+    { id: "raiox", label: "Raio X da MdO" },
+    { id: "estoque", label: "Relatório de Estoque" }
   ],
   estoque: [
     { id: "importar", label: "Importar Arquivo de Estoque" }
@@ -6658,26 +6659,43 @@ function extrairAro(texto) {
   return `R${m[1]}${m[2] ? ".5" : ""}`;
 }
 
+/* Tira acento, caixa e pontuação — usado tanto para achar a linha de
+   cabeçalho real quanto para casar cada coluna esperada com o nome que
+   o WMS realmente usa. */
+function normTexto(s) {
+  return String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+}
+
 /* Acha, entre os cabeçalhos reais da planilha, a coluna que corresponde a
    cada campo esperado — tolera acento, maiúscula/minúscula e pontuação
    diferentes do padrão exato do WMS (ex.: "Qt Disp" sem ponto). */
 function acharColuna(headers, ...alvos) {
-  const norm = (s) => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
-  const alvosNorm = alvos.map(norm);
-  return headers.find(h => alvosNorm.some(a => norm(h).includes(a)));
+  const alvosNorm = alvos.map(normTexto);
+  return headers.find(h => alvosNorm.some(a => normTexto(h).includes(a)));
 }
 
 /* Lê o arquivo .xlsx do WMS e devolve o retrato pronto pra gravar no
-   Firestore: um array de clientes, cada um com seus itens e totais. */
+   Firestore: um array de clientes, cada um com seus itens e totais.
+
+   O export do WMS não começa a tabela na linha 1 — antes dela vem um
+   bloco de título (nome da empresa, filtros aplicados, período), de
+   tamanho variável. Por isso a linha de cabeçalho de verdade é achada
+   procurando a primeira linha com uma célula "Nome Cliente" (única
+   coluna sempre presente), em vez de assumir que é a primeira linha
+   da planilha — foi isso que quebrou na primeira versão. */
 async function processarPlanilhaEstoque(file) {
   const XLSX = await import("xlsx");
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const linhas = XLSX.utils.sheet_to_json(ws, { defval: "" });
-  if (!linhas.length) throw new Error("A planilha está vazia ou não tem linhas reconhecíveis.");
+  const linhasBrutas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  if (!linhasBrutas.length) throw new Error("A planilha está vazia ou não tem linhas reconhecíveis.");
 
-  const headers = Object.keys(linhas[0]);
+  const idxCabecalho = linhasBrutas.findIndex(linha => linha.some(cel => normTexto(cel).includes("nomecliente")));
+  if (idxCabecalho === -1) {
+    throw new Error('Não encontrei a linha de cabeçalho (com "Nome Cliente") nesta planilha. Confira se é o arquivo certo do WMS.');
+  }
+  const headers = linhasBrutas[idxCabecalho].map(h => String(h ?? "").trim());
   const colCliente = acharColuna(headers, "Nome Cliente");
   const colSku = acharColuna(headers, "Cod Merc", "Codigo Merc");
   const colDesc = acharColuna(headers, "Nome Mercadoria");
@@ -6690,21 +6708,27 @@ async function processarPlanilhaEstoque(file) {
   if (faltando.length) {
     throw new Error(`Não encontrei estas colunas na planilha: ${faltando.join(", ")}. Confira se é o arquivo certo do WMS.`);
   }
+  const idxCliente = headers.indexOf(colCliente);
+  const idxSku = headers.indexOf(colSku);
+  const idxDesc = headers.indexOf(colDesc);
+  const idxQtd = headers.indexOf(colQtd);
+  const idxValor = headers.indexOf(colValor);
 
   const porCliente = new Map();
-  linhas.forEach(l => {
-    const cliente = String(l[colCliente] ?? "").trim();
-    if (!cliente) return;
+  for (let i = idxCabecalho + 1; i < linhasBrutas.length; i++) {
+    const linha = linhasBrutas[i];
+    const cliente = String(linha[idxCliente] ?? "").trim();
+    if (!cliente) continue; // pula linhas em branco e a linha "Totais" do fim
     const item = {
-      sku: String(l[colSku] ?? "").trim(),
-      descricao: String(l[colDesc] ?? "").trim(),
-      aro: extrairAro(l[colDesc]),
-      qtd: numBR(l[colQtd]),
-      valor: numBR(l[colValor])
+      sku: String(linha[idxSku] ?? "").trim(),
+      descricao: String(linha[idxDesc] ?? "").trim(),
+      aro: extrairAro(linha[idxDesc]),
+      qtd: numBR(linha[idxQtd]),
+      valor: numBR(linha[idxValor])
     };
     if (!porCliente.has(cliente)) porCliente.set(cliente, []);
     porCliente.get(cliente).push(item);
-  });
+  }
 
   if (porCliente.size === 0) {
     throw new Error("Nenhuma linha com cliente preenchido foi encontrada nesta planilha.");
@@ -6782,9 +6806,14 @@ function imprimirEstoqueCliente(cliente, itens, qtdTotal, valorTotal) {
   w.document.close();
 }
 
-function MonitorEstoque({ sub, usuario }) {
+/* somenteLeitura: usado quando este painel é embutido dentro de outra
+   tela (o vínculo "Relatório de Estoque" dentro de Relatórios) — some com
+   o botão de importar mesmo que o perfil, ali, tenha permissão de
+   "importar" marcada para a aba Estoque de verdade; quem importa faz
+   isso pela aba Estoque, este aqui é só consulta. */
+function MonitorEstoque({ sub, usuario, somenteLeitura }) {
   const subOn = (id) => subLiberado(sub, id);
-  const podeImportar = subOn("importar");
+  const podeImportar = !somenteLeitura && subOn("importar");
 
   const [snapshot, setSnapshot] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -7702,6 +7731,12 @@ function Relatorios({ ops, params, diasTerc, sub }) {
 
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
       {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
+
+      {/* ===== RELATÓRIO DE ESTOQUE — vínculo por perfil, dentro de Relatórios
+         (combinado com Pablo em 17/ago/2026). Somente leitura: mostra o
+         resultado da última importação feita por quem tem a tela Estoque
+         liberada (Administrativo/Gestor) — sem botão de importar aqui. */}
+      {subOn("estoque") && <MonitorEstoque somenteLeitura />}
     </div>
   );
 }
