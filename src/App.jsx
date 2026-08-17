@@ -75,10 +75,25 @@ const TELA_COLETOR = { id: "coletor", label: "Tela do Coletor (Conferente)", ico
 
 /* URL do App de Gestão Comercial — projeto separado, publicado à parte
    (GitHub Pages, repo próprio). Usado tanto pelo botão COMERCIAL do Hub
-   (HubEntrada, acesso livre, sem checar perfil) quanto pelo acesso
-   "Comercial" abaixo (dentro do painel do Gestor, só pra quem tiver a
-   tela liberada no perfil). */
+   (HubEntrada — pede usuário + senha antes de abrir, ver validarComercial)
+   quanto pelo acesso "Comercial" abaixo (dentro do painel do Gestor, só
+   pra quem tiver a tela liberada no perfil). */
 const URL_APP_COMERCIAL = "https://Pdbona.github.io/gestao-comercial-superior/";
+
+/* Monta o link do Comercial já levando os subitens que essa pessoa NÃO tem
+   (combinado com Pablo em 17/ago/2026 — "forma rápida"): o Comercial não
+   tem login próprio nem enxerga o Firestore deste app (é outro projeto
+   Firebase), então em vez de portar RBAC de verdade pra lá, mandamos só o
+   que falta esconder na própria URL (?ocultar=id1,id2). Sem parâmetro =
+   acesso total, igual sempre foi — mantém compatível com quem abre o link
+   direto, sem passar por aqui. subComercial é o `sub.comercial` do perfil
+   ou pessoa (ou params.permissoesGestorSub.comercial pro Gestor); mesma
+   regra opt-out do resto do app: só esconde o que estiver `false`. */
+const urlComercial = (subComercial) => {
+  const ocultos = (SUBITENS_POR_ABA.comercial || [])
+    .filter(s => subComercial?.[s.id] === false).map(s => s.id);
+  return ocultos.length ? `${URL_APP_COMERCIAL}?ocultar=${encodeURIComponent(ocultos.join(","))}` : URL_APP_COMERCIAL;
+};
 
 /* Acesso ao App de Gestão Comercial — igual à Tela do Coletor, não é uma
    aba de TABS_GESTOR (é outro app, outro repo, outro deploy). Combinado
@@ -153,13 +168,16 @@ const SUBITENS_POR_ABA = {
     { id: "usuarios", label: "Usuários Cadastrados" }
   ],
   /* Telas do App_Gestao_Comercial (outro repo/deploy) — combinado com Pablo
-     em 17/ago/2026: o Comercial não tem mais login/PIN próprio (abre direto,
-     acesso liberado pra quem tem o link), então esses subitens não têm
-     ENFORCEMENT nenhum ainda — servem pra planejar quem deveria enxergar o
-     quê, até o dia em que o Comercial ganhar cadastro de usuário de verdade
-     e passar a consultar isso daqui. Lista extraída de TODAS_ABAS em
-     GestaoComercialSuperior.jsx — mantenha as duas em sincronia manualmente
-     (repos diferentes, sem import compartilhado). */
+     em 17/ago/2026: o Comercial não tem login/cadastro de usuário próprio
+     (abre direto, acesso liberado pra quem tem o link) nem enxerga o
+     Firestore deste app (outro projeto Firebase). Por isso o enforcement é
+     "forma rápida": urlComercial() manda os subitens marcados como `false`
+     aqui na própria URL (?ocultar=id1,id2) e o Comercial esconde essas abas
+     ao abrir — sem senha de novo, mas também sem segurança forte (quem
+     souber montar a URL contorna, igual o resto do PIN deste app). Lista
+     extraída de TODAS_ABAS em GestaoComercialSuperior.jsx — mantenha as
+     duas em sincronia manualmente (repos diferentes, sem import
+     compartilhado). */
   comercial: [
     { id: "clientes", label: "Clientes" },
     { id: "tabela", label: "Gestão Comercial (valores por cliente)" },
@@ -1080,7 +1098,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
     ...pessoasPerfil.filter(p => !perfis.find(pf => pf.id === p.perfilId)?.linkProprio).map(p => ({ id: p.id, nome: p.nome }))
   ].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
 
-  const abrirComercial = () => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer");
+  const abrirComercial = (subComercial) => window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer");
 
   const validarComercial = () => {
     if (!usuarioComercialId) return setErroComercial("Selecione seu usuário.");
@@ -1088,7 +1106,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
     if (gestor) {
       if (gestor.pin !== pinComercial) { setErroComercial("Usuário ou senha incorretos."); setPinComercial(""); return; }
       if (params?.permissoesGestor?.comercial === false) return setErroComercial("Você não tem acesso a esta área.");
-      setErroComercial(""); return abrirComercial();
+      setErroComercial(""); return abrirComercial(params?.permissoesGestorSub?.comercial);
     }
     const pessoa = pessoasPerfil.find(p => p.id === usuarioComercialId);
     if (pessoa) {
@@ -1097,7 +1115,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
       const perfil = perfis.find(p => p.id === pessoa.perfilId);
       const ef = permissoesEfetivas(pessoa, perfil);
       if (ef.telas?.comercial !== true) return setErroComercial("Você não tem acesso a esta área.");
-      setErroComercial(""); return abrirComercial();
+      setErroComercial(""); return abrirComercial(ef.sub?.comercial);
     }
     setErroComercial("Usuário ou senha incorretos.");
   };
@@ -2242,6 +2260,10 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
      nem no botão livre do Hub — só dá um atalho pra quem já está logado
      aqui e tem a tela liberada no perfil. */
   const podeComercial = permissoes ? permissoesEfetivas?.comercial === true : permissoesEfetivas?.comercial !== false;
+  /* sub.comercial (não é `subAba` — essa é só da aba ativa) alimenta o link
+     do Comercial com os subitens que essa pessoa não tem, já que o Comercial
+     não enxerga o RBAC daqui (outro projeto Firebase — ver urlComercial). */
+  const subComercial = (permissoes ? sub : params.permissoesGestorSub)?.comercial;
   /* Perfil cujo único acesso é o coletor (TABS vazio) cai direto nele —
      senão a pessoa logaria e veria um painel em branco. */
   useEffect(() => {
@@ -2298,7 +2320,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
           </button>
         )}
         {podeComercial && (
-          <button onClick={() => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer")} style={styles.tabBtn}>
+          <button onClick={() => window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer")} style={styles.tabBtn}>
             <DollarSign size={18} strokeWidth={2.2} />
             <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
               <span style={{ fontWeight: 700, fontSize: 13.5 }}>Comercial</span>
@@ -3145,103 +3167,112 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
         {draftPessoas.length === 0 ? (
           <div style={styles.empty}>Nenhum usuário cadastrado ainda.</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 8, alignItems: "start" }}>
-            {draftPessoas.map(pessoa => {
-              const aberto = usuarioAberto === pessoa.id;
-              const perfil = perfilPorId(pessoa.perfilId);
-              const ef = permissoesEfetivas(pessoa, perfil);
-              const custom = !!(pessoa.telasCustom || pessoa.subCustom);
-              return (
-                <div key={pessoa.id} style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: aberto ? "1 / -1" : "auto",
-                  borderLeft: `4px solid ${pessoa.bloqueado ? C.vermelho : aberto ? C.laranja : C.navy2}`,
-                  opacity: pessoa.bloqueado ? .75 : 1 }}>
-                  <button onClick={() => setUsuarioAberto(a => a === pessoa.id ? null : pessoa.id)}
-                    style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
-                      padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
-                      flexWrap: "wrap", font: "inherit" }}>
-                    <HardHat size={17} color={pessoa.bloqueado ? C.vermelho : C.navy2} strokeWidth={2.3} />
-                    <div style={{ flex: 1, minWidth: 160 }}>
-                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy,
-                        display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-                        {pessoa.nome}
-                        {pessoa.bloqueado && (
-                          <span style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho }}>Bloqueado</span>
-                        )}
-                        {custom && !pessoa.bloqueado && (
-                          <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Acesso ajustado</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
-                        {perfil ? perfil.nome : "Perfil removido"} · {resumoTelas(ef.telas)}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{aberto ? "▲" : "▼"}</span>
-                  </button>
-                  {aberto && (
-                    <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10,
-                        alignItems: "end", margin: "14px 0" }}>
-                        {perfil?.linkProprio ? (
-                          <Field label="Nome do cliente">
-                            <select style={styles.input} value={pessoa.nome}
-                              onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)}>
-                              <option value="">Selecione…</option>
-                              {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
-                            </select>
-                          </Field>
-                        ) : (
-                          <Field label="Nome completo">
-                            <input style={styles.input} value={pessoa.nome}
-                              onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
-                          </Field>
-                        )}
-                        <Field label="Perfil">
-                          <select style={styles.input} value={pessoa.perfilId}
-                            onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
-                            {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-                          </select>
-                        </Field>
-                        <Field label={perfil?.linkProprio ? "Senha" : "PIN"}>
-                          <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                            inputMode={perfil?.linkProprio ? "text" : "numeric"} maxLength={6} value={pessoa.pin}
-                            onChange={e => setPessoaCampo(pessoa.id, "pin",
-                              perfil?.linkProprio ? e.target.value.replace(/[^A-Za-z0-9]/g, "") : e.target.value.replace(/\D/g, ""))} />
-                        </Field>
-                      </div>
+          <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%", marginBottom: 8 }}>
+            <table style={{ ...styles.table, minWidth: 640 }}>
+              <thead>
+                <tr>{["Nome", "Perfil", "PIN", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {draftPessoas.slice().sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR")).map((pessoa, i) => {
+                  const aberto = usuarioAberto === pessoa.id;
+                  const perfil = perfilPorId(pessoa.perfilId);
+                  const ef = permissoesEfetivas(pessoa, perfil);
+                  const custom = !!(pessoa.telasCustom || pessoa.subCustom);
+                  return (
+                    <React.Fragment key={pessoa.id}>
+                      {/* Linha da tabela: clique em qualquer célula abre o detalhe
+                          logo abaixo (telas, PIN, bloquear/excluir) — combinado
+                          com Pablo em 17/ago/2026, substitui a grade de cartões. */}
+                      <tr onClick={() => setUsuarioAberto(a => a === pessoa.id ? null : pessoa.id)}
+                        style={{ background: aberto ? "#FFF4EB" : i % 2 ? C.bgLeve : C.branco, cursor: "pointer",
+                          opacity: pessoa.bloqueado ? .6 : 1 }}>
+                        <td style={{ ...styles.td, fontWeight: 700, color: C.navy, whiteSpace: "normal" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                            <HardHat size={14} color={pessoa.bloqueado ? C.vermelho : C.navy2} strokeWidth={2.3} />
+                            {pessoa.nome}
+                            {pessoa.bloqueado && (
+                              <span style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho }}>Bloqueado</span>
+                            )}
+                            {custom && !pessoa.bloqueado && (
+                              <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Acesso ajustado</span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={styles.td}>{perfil ? perfil.nome : "Perfil removido"}</td>
+                        <td style={styles.tdMono}>{pessoa.pin}</td>
+                        <td style={{ ...styles.td, textAlign: "right", color: C.prata }}>{aberto ? "▲" : "▼"}</td>
+                      </tr>
+                      {aberto && (
+                        <tr>
+                          <td colSpan={4} style={{ padding: 0, borderBottom: `1px solid ${C.prataClaro}` }}>
+                            <div style={{ padding: "16px 16px 18px", background: C.bgLeve }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10,
+                                alignItems: "end", marginBottom: 14 }}>
+                                {perfil?.linkProprio ? (
+                                  <Field label="Nome do cliente">
+                                    <select style={styles.input} value={pessoa.nome}
+                                      onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)}>
+                                      <option value="">Selecione…</option>
+                                      {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                                    </select>
+                                  </Field>
+                                ) : (
+                                  <Field label="Nome completo">
+                                    <input style={styles.input} value={pessoa.nome}
+                                      onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
+                                  </Field>
+                                )}
+                                <Field label="Perfil">
+                                  <select style={styles.input} value={pessoa.perfilId}
+                                    onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
+                                    {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                                  </select>
+                                </Field>
+                                <Field label={perfil?.linkProprio ? "Senha" : "PIN"}>
+                                  <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                                    inputMode={perfil?.linkProprio ? "text" : "numeric"} maxLength={6} value={pessoa.pin}
+                                    onChange={e => setPessoaCampo(pessoa.id, "pin",
+                                      perfil?.linkProprio ? e.target.value.replace(/[^A-Za-z0-9]/g, "") : e.target.value.replace(/\D/g, ""))} />
+                                </Field>
+                              </div>
 
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                        <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => alternarBloqueio(pessoa.id)}>
-                          {pessoa.bloqueado ? <><CheckCircle2 size={14} /> Desbloquear</> : <><Lock size={14} /> Bloquear acesso</>}
-                        </button>
-                        {custom && (
-                          <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => voltarAoPerfil(pessoa.id)}>
-                            <RefreshCw size={14} /> Voltar ao padrão do perfil
-                          </button>
-                        )}
-                        <button style={{ ...styles.btnGhost, fontSize: 12.5, color: C.vermelho, borderColor: C.vermelho }}
-                          onClick={() => removerPessoa(pessoa.id)}>
-                          <Trash2 size={14} /> Excluir usuário
-                        </button>
-                      </div>
+                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                                <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => alternarBloqueio(pessoa.id)}>
+                                  {pessoa.bloqueado ? <><CheckCircle2 size={14} /> Desbloquear</> : <><Lock size={14} /> Bloquear acesso</>}
+                                </button>
+                                {custom && (
+                                  <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => voltarAoPerfil(pessoa.id)}>
+                                    <RefreshCw size={14} /> Voltar ao padrão do perfil
+                                  </button>
+                                )}
+                                <button style={{ ...styles.btnGhost, fontSize: 12.5, color: C.vermelho, borderColor: C.vermelho }}
+                                  onClick={() => removerPessoa(pessoa.id)}>
+                                  <Trash2 size={14} /> Excluir usuário
+                                </button>
+                              </div>
 
-                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
-                        textTransform: "uppercase", color: C.navy2, marginBottom: 6, letterSpacing: .2 }}>
-                        Acessos deste usuário
-                      </div>
-                      <div style={{ fontSize: 11.5, color: C.prata, marginBottom: 10, lineHeight: 1.5 }}>
-                        {custom
-                          ? "Ajuste individual — vale só para esta pessoa, não afeta os outros do mesmo perfil."
-                          : `Herdado do perfil ${perfil?.nome || ""}. Ao alterar algo aqui, vira um ajuste individual desta pessoa.`}
-                      </div>
-                      <EditorAcessos
-                        telas={ef.telas} subMapa={ef.sub}
-                        onTela={telaId => togglePessoaTela(pessoa.id, telaId)}
-                        onSub={(abaId, subId) => togglePessoaSub(pessoa.id, abaId, subId)} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                                textTransform: "uppercase", color: C.navy2, marginBottom: 6, letterSpacing: .2 }}>
+                                Acessos deste usuário
+                              </div>
+                              <div style={{ fontSize: 11.5, color: C.prata, marginBottom: 10, lineHeight: 1.5 }}>
+                                {custom
+                                  ? "Ajuste individual — vale só para esta pessoa, não afeta os outros do mesmo perfil."
+                                  : `Herdado do perfil ${perfil?.nome || ""}. Ao alterar algo aqui, vira um ajuste individual desta pessoa.`}
+                              </div>
+                              <EditorAcessos
+                                telas={ef.telas} subMapa={ef.sub}
+                                onTela={telaId => togglePessoaTela(pessoa.id, telaId)}
+                                onSub={(abaId, subId) => togglePessoaSub(pessoa.id, abaId, subId)} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </>)}
