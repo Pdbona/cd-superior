@@ -2198,10 +2198,7 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
 
       </main>
 
-      <footer style={styles.footer}>
-        <div><strong style={{ display: "block", fontWeight: 600 }}>Pablo Bona · SBS Solution</strong>Lean Manufacturing &amp; Logística</div>
-        <div style={{ color: C.prata, textAlign: "right" }}>Monitor Operacional · Superior Transportes<br />Perfil Administrador</div>
-      </footer>
+      <RodapeSBS />
     </div>
   );
 }
