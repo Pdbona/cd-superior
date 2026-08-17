@@ -98,7 +98,8 @@ const SUBITENS_POR_ABA = {
     { id: "fechamento", label: "Fechamento do Mês" },
     { id: "cancelamentos", label: "Cancelamentos por Cliente" },
     { id: "forameta", label: "Operações Fora da Meta" },
-    { id: "economiadia", label: "Economia por Dia" }
+    { id: "economiadia", label: "Economia por Dia" },
+    { id: "maodeobra", label: "Mão de Obra — Planejado x Realizado" }
   ],
   fotos: [
     { id: "romaneio", label: "Gerar Romaneio" }
@@ -4583,6 +4584,60 @@ function Dashboard({ ops, params, now, diasTerc, sub }) {
     });
   }, [ops, params, diasTerc, mAtual]);
 
+  /* ---- MÃO DE OBRA — PLANEJADO x REALIZADO (combinado com Pablo em
+     17/ago/2026) ----
+     Barras: quantas pessoas terceirizadas e próprias (Superior) por dia —
+     planejado ao lado do realizado, pra ver o desvio direto na coluna.
+     Linha: volume — previsto vira realizado assim que o dia acontece
+     (uma linha só, não duas, seguindo o mesmo texto do pedido).
+
+       Planejado (terc./própria) = soma de headcount(op) de toda operação
+       programada pro dia (diaPlanejado), não cancelada — é a estimativa
+       feita no cadastro, pode incluir operação ainda pendente.
+
+       Realizado terceirizada = diasTerc[dia].qtd — o mesmo número que já
+       vale pra "Economia por Dia" (contratado de fato, não a soma do que
+       cada operação pediu).
+
+       Realizado própria = soma de headcount(op).sup só das operações já
+       CONCLUÍDAS no dia — é o headcount mais confiável que existe pra
+       mão de obra própria (sem contagem por dia como diasTerc, então usa
+       o valor da operação fechada, que pode já ter sido corrigido em
+       Ajustes).
+
+     Dia futuro nunca tem realizado (não existe diasTerc nem operação
+     concluída ainda) — a barra/linha de realizado simplesmente não
+     aparece, sem tratamento especial. */
+  const maoDeObraPorDia = useMemo(() => {
+    const hoje = inicioDoDia(Date.now());
+    const ano = Math.floor(mAtual / 12), mes = mAtual % 12;
+    const totalDias = new Date(ano, mes + 1, 0).getDate();
+    return Array.from({ length: totalDias }, (_, i) => {
+      const ts = new Date(ano, mes, i + 1).getTime();
+      const doDia = ops.filter(o => diaPlanejado(o) === ts && o.status !== "cancelada");
+      const concluidasDoDia = doDia.filter(o => o.status === "concluida");
+
+      let terceirizadaPlanejada = 0, propriaPlanejada = 0, volumePlanejado = 0;
+      doDia.forEach(o => { const h = headcount(o); terceirizadaPlanejada += h.terc; propriaPlanejada += h.sup; volumePlanejado += o.volume || 0; });
+
+      let propriaRealizada = 0, volumeRealizado = 0;
+      concluidasDoDia.forEach(o => { propriaRealizada += headcount(o).sup; volumeRealizado += o.volumeReal ?? o.volume ?? 0; });
+      const terceirizadaRealizada = (diasTerc && diasTerc[ts] && diasTerc[ts].qtd) || 0;
+      const temRealizado = concluidasDoDia.length > 0 || terceirizadaRealizada > 0;
+
+      return {
+        ts, rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+        futuro: ts > hoje,
+        terceirizadaPlanejada, propriaPlanejada, volumePlanejado,
+        terceirizadaRealizada, propriaRealizada,
+        /* linha única: mostra o realizado assim que o dia tiver algo
+           concluído/contratado; senão continua no planejado */
+        volume: temRealizado ? volumeRealizado : volumePlanejado,
+        volumeEhRealizado: temRealizado
+      };
+    });
+  }, [ops, params, diasTerc, mAtual]);
+
   /* A calibragem de metas saiu daqui para a aba Parâmetros: é ajuste de
      cadastro, não gestão à vista — e esta tela roda em TV no CD. */
 
@@ -5245,6 +5300,46 @@ function Dashboard({ ops, params, now, diasTerc, sub }) {
           </div>
         </>
       )}
+      </>)}
+
+      {/* ===== MÃO DE OBRA — PLANEJADO x REALIZADO ===== */}
+      {subOn("maodeobra") && (<>
+      <SectionTitle icon={Users}>Mão de Obra — Planejado × Realizado — {nomeMes(mAtual)}</SectionTitle>
+      <p style={styles.helper}>
+        Barras: quantas pessoas terceirizadas e da Superior por dia — planejado ao lado do realizado
+        (dia futuro mostra só o planejado, ainda não tem realizado). Linha: volume, do previsto pro
+        realizado assim que o dia acontece.
+      </p>
+      <div style={{ ...styles.chartCard, marginBottom: 22 }}>
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart data={maoDeObraPorDia} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+            <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
+            <YAxis yAxisId="pessoas" allowDecimals={false} tick={{ fontSize: 11, fill: C.texto }}
+              label={{ value: "pessoas", angle: -90, position: "insideLeft", fontSize: 10, fill: C.prata }} />
+            <YAxis yAxisId="volume" orientation="right" tick={{ fontSize: 11, fill: C.prata }}
+              tickFormatter={v => v.toLocaleString("pt-BR")} />
+            <Tooltip contentStyle={tooltipStyle}
+              formatter={(v, n) => n.startsWith("Volume") ? [`${v.toLocaleString("pt-BR")} un`, n] : [v, n]} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar yAxisId="pessoas" dataKey="terceirizadaPlanejada" fill={C.laranja} fillOpacity={.35}
+              radius={[3, 3, 0, 0]} name="Terceirizada · planejada" />
+            <Bar yAxisId="pessoas" dataKey="terceirizadaRealizada" fill={C.laranja}
+              radius={[3, 3, 0, 0]} name="Terceirizada · realizada" />
+            <Bar yAxisId="pessoas" dataKey="propriaPlanejada" fill={C.navy2} fillOpacity={.35}
+              radius={[3, 3, 0, 0]} name="Própria (Superior) · planejada" />
+            <Bar yAxisId="pessoas" dataKey="propriaRealizada" fill={C.navy2}
+              radius={[3, 3, 0, 0]} name="Própria (Superior) · realizada" />
+            {/* linha única de volume — bolinha vazada enquanto é previsão,
+               preenchida assim que vira realizado (mesmo dia que os
+               bônus/terceirizados contratados passam a contar) */}
+            <Line yAxisId="volume" type="monotone" dataKey="volume" stroke={C.verde} strokeWidth={2}
+              dot={(p) => <circle key={`vol-${p.payload.ts}`} cx={p.cx} cy={p.cy} r={4}
+                fill={p.payload.volumeEhRealizado ? C.verde : C.branco} stroke={C.verde} strokeWidth={2} />}
+              name="Volume (previsto → realizado)" />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
       </>)}
 
       {/* O histórico completo, os gráficos por operação e a tabela detalhada
