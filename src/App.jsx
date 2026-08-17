@@ -358,18 +358,29 @@ async function salvarFotos({ op, momento, fotos, usuario }) {
 /* ---- limpeza automática (retenção de RETENCAO_DIAS) ----
    Roda quando o gestor abre o painel. Não existe servidor próprio neste
    app, então este é o gancho natural: alguém abre o sistema todo dia.
-   Devolve o índice já sem os vencidos. */
+
+   Combinado com Pablo em 16/ago/2026: o que expira são as FOTOS (o
+   documento pesado, com as imagens em base64) — o REGISTRO da operação
+   (ref, cliente, direção, volume, doca, horários) fica pra sempre, pra
+   o romaneio continuar disponível pra gerar mesmo sem as fotos, que
+   entram no documento com "Sem foto" no lugar (abrirRomaneio já trata
+   isso). Antes, o registro inteiro era removido do índice e a operação
+   sumia da tela "Gerar Romaneio" depois de RETENCAO_DIAS — o romaneio
+   ficava impossível de gerar, não só sem foto. */
 async function limparFotosExpiradas() {
   const idx = await lerIndiceFotos();
   const agora = Date.now();
-  const vencidos = idx.filter(r => (r.expiraEm || 0) <= agora);
+  const vencidos = idx.filter(r => (r.expiraEm || 0) <= agora && !r.fotosExcluidas);
   if (vencidos.length === 0) return { idx, removidos: 0 };
   for (const r of vencidos) {
     try { await storage.del(chaveFotos(r.opId)); } catch (e) { console.error(e); }
   }
-  const restantes = idx.filter(r => (r.expiraEm || 0) > agora);
-  await storage.set(K_FOTOS_IDX, JSON.stringify(restantes), SHARED);
-  return { idx: restantes, removidos: vencidos.length };
+  const atualizado = idx.map(r =>
+    (r.expiraEm || 0) <= agora && !r.fotosExcluidas
+      ? { ...r, fotosExcluidas: true, nIni: 0, nFim: 0 }
+      : r);
+  await storage.set(K_FOTOS_IDX, JSON.stringify(atualizado), SHARED);
+  return { idx: atualizado, removidos: vencidos.length };
 }
 
 /* dias que faltam até a exclusão — a galeria mostra isso em cada registro,
@@ -2497,11 +2508,14 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
 
         {/* ---- CONFERENTE e GESTOR — perfis fixos do app, trazidos pra cá
            (combinado com Pablo em 16/ago/2026) pra aparecer junto de tudo
-           mais. Ficam antes dos perfis próprios, sempre nesta ordem. ---- */}
-        <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+           mais. Ficam antes dos perfis próprios, sempre nesta ordem. Grade
+           de 2 colunas (melhor aproveitamento de tela, combinado em
+           17/ago/2026); o card expandido toma a linha inteira pra não
+           espremer o formulário/checklist numa coluna estreita. ---- */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 14, alignItems: "start" }}>
           {/* CONFERENTE — acesso fixo: só a tela do coletor. O cadastro de
              nome+PIN, que morava em Parâmetros → Acessos ao App, vive aqui. */}
-          <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+          <div style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: conferenteAberto ? "1 / -1" : "auto",
             borderLeft: `4px solid ${conferenteAberto ? C.laranja : C.supVerde}` }}>
             <button onClick={() => setConferenteAberto(a => !a)}
               style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
@@ -2579,7 +2593,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
           {/* GESTOR — acesso a tudo por padrão, escopo editável só pelo
              Administrador. O cadastro de PIN dos gestores continua na tela
              do Administrador (fora daqui). */}
-          <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+          <div style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: gestorAberto ? "1 / -1" : "auto",
             borderLeft: `4px solid ${gestorAberto ? C.laranja : C.navy2}` }}>
             <button onClick={() => setGestorAberto(a => !a)}
               style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
@@ -2618,12 +2632,12 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
         {draftPerfis.length === 0 ? (
           <div style={styles.empty}>Nenhum perfil cadastrado ainda.</div>
         ) : (
-          <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 22, alignItems: "start" }}>
             {draftPerfis.map(perfil => {
               const aberto = perfilAberto === perfil.id;
               const nUsuarios = draftPessoas.filter(p => p.perfilId === perfil.id).length;
               return (
-                <div key={perfil.id} style={{ ...styles.card, padding: 0, overflow: "hidden",
+                <div key={perfil.id} style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: aberto ? "1 / -1" : "auto",
                   borderLeft: `4px solid ${aberto ? C.laranja : C.verde}` }}>
                   <button onClick={() => setPerfilAberto(a => a === perfil.id ? null : perfil.id)}
                     style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
@@ -2729,14 +2743,14 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
         {draftPessoas.length === 0 ? (
           <div style={styles.empty}>Nenhum usuário cadastrado ainda.</div>
         ) : (
-          <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 8, alignItems: "start" }}>
             {draftPessoas.map(pessoa => {
               const aberto = usuarioAberto === pessoa.id;
               const perfil = perfilPorId(pessoa.perfilId);
               const ef = permissoesEfetivas(pessoa, perfil);
               const custom = !!(pessoa.telasCustom || pessoa.subCustom);
               return (
-                <div key={pessoa.id} style={{ ...styles.card, padding: 0, overflow: "hidden",
+                <div key={pessoa.id} style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: aberto ? "1 / -1" : "auto",
                   borderLeft: `4px solid ${pessoa.bloqueado ? C.vermelho : aberto ? C.laranja : C.navy2}`,
                   opacity: pessoa.bloqueado ? .75 : 1 }}>
                   <button onClick={() => setUsuarioAberto(a => a === pessoa.id ? null : pessoa.id)}
@@ -5452,13 +5466,19 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
               {reg.volumeReal ? <span style={{ ...styles.infoChip, borderColor: C.verde, color: C.verde }}>
                 Realizado {reg.volumeReal.toLocaleString("pt-BR")} un
               </span> : null}
-              <span style={{
-                ...styles.pill,
-                background: dias <= 1 ? "#FFEBEE" : "#FFF4EB",
-                color: dias <= 1 ? C.vermelho : C.laranjaEsc
-              }}>
-                <Timer size={11} /> {dias === 0 ? "Expira hoje" : `Expira em ${dias} dia${dias > 1 ? "s" : ""}`}
-              </span>
+              {reg.fotosExcluidas ? (
+                <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2 }}>
+                  <Timer size={11} /> Fotos excluídas (retenção de {RETENCAO_DIAS} dias)
+                </span>
+              ) : (
+                <span style={{
+                  ...styles.pill,
+                  background: dias <= 1 ? "#FFEBEE" : "#FFF4EB",
+                  color: dias <= 1 ? C.vermelho : C.laranjaEsc
+                }}>
+                  <Timer size={11} /> {dias === 0 ? "Expira hoje" : `Expira em ${dias} dia${dias > 1 ? "s" : ""}`}
+                </span>
+              )}
             </div>
 
             {carregando ? (
@@ -5893,11 +5913,12 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
             um romaneio de dias anteriores, digite a referência/NF do processo na busca ou
             selecione um período abaixo. </>
           )}
-          As fotos ficam disponíveis por <strong>{RETENCAO_DIAS} dias</strong> e depois são
-          excluídas automaticamente — gere o romaneio antes do prazo.
+          As <strong>fotos</strong> ficam disponíveis por <strong>{RETENCAO_DIAS} dias</strong> e depois são
+          excluídas automaticamente — baixe ou compartilhe antes do prazo. O <strong>romaneio continua
+          disponível para gerar depois disso</strong>, só sem as imagens.
           {limpeza > 0 && (
             <span style={{ color: C.laranjaEsc, fontWeight: 700 }}>
-              {" "}({limpeza} {limpeza === 1 ? "operação vencida foi removida" : "operações vencidas foram removidas"} agora)
+              {" "}({limpeza} {limpeza === 1 ? "operação teve as fotos excluídas" : "operações tiveram as fotos excluídas"} agora)
             </span>
           )}
         </div>
@@ -5970,7 +5991,9 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
             <div style={{ display: "grid", gap: 11, gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))" }}>
               {lista.map(reg => {
                 const dias = diasParaExpirar(reg.expiraEm);
-                const urgente = dias <= 1;
+                /* depois que as fotos são excluídas não há mais o que "expirar" —
+                   o romaneio continua disponível, só sem imagem */
+                const urgente = !reg.fotosExcluidas && dias <= 1;
                 const nf = (reg.nIni || 0) + (reg.nFim || 0);
                 const semFecho = !reg.tsFim;
                 return (
@@ -6007,12 +6030,18 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
                       <span style={{ fontSize: 11, color: C.prata }}>
                         {hora(reg.tsInicio)}{reg.tsFim ? ` → ${hora(reg.tsFim)}` : " · em aberto"}
                       </span>
-                      <span style={{
-                        ...styles.pill, background: urgente ? "#FFEBEE" : "#F1F8F2",
-                        color: urgente ? C.vermelho : C.verde
-                      }}>
-                        {dias === 0 ? "expira hoje" : `${dias}d`}
-                      </span>
+                      {reg.fotosExcluidas ? (
+                        <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2 }}>
+                          fotos excluídas
+                        </span>
+                      ) : (
+                        <span style={{
+                          ...styles.pill, background: urgente ? "#FFEBEE" : "#F1F8F2",
+                          color: urgente ? C.vermelho : C.verde
+                        }}>
+                          {dias === 0 ? "expira hoje" : `${dias}d`}
+                        </span>
+                      )}
                     </div>
                   </button>
                 );
