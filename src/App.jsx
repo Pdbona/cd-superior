@@ -141,7 +141,6 @@ const SUBITENS_POR_ABA = {
     { id: "diretoria", label: "Relatório para a Diretoria" },
     { id: "cliente", label: "Relatórios para o Cliente" },
     { id: "prestador", label: "Relatório para o Prestador de Serviço" },
-    { id: "consolidado", label: "Consolidado por Cliente" },
     { id: "raiox", label: "Raio X da MdO" }
   ],
   ajustes: [
@@ -1544,7 +1543,10 @@ function PortaLinkProprio({ params, slug, onEntrar }) {
       <FontInject />
       <header style={{ ...styles.header, position: "relative", justifyContent: "center" }}>
         <div style={{ color: C.branco, textAlign: "center" }}>
-          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17, letterSpacing: .3 }}>
+          {/* Cabeçalho em destaque (combinado com Pablo em 17/ago/2026 — o
+              triplo do tamanho padrão de 17px): é a primeira coisa que o
+              cliente vê no link próprio, precisa chamar atenção de cara. */}
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 51, letterSpacing: .3, lineHeight: 1.1 }}>
             {perfil ? perfil.nome.toUpperCase() : "ACESSO"}
           </div>
           <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Superior Transportes</div>
@@ -7058,12 +7060,6 @@ function Relatorios({ ops, params, diasTerc, sub }) {
       {/* ===== RELATÓRIOS PARA O CLIENTE — duas peças ===== */}
       {subOn("cliente") && (<>
       <SectionTitle icon={Building2}>Relatórios para o Cliente</SectionTitle>
-      <p style={styles.helper}>
-        Peças de apresentação para enviar ao cliente. <strong>Nenhuma delas contém custo, bônus ou
-        economia</strong> — esses números são da relação da Superior com a terceirizada, não do cliente.
-        Recorte atual: <strong>{cliFiltro === "todos" ? "todos os clientes" : cliFiltro}</strong>
-        {cliFiltro === "todos" && " — selecione um cliente no filtro acima para a peça sair nominal"}.
-      </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(330px,1fr))", gap: 14 }}>
         {/* --- peça 1: desempenho realizado --- */}
@@ -7076,6 +7072,14 @@ function Relatorios({ ops, params, diasTerc, sub }) {
           </div>
           <div style={{ fontSize: 12, color: C.prata, marginBottom: 14, lineHeight: 1.5 }}>
             O que foi entregue no período: volume, tempo médio e cumprimento de prazo contra a média do ano.
+          </div>
+          {/* Período — default é o mês corrente (ver useState de `de`/`ate` no
+              topo do componente); campo próprio aqui porque essa peça pode
+              ser a única liberada pro cliente (sem a aba Diretoria, onde
+              esses mesmos campos já existiam, mas ficavam fora do alcance). */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            <Field label="De"><input type="date" style={styles.input} value={de} max={ate} onChange={e => setDe(e.target.value)} /></Field>
+            <Field label="Até"><input type="date" style={styles.input} value={ate} min={de} onChange={e => setAte(e.target.value)} /></Field>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
             <Previa label="Operações" valor={String(agg.n)} cor={C.navy} />
@@ -7180,55 +7184,12 @@ function Relatorios({ ops, params, diasTerc, sub }) {
 
       </>)}
 
-      {/* Prévia consolidada por cliente */}
-      {subOn("consolidado") && (<>
-      <SectionTitle icon={Building2}>Consolidado por Cliente <Badge>{porCliente.length}</Badge></SectionTitle>
-      {porCliente.length === 0 ? (
-        <EmptyState text="Nenhuma operação concluída no período selecionado." />
-      ) : (
-        <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
-          <table style={{ ...styles.table, minWidth: 780 }}>
-            <thead>
-              <tr>{["Cliente", "Ops", "Volume", "Horas", "Referência", "Custo Real", "Economia", "Aderência"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-            </thead>
-            <tbody>
-              {porCliente.map((r, i) => (
-                <tr key={r.cliente} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
-                  <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{r.cliente}</td>
-                  <td style={styles.tdMono}>{r.ops}</td>
-                  <td style={styles.tdMono}>{r.volume.toLocaleString("pt-BR")}</td>
-                  <td style={styles.tdMono}>{hhmm(r.horas)}</td>
-                  <td style={styles.tdMono}>{brl(r.referencia)}</td>
-                  <td style={styles.tdMono}>{brl(r.custoReal)}</td>
-                  <td style={{ ...styles.tdMono, fontWeight: 700, color: C.laranja }}>{brl(r.economia)}</td>
-                  <td style={styles.td}>
-                    {(() => {
-                      const p = r.ops ? (r.noPrazo / r.ops) * 100 : 0;
-                      const cor = p >= 80 ? C.verde : p >= 50 ? C.amarelo : C.vermelho;
-                      const bg = p >= 80 ? "#E8F5E9" : p >= 50 ? "#FFF3E0" : "#FFEBEE";
-                      return <span style={{ ...styles.pill, background: bg, color: cor }}>{p.toFixed(0)}%</span>;
-                    })()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr style={{ background: C.navy, color: C.branco }}>
-                <td style={styles.tf}>TOTAL</td>
-                <td style={styles.tfMono}>{agg.n}</td>
-                <td style={styles.tfMono}>{agg.volume.toLocaleString("pt-BR")}</td>
-                <td style={styles.tfMono}>{hhmm(agg.horasReais)}</td>
-                <td style={styles.tfMono}>{brl(agg.referencia)}</td>
-                <td style={styles.tfMono}>{brl(agg.custoReal)}</td>
-                <td style={{ ...styles.tfMono, color: "#FFD9BC" }}>{brl(agg.economia)}</td>
-                <td style={styles.tf}>{agg.noPrazoPct.toFixed(0)}%</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      )}
-
-      </>)}
+      {/* Subitem "Consolidado por Cliente" removido (combinado com Pablo em
+         17/ago/2026) — a tabela tinha Referência/Custo Real/Economia, dado
+         sensível que não deveria ter sido oferecido como opção pro perfil
+         Cliente ver. `porCliente` continua existindo: ainda alimenta o
+         Excel e o Dashboard da Diretoria, só não tem mais tela própria
+         aqui. */}
 
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
       {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
