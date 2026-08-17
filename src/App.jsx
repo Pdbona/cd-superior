@@ -565,6 +565,19 @@ const rolarNaHorizontal = (e) => {
   if (el.scrollWidth > el.clientWidth) el.scrollLeft += e.deltaY;
 };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+/* slug do link de acesso próprio (perfil.linkProprio) — vira a URL que o
+   Administrador compartilha com quem vai entrar por fora da porta padrão
+   (ver PortaLinkProprio). Gerado a partir do nome do perfil; se colidir
+   com um perfil já existente, recebe um sufixo numérico. */
+const slugify = (s) => (s || "").toLowerCase()
+  .normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "acesso";
+const slugUnico = (nome, perfis, exceto) => {
+  const base = slugify(nome);
+  let slug = base, i = 1;
+  while (perfis.some(p => p.slug === slug && p.id !== exceto)) slug = `${base}-${++i}`;
+  return slug;
+};
 const brl = (v) => "R$ " + (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const hhmm = (h) => {
   if (h == null) return "—";
@@ -867,6 +880,12 @@ export default function App() {
   /* perfilAtivo: só preenchido quando modo === "perfil" — guarda o perfil
      customizado (nome, PIN, telas) com o qual a pessoa entrou. */
   const [perfilAtivo, setPerfilAtivo] = useState(null);
+  /* portalSlug: presença de ?portal=<slug> na URL pula Hub e Porta de
+     Entrada padrão, indo direto pra PortaLinkProprio (ver GestaoAcessos,
+     perfil.linkProprio). Lido uma vez só — link é a forma combinada com
+     Pablo em 17/ago/2026 de dar acesso a um perfil tipo "Cliente" sem
+     ele passar pela porta com PIN numérico. */
+  const [portalSlug] = useState(() => new URLSearchParams(window.location.search).get("portal"));
   const [ops, setOps] = useState([]);
   const [params, setParams] = useState(DEFAULT_PARAMS);
   /* diasTerc: { [tsInicioDoDia]: { qtd: number } } — terceirizados contratados
@@ -947,6 +966,12 @@ export default function App() {
 
   if (loading) return <Splash />;
   if (!modo) {
+    /* Link próprio tem prioridade sobre tudo: quem chega por ?portal=<slug>
+       nunca vê o Hub nem a Porta de Entrada padrão. */
+    if (portalSlug) {
+      return <PortaLinkProprio params={params} slug={portalSlug}
+        onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
+    }
     if (area === "operacional") {
       return <PortaEntrada params={params} persistParams={persistParams} onVoltar={() => setArea(null)}
         onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
@@ -958,6 +983,17 @@ export default function App() {
 
   const sair = () => { setModo(null); setUsuario(null); setPerfilAtivo(null); };
 
+  /* Perfil com link próprio (ver PortaLinkProprio): os dados que descem pro
+     painel ficam restritos às operações do próprio cliente — o nome com que
+     a pessoa entrou É o nome do cliente, cadastrado pelo Administrador em
+     Perfis (ver criarUsuario em GestaoAcessos). `ops` (o que toda tela usa)
+     vem filtrado; `opsForecast` guarda a lista completa só para o bloco
+     Forecast Operacional do Dashboard mostrar a agenda de TODOS os clientes
+     (sem identificar de quem — ver Dashboard) — combinado com Pablo em
+     17/ago/2026. */
+  const clienteRestrito = modo === "perfil" && perfilAtivo?.linkProprio ? usuario : null;
+  const opsSessao = clienteRestrito ? ops.filter(o => o.cliente === clienteRestrito) : ops;
+
   return <>
     <AvisoSemConexao visivel={erroSalvar} />
     {modo === "conferente"
@@ -967,7 +1003,8 @@ export default function App() {
     ? <AppAdmin params={params} persistParams={persistParams} usuario={usuario}
         sair={sair} sync={sync} recarregar={() => carregar(false)} />
     : modo === "perfil"
-    ? <AppGestor ops={ops} params={params} persistOps={persistOps} persistParams={persistParams}
+    ? <AppGestor ops={opsSessao} opsForecast={ops} anonimizarCliente={!!clienteRestrito}
+        params={params} persistOps={persistOps} persistParams={persistParams}
         diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} usuario={usuario}
         permissoes={perfilAtivo?.telas} tituloPainel={perfilAtivo?.nome} sub={perfilAtivo?.sub}
         now={now} sair={sair} sync={sync} recarregar={() => carregar(false)} />
@@ -1035,9 +1072,12 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
   const gestores = params?.gestores || [];
   const perfis = params?.perfis || [];
   const pessoasPerfil = params?.pessoasPerfil || [];
+  /* Pessoas de perfil com link próprio (Cliente) ficam de fora — não fazem
+     sentido nessa porta (não têm PIN numérico, têm senha do link deles) e
+     não têm acesso ao Comercial de qualquer forma. */
   const usuariosComercial = [
     ...gestores.map(g => ({ id: g.id, nome: g.nome })),
-    ...pessoasPerfil.map(p => ({ id: p.id, nome: p.nome }))
+    ...pessoasPerfil.filter(p => !perfis.find(pf => pf.id === p.perfilId)?.linkProprio).map(p => ({ id: p.id, nome: p.nome }))
   ].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
 
   const abrirComercial = () => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer");
@@ -1335,8 +1375,13 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
               </button>
               {/* Perfis próprios criados pelo Gestor ou pelo Administrador na
                   aba "Perfis" — cada um vira um botão aqui, na ordem em que
-                  foi cadastrado. */}
-              {perfis.map(p => (
+                  foi cadastrado. Perfil com link próprio (linkProprio) fica
+                  de fora: quem tem esse perfil entra só pelo link dele
+                  (PortaLinkProprio), nunca por aqui — combinado com Pablo em
+                  17/ago/2026, pra não abrir uma segunda porta pro mesmo
+                  acesso com validação mais fraca (PIN cego em vez de
+                  nome + senha). */}
+              {perfis.filter(p => !p.linkProprio).map(p => (
                 <button key={p.id} style={styles.portaBtn}
                   onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); setModoRedefinir(false); }}>
                   <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
@@ -1437,6 +1482,106 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
                   cursor: "pointer", marginTop: 10, textDecoration: "underline" }} onClick={abrirRedefinir}>
                   Esqueci meu PIN
                 </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <RodapeSBS direita="Superior Transportes" />
+    </div>
+  );
+}
+
+/* ============================================================
+   PORTA DE ENTRADA — LINK PRÓPRIO (perfil.linkProprio)
+   ------------------------------------------------------------
+   Combinado com Pablo em 17/ago/2026: perfil de acesso "Cliente" não é um
+   tipo fixo no código — é um perfil comum (cadastrado em Perfis, igual
+   qualquer outro), que pode marcar "Link de acesso próprio". Quem tem
+   esse link (?portal=<slug>, ver GestaoAcessos) cai direto aqui, sem
+   passar pelo Hub nem pela Porta de Entrada padrão — e em vez do PIN
+   numérico cego dos demais perfis, primeiro escolhe o próprio nome (é o
+   nome do cliente, cadastrado pelo Administrador) e só depois digita a
+   senha (4 a 6, pode ter letras).
+   ============================================================ */
+function PortaLinkProprio({ params, slug, onEntrar }) {
+  const perfil = (params?.perfis || []).find(p => p.linkProprio && p.slug === slug);
+  const pessoas = (params?.pessoasPerfil || []).filter(p => p.perfilId === perfil?.id && !p.bloqueado);
+
+  const [pessoaId, setPessoaId] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+
+  const entrar = () => {
+    if (!pessoaId) return setErro("Selecione seu nome.");
+    const pessoa = pessoas.find(p => p.id === pessoaId);
+    if (!pessoa || pessoa.pin !== senha) { setErro("Nome ou senha incorretos."); setSenha(""); return; }
+    const ef = permissoesEfetivas(pessoa, perfil);
+    onEntrar("perfil", pessoa.nome, { ...perfil, telas: ef.telas, sub: ef.sub, linkProprio: true });
+  };
+
+  return (
+    <div style={{ ...styles.page, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <FontInject />
+      <header style={{ ...styles.header, position: "relative", justifyContent: "center" }}>
+        <div style={{ color: C.branco, textAlign: "center" }}>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17, letterSpacing: .3 }}>
+            {perfil ? perfil.nome.toUpperCase() : "ACESSO"}
+          </div>
+          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>Superior Transportes</div>
+        </div>
+        <div style={{ ...styles.logoWrap, padding: "6px 10px", position: "absolute", right: 26, top: "50%", transform: "translateY(-50%)" }}>
+          <img src={SUP_LOGO} alt="Superior Transportes" style={{ height: 28 }} />
+        </div>
+      </header>
+      <div style={styles.accentBar} />
+
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ width: "100%", maxWidth: 420 }}>
+          {!perfil ? (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <AlertTriangle size={26} color={C.laranja} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 4px", fontSize: 15 }}>
+                Link inválido
+              </div>
+              <div style={{ fontSize: 12.5, color: C.prata }}>
+                Este link de acesso não existe mais ou foi desativado. Peça um link novo.
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <Lock size={26} color={C.verde} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
+                Acesso · {perfil.nome}
+              </div>
+              {pessoas.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: C.prata, marginBottom: 8 }}>
+                  Nenhum acesso cadastrado ainda — peça pro Administrador cadastrar seu login.
+                </div>
+              ) : (
+                <>
+                  <div style={{ textAlign: "left", marginBottom: 12 }}>
+                    <Field label="Seu nome">
+                      <select style={styles.input} value={pessoaId} autoFocus
+                        onChange={e => { setPessoaId(e.target.value); setErro(""); }}>
+                        <option value="">Selecione…</option>
+                        {pessoas.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <input type="password" value={senha}
+                    onChange={e => { setSenha(e.target.value); setErro(""); }}
+                    onKeyDown={e => e.key === "Enter" && entrar()}
+                    placeholder="Senha"
+                    style={{ ...styles.input, textAlign: "center", fontSize: 18, letterSpacing: 4, fontFamily: "'Roboto Mono',monospace" }} />
+                </>
+              )}
+              {erro && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erro}</div>}
+              {pessoas.length > 0 && (
+                <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                  <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={entrar}>Entrar</button>
+                </div>
               )}
             </div>
           )}
@@ -2056,7 +2201,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
-function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, sub }) {
+function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, sub }) {
   const [tab, setTab] = useState("operacoes");
   /* permissoes: quando vem preenchido (perfil customizado logado via
      modo "perfil"), filtra por ele; senão usa params.permissoesGestor —
@@ -2166,7 +2311,7 @@ function AppGestor({ ops, params, persistOps, persistParams, diasTerc, persistDi
       <main style={styles.main}>
         {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
         {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} sub={subAba} />}
-        {tab === "dashboard" && <Dashboard ops={ops} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
+        {tab === "dashboard" && <Dashboard ops={ops} opsForecast={opsForecast} anonimizarCliente={anonimizarCliente} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
         {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
@@ -2361,6 +2506,26 @@ function AppAdmin({ params, persistParams, usuario, sair, sync, recarregar }) {
    é `telasRestritas`: o Gestor não pode conceder Parâmetros/Perfis,
    senão fabricaria um "gestor" por fora do cadastro do Administrador.
    ============================================================ */
+/* Link do perfil com acesso próprio (perfil.linkProprio) — mostra a URL
+   pronta para compartilhar (ex.: com o cliente) e copia pro clipboard.
+   Componente à parte só porque precisa do próprio estado de "Copiado!". */
+function BotaoCopiarLink({ link }) {
+  const [copiado, setCopiado] = useState(false);
+  const copiar = async () => {
+    try { await navigator.clipboard.writeText(link); } catch (e) { /* clipboard indisponível — o campo já mostra o link pra copiar manual */ }
+    setCopiado(true); setTimeout(() => setCopiado(false), 2000);
+  };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <input readOnly style={{ ...styles.input, flex: 1, minWidth: 220, fontSize: 12, color: C.navy2 }}
+        value={link} onFocus={e => e.target.select()} />
+      <button style={{ ...styles.btnGhost, fontSize: 12 }} onClick={copiar}>
+        {copiado ? <><CheckCircle2 size={14} /> Copiado!</> : <>Copiar link</>}
+      </button>
+    </div>
+  );
+}
+
 function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_RESTRITAS_ADMIN, souAdministrador = false }) {
   const subOn = (id) => subLiberado(sub, id);
   const [draftPerfis, setDraftPerfis] = useState(params.perfis || []);
@@ -2445,7 +2610,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   };
 
   /* ---------------- perfis ---------------- */
-  const abrirFormPerfil = () => { setFormPerfil({ nome: "", telas: {}, sub: {} }); setErroPerfil(""); };
+  const abrirFormPerfil = () => { setFormPerfil({ nome: "", telas: {}, sub: {}, linkProprio: false }); setErroPerfil(""); };
 
   const togglePerfilTela = (perfilId, telaId) => {
     setDraftPerfis(d => d.map(p => p.id === perfilId
@@ -2476,8 +2641,25 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
     if (draftPerfis.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErroPerfil("Já existe um perfil com esse nome.");
     if (!Object.values(formPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma aba para o novo perfil.");
     const novo = { id: uid(), nome, telas: { ...formPerfil.telas }, sub: { ...formPerfil.sub } };
+    if (formPerfil.linkProprio) { novo.linkProprio = true; novo.slug = slugUnico(nome, draftPerfis); }
     setDraftPerfis(d => [...d, novo]);
     setFormPerfil(null); setErroPerfil(""); setPerfilAberto(novo.id); mudou();
+  };
+
+  /* Liga/desliga o link de acesso próprio de um perfil já existente
+     (combinado com Pablo em 17/ago/2026: perfil "Cliente" não é um tipo
+     fixo no código — é um perfil comum, cadastrado aqui como qualquer
+     outro, que só ganha essa marcação a mais). Ao ligar, gera o slug uma
+     vez só; ao desligar, mantém o slug guardado (se ligar de novo, o link
+     antigo volta a funcionar, em vez de trocar por outro sem avisar quem
+     já tinha o link salvo). */
+  const togglePerfilLinkProprio = (perfilId) => {
+    setDraftPerfis(d => d.map(p => {
+      if (p.id !== perfilId) return p;
+      const ligar = !p.linkProprio;
+      return { ...p, linkProprio: ligar, slug: p.slug || (ligar ? slugUnico(p.nome, draftPerfis, p.id) : p.slug) };
+    }));
+    mudou();
   };
 
   /* ---------------- usuários ---------------- */
@@ -2486,9 +2668,15 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   const criarUsuario = () => {
     const { perfilId } = formUsuario;
     const nome = (formUsuario.nome || "").trim(), pin = (formUsuario.pin || "").trim();
+    const perfilDoUsuario = perfilPorId(perfilId);
+    /* Perfil com link próprio (ver togglePerfilLinkProprio) entra por nome +
+       senha alfanumérica, não pela porta de PIN numérico padrão — combinado
+       com Pablo em 17/ago/2026. */
+    const regraPin = perfilDoUsuario?.linkProprio ? /^[A-Za-z0-9]{4,6}$/ : /^\d{4,6}$/;
     if (!perfilId) return setErroUsuario("Selecione o perfil.");
     if (!nome) return setErroUsuario("Informe o nome completo.");
-    if (!/^\d{4,6}$/.test(pin)) return setErroUsuario("O PIN deve ter de 4 a 6 dígitos numéricos.");
+    if (!regraPin.test(pin)) return setErroUsuario(perfilDoUsuario?.linkProprio
+      ? "A senha deve ter de 4 a 6 letras/números." : "O PIN deve ter de 4 a 6 dígitos numéricos.");
     if (draftPessoas.some(p => p.perfilId === perfilId && p.nome.toLowerCase() === nome.toLowerCase()))
       return setErroUsuario("Já existe alguém com esse nome neste perfil.");
     if (pinEmUsoGlobal(pin, { ...params, pessoasPerfil: draftPessoas })) return setErroUsuario("Este PIN já está em uso por outro acesso do app.");
@@ -2541,7 +2729,11 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   /* ---------------- persistência ---------------- */
   const salvar = () => {
     const cleanPerfis = draftPerfis.filter(p => p.nome)
-      .map(p => ({ id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, sub: p.sub || {} }));
+      .map(p => {
+        const base = { id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, sub: p.sub || {} };
+        if (p.linkProprio) { base.linkProprio = true; base.slug = p.slug; }
+        return base;
+      });
     const idsValidos = new Set(cleanPerfis.map(p => p.id));
     const cleanPessoas = draftPessoas.filter(p => p.nome && p.pin && idsValidos.has(p.perfilId))
       .map(p => {
@@ -2636,9 +2828,22 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 <Field label="Nome do perfil">
                   <input style={styles.input} value={formPerfil.nome} autoFocus
                     onChange={e => { setFormPerfil(f => ({ ...f, nome: e.target.value })); setErroPerfil(""); }}
-                    placeholder="Ex.: Administrativo" />
+                    placeholder="Ex.: Cliente" />
                 </Field>
               </div>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer", maxWidth: 460 }}>
+                <input type="checkbox" checked={!!formPerfil.linkProprio} style={{ marginTop: 2 }}
+                  onChange={() => setFormPerfil(f => ({ ...f, linkProprio: !f.linkProprio }))} />
+                <span>
+                  <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
+                    Link de acesso próprio
+                  </span>
+                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
+                    Em vez de entrar pela porta padrão com PIN numérico, cada usuário deste perfil recebe um link
+                    à parte, com tela própria: seleciona o nome e digita uma senha (4 a 6, pode ter letras).
+                  </div>
+                </span>
+              </label>
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
                 textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
                 Acessos
@@ -2799,6 +3004,9 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                     <div style={{ flex: 1, minWidth: 160 }}>
                       <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
                         {perfil.nome} <Badge>{nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""}</Badge>
+                        {perfil.linkProprio && (
+                          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Link próprio</span>
+                        )}
                       </div>
                       {!aberto && (
                         <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>{resumoTelas(perfil.telas)}</div>
@@ -2817,6 +3025,24 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                         <button style={styles.iconBtnDanger} title="Remover perfil"
                           onClick={() => removerPerfil(perfil.id)}><Trash2 size={14} /></button>
                       </div>
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer", maxWidth: 460 }}>
+                        <input type="checkbox" checked={!!perfil.linkProprio} style={{ marginTop: 2 }}
+                          onChange={() => togglePerfilLinkProprio(perfil.id)} />
+                        <span>
+                          <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
+                            Link de acesso próprio
+                          </span>
+                          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
+                            Entrada por nome + senha (4 a 6, pode ter letras), fora da porta padrão de PIN.
+                          </div>
+                        </span>
+                      </label>
+                      {perfil.linkProprio && perfil.slug && (
+                        <div style={{ ...styles.infoBox, marginBottom: 14 }}>
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Link para compartilhar:</div>
+                          <BotaoCopiarLink link={`${window.location.origin}${window.location.pathname}?portal=${perfil.slug}`} />
+                        </div>
+                      )}
                       <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
                         textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
                         Acessos
@@ -2866,16 +3092,40 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                     {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
                   </select>
                 </Field>
-                <Field label="Nome completo">
-                  <input style={styles.input} value={formUsuario.nome}
-                    onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}
-                    onKeyDown={e => e.key === "Enter" && criarUsuario()}
-                    placeholder="Ex.: Maria Silva" />
-                </Field>
-                <Field label="PIN (4 a 6 dígitos)">
+                {/* Perfil com link próprio (ver linkProprio): o "nome" do usuário É o
+                    nome do cliente — vira o dropdown já cadastrado em Parâmetros →
+                    Clientes, pra não dar erro de digitação e deixar de bater com
+                    o cliente das operações (usado depois pra filtrar os dados). */}
+                {perfilPorId(formUsuario.perfilId)?.linkProprio ? (
+                  <Field label="Nome do cliente">
+                    {(params.clientes || []).length === 0 ? (
+                      <div style={{ fontSize: 11.5, color: C.laranjaEsc, padding: "8px 0" }}>
+                        Cadastre clientes em Parâmetros primeiro.
+                      </div>
+                    ) : (
+                      <select style={styles.input} value={formUsuario.nome}
+                        onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}>
+                        <option value="">Selecione…</option>
+                        {params.clientes.map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                      </select>
+                    )}
+                  </Field>
+                ) : (
+                  <Field label="Nome completo">
+                    <input style={styles.input} value={formUsuario.nome}
+                      onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}
+                      onKeyDown={e => e.key === "Enter" && criarUsuario()}
+                      placeholder="Ex.: Maria Silva" />
+                  </Field>
+                )}
+                <Field label={perfilPorId(formUsuario.perfilId)?.linkProprio ? "Senha (4 a 6, letras/números)" : "PIN (4 a 6 dígitos)"}>
                   <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                    inputMode="numeric" maxLength={6} value={formUsuario.pin}
-                    onChange={e => { setFormUsuario(f => ({ ...f, pin: e.target.value.replace(/\D/g, "") })); setErroUsuario(""); }}
+                    inputMode={perfilPorId(formUsuario.perfilId)?.linkProprio ? "text" : "numeric"} maxLength={6} value={formUsuario.pin}
+                    onChange={e => {
+                      const bruto = e.target.value;
+                      const v = perfilPorId(formUsuario.perfilId)?.linkProprio ? bruto.replace(/[^A-Za-z0-9]/g, "") : bruto.replace(/\D/g, "");
+                      setFormUsuario(f => ({ ...f, pin: v })); setErroUsuario("");
+                    }}
                     onKeyDown={e => e.key === "Enter" && criarUsuario()}
                     placeholder="0000" />
                 </Field>
@@ -2931,20 +3181,31 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                     <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
                       <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10,
                         alignItems: "end", margin: "14px 0" }}>
-                        <Field label="Nome completo">
-                          <input style={styles.input} value={pessoa.nome}
-                            onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
-                        </Field>
+                        {perfil?.linkProprio ? (
+                          <Field label="Nome do cliente">
+                            <select style={styles.input} value={pessoa.nome}
+                              onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)}>
+                              <option value="">Selecione…</option>
+                              {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                            </select>
+                          </Field>
+                        ) : (
+                          <Field label="Nome completo">
+                            <input style={styles.input} value={pessoa.nome}
+                              onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
+                          </Field>
+                        )}
                         <Field label="Perfil">
                           <select style={styles.input} value={pessoa.perfilId}
                             onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
                             {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
                           </select>
                         </Field>
-                        <Field label="PIN">
+                        <Field label={perfil?.linkProprio ? "Senha" : "PIN"}>
                           <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                            inputMode="numeric" maxLength={6} value={pessoa.pin}
-                            onChange={e => setPessoaCampo(pessoa.id, "pin", e.target.value.replace(/\D/g, ""))} />
+                            inputMode={perfil?.linkProprio ? "text" : "numeric"} maxLength={6} value={pessoa.pin}
+                            onChange={e => setPessoaCampo(pessoa.id, "pin",
+                              perfil?.linkProprio ? e.target.value.replace(/[^A-Za-z0-9]/g, "") : e.target.value.replace(/\D/g, ""))} />
                         </Field>
                       </div>
 
@@ -3202,10 +3463,10 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
             </div>
           </Field>
           {!ehPaletizado && (<>
-            <Field label={`Pessoas TERCEIRIZADA (${brl(params.custoTerceirizada)}/diária)`}>
+            <Field label="Qtd de Terceiros nesta Operação">
               <input style={styles.input} type="number" min="0" value={form.qtdTerceirizada} onChange={e => set("qtdTerceirizada", e.target.value)} placeholder="0" />
             </Field>
-            <Field label="Pessoas da SUPERIOR (executam a operação)">
+            <Field label="Qtd de colaborador nesta Operação">
               <input style={styles.input} type="number" min="0" value={form.qtdPessoasSuperior}
                 onChange={e => set("qtdPessoasSuperior", e.target.value)} placeholder="0" />
               <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
@@ -3215,9 +3476,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
             <Field label="Qtd. de BÔNUS da operação">
               <input style={styles.input} type="number" min="0" value={form.qtdSuperior} onChange={e => set("qtdSuperior", e.target.value)} placeholder="0" />
               <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
-                Custo de {brl(params.bonusSuperior)} cada, dos quais{" "}
-                {brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)} são rateados entre os
-                colaboradores. Os nomes são definidos depois, na aba Rateio.
+                Parte do valor é rateada entre os colaboradores. Os nomes são definidos depois, na aba Rateio.
               </div>
             </Field>
             {parseInt(form.qtdSuperior || 0, 10) > 0 && (
@@ -4410,11 +4669,11 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
                       </Field>
                       {params.tipos.find(tp => tp.id === draft.tipoId)?.modalidade !== "paletizado" && (
                         <>
-                          <Field label="Pessoas TERCEIRIZADA">
+                          <Field label="Qtd de Terceiros nesta Operação">
                             <input type="number" min="0" style={styles.input} value={draft.qtdTerceirizada}
                               onChange={e => setDraft(d => ({ ...d, qtdTerceirizada: e.target.value }))} />
                           </Field>
-                          <Field label="Pessoas da SUPERIOR">
+                          <Field label="Qtd de colaborador nesta Operação">
                             <input type="number" min="0" style={styles.input} value={draft.qtdPessoasSuperior}
                               onChange={e => setDraft(d => ({ ...d, qtdPessoasSuperior: e.target.value }))} />
                           </Field>
@@ -4559,10 +4818,18 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
 /* ============================================================
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
-function Dashboard({ ops, params, now, diasTerc, sub }) {
+function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc, sub }) {
   /* sub: quais blocos desta aba aparecem para o perfil logado (ver
      SUBITENS_POR_ABA). null = sem restrição, mostra tudo. */
   const subOn = (id) => subLiberado(sub, id);
+  /* opsF: fonte do Forecast Operacional (e do detalhe do dia, mais abaixo).
+     Para a maioria dos perfis é a mesma lista de `ops`; só diverge quando
+     quem está logado é um perfil de link próprio (Cliente) — aí `ops` já
+     vem filtrado só pras operações dele (ver App()), mas o Forecast precisa
+     enxergar a agenda de TODOS os clientes pra mostrar que existem
+     recebimentos/expedições programados em cada dia, sem identificar de
+     quem — anonimizarCliente esconde ref/cliente no detalhe do dia. */
+  const opsF = opsForecast || ops;
   const [diaSel, setDiaSel] = useState(null);
   /* índice leve das fotos — só metadados, para saber quais operações
      têm evidência e habilitar o clique. As imagens só descem quando
@@ -4848,8 +5115,8 @@ function Dashboard({ ops, params, now, diasTerc, sub }) {
     const dias = [];
     for (let i = 0; i < 7; i++) {
       const ts = hoje + i * 86400000;
-      const doDia = ops.filter(o => o.status !== "concluida" && o.status !== "cancelada" && diaPlanejado(o) === ts);
-      const concluidasDoDia = ops.filter(o => o.status === "concluida" && diaPlanejado(o) === ts);
+      const doDia = opsF.filter(o => o.status !== "concluida" && o.status !== "cancelada" && diaPlanejado(o) === ts);
+      const concluidasDoDia = opsF.filter(o => o.status === "concluida" && diaPlanejado(o) === ts);
       const todasDoDia = [...doDia, ...concluidasDoDia];
       let volume = 0, pessoas = 0, horas = 0, subdim = 0;
       /* separado por direção: o gestor escala doca e equipe de forma
@@ -4875,7 +5142,7 @@ function Dashboard({ ops, params, now, diasTerc, sub }) {
         volume, pessoas, horas, subdim, rec, exp, hoje: i === 0 });
     }
     return dias;
-  }, [ops, params]);
+  }, [opsF, params]);
 
   const totalForecast = forecast.reduce((s, d) => s + d.ops, 0);
   const totalRec = forecast.reduce((s, d) => s + d.rec.ops, 0);
@@ -5160,17 +5427,20 @@ function Dashboard({ ops, params, now, diasTerc, sub }) {
               <EmptyState text="Nenhuma operação programada para este dia." />
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
-                {ops.filter(o => diaPlanejado(o) === diaSel.ts && o.status !== "cancelada").map(o => {
+                {opsF.filter(o => diaPlanejado(o) === diaSel.ts && o.status !== "cancelada").map(o => {
                   const c = calcOp(o, params);
                   const corStatus = o.status === "concluida" ? C.verde : o.status === "em_andamento" ? C.laranja : C.prata;
                   const labelStatus = o.status === "concluida" ? "Concluída" : o.status === "em_andamento" ? "Em andamento" : "Pendente";
                   return (
                     <div key={o.id} style={{ border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "10px 12px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                        <strong style={{ fontSize: 13, color: C.navy }}>{o.ref}</strong>
+                        {/* anonimizarCliente (perfil de link próprio — Cliente): esconde
+                            ref e nome do cliente, pra não revelar de quem é cada operação
+                            agendada — só a existência/horário/tipo aparece. */}
+                        <strong style={{ fontSize: 13, color: C.navy }}>{anonimizarCliente ? "Operação agendada" : o.ref}</strong>
                         <DirTag dir={o.direcao} />
                       </div>
-                      <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{o.cliente}</div>
+                      {!anonimizarCliente && <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{o.cliente}</div>}
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
                         <span>{c.tipo?.label}</span>
                         {o.volume ? <span>{o.volume.toLocaleString("pt-BR")} un</span> : null}
