@@ -951,7 +951,7 @@ export default function App() {
       return <PortaEntrada params={params} persistParams={persistParams} onVoltar={() => setArea(null)}
         onEntrar={(m, nome, perfil) => { setModo(m); setUsuario(nome || null); setPerfilAtivo(perfil || null); }} />;
     }
-    return <HubEntrada
+    return <HubEntrada params={params}
       onOperacional={() => setArea("operacional")}
       onEntrarAdmin={() => { setModo("administrador"); setUsuario("Pablo Bona"); }} />;
   }
@@ -1008,7 +1008,7 @@ function AvisoSemConexao({ visivel }) {
    de entrada de cada uma. ADMIN do Sistema fica à parte, num canto —
    é quem antes era o botão ADMINISTRADOR aqui dentro do Operacional.
    ============================================================ */
-function HubEntrada({ onOperacional, onEntrarAdmin }) {
+function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
   const [pedirPinAdmin, setPedirPinAdmin] = useState(false);
   const [pin, setPin] = useState("");
   const [erro, setErro] = useState("");
@@ -1016,6 +1016,50 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
   const validarAdmin = () => {
     if (pin === PIN_ADMINISTRADOR) return onEntrarAdmin();
     setErro("PIN incorreto."); setPin("");
+  };
+
+  /* ---- Acesso ao Comercial, agora com usuário + senha (combinado com
+     Pablo em 17/ago/2026): o Comercial não tem login próprio nenhum mais
+     (abre livre pra quem tem o link), então o gate acontece aqui, ANTES
+     de abrir a aba nova — contra o mesmo cadastro do Administrador
+     (Gestores + Usuários dos perfis próprios). Só entra quem tiver a
+     tela "App Gestão Comercial" marcada no perfil (ou, no caso do
+     Gestor, no card dele — opt-out, ligado por padrão). Conferente fica
+     de fora da lista: o perfil dele é fixo (só a tela do coletor), nunca
+     teria acesso mesmo. */
+  const [pedirComercial, setPedirComercial] = useState(false);
+  const [usuarioComercialId, setUsuarioComercialId] = useState("");
+  const [pinComercial, setPinComercial] = useState("");
+  const [erroComercial, setErroComercial] = useState("");
+
+  const gestores = params?.gestores || [];
+  const perfis = params?.perfis || [];
+  const pessoasPerfil = params?.pessoasPerfil || [];
+  const usuariosComercial = [
+    ...gestores.map(g => ({ id: g.id, nome: g.nome })),
+    ...pessoasPerfil.map(p => ({ id: p.id, nome: p.nome }))
+  ].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+
+  const abrirComercial = () => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer");
+
+  const validarComercial = () => {
+    if (!usuarioComercialId) return setErroComercial("Selecione seu usuário.");
+    const gestor = gestores.find(g => g.id === usuarioComercialId);
+    if (gestor) {
+      if (gestor.pin !== pinComercial) { setErroComercial("Usuário ou senha incorretos."); setPinComercial(""); return; }
+      if (params?.permissoesGestor?.comercial === false) return setErroComercial("Você não tem acesso a esta área.");
+      setErroComercial(""); return abrirComercial();
+    }
+    const pessoa = pessoasPerfil.find(p => p.id === usuarioComercialId);
+    if (pessoa) {
+      if (pessoa.bloqueado) { setErroComercial("Acesso bloqueado. Procure o Administrador."); setPinComercial(""); return; }
+      if (pessoa.pin !== pinComercial) { setErroComercial("Usuário ou senha incorretos."); setPinComercial(""); return; }
+      const perfil = perfis.find(p => p.id === pessoa.perfilId);
+      const ef = permissoesEfetivas(pessoa, perfil);
+      if (ef.telas?.comercial !== true) return setErroComercial("Você não tem acesso a esta área.");
+      setErroComercial(""); return abrirComercial();
+    }
+    setErroComercial("Usuário ou senha incorretos.");
   };
 
   const hubBtn = (disabled) => ({
@@ -1042,7 +1086,7 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
 
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div style={{ width: "100%", maxWidth: 520 }}>
-          {!pedirPinAdmin ? (
+          {!pedirPinAdmin && !pedirComercial ? (
             <>
               <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 19, fontWeight: 800, color: C.navy, textAlign: "center", marginBottom: 6 }}>
                 Como você vai acessar?
@@ -1052,7 +1096,8 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
               </p>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <button style={hubBtn(false)} onClick={() => window.open(URL_APP_COMERCIAL, "_blank", "noopener,noreferrer")}>
+                <button style={hubBtn(false)}
+                  onClick={() => { setPedirComercial(true); setUsuarioComercialId(""); setPinComercial(""); setErroComercial(""); }}>
                   <div style={{ ...styles.portaIcon, background: "#EEF2F8" }}><DollarSign size={26} color={C.navy2} strokeWidth={2.2} /></div>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>COMERCIAL</div>
                 </button>
@@ -1079,7 +1124,7 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
                 </button>
               </div>
             </>
-          ) : (
+          ) : pedirPinAdmin ? (
             <div style={{ ...styles.card, textAlign: "center" }}>
               <ShieldCheck size={26} color={C.laranja} />
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
@@ -1096,6 +1141,46 @@ function HubEntrada({ onOperacional, onEntrarAdmin }) {
                 <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={validarAdmin}>Entrar</button>
               </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>Acesso restrito ao administrador do sistema.</div>
+            </div>
+          ) : (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <DollarSign size={26} color={C.navy2} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
+                Acesso Comercial
+              </div>
+              {usuariosComercial.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: C.prata, marginBottom: 8 }}>
+                  Nenhum usuário cadastrado ainda — peça pro Administrador cadastrar e liberar o acesso.
+                </div>
+              ) : (
+                <>
+                  <div style={{ textAlign: "left", marginBottom: 12 }}>
+                    <Field label="Usuário">
+                      <select style={styles.input} value={usuarioComercialId} autoFocus
+                        onChange={e => { setUsuarioComercialId(e.target.value); setErroComercial(""); }}>
+                        <option value="">Selecione…</option>
+                        {usuariosComercial.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <input type="password" inputMode="numeric" value={pinComercial}
+                    onChange={e => { setPinComercial(e.target.value); setErroComercial(""); }}
+                    onKeyDown={e => e.key === "Enter" && validarComercial()}
+                    placeholder="Senha"
+                    style={{ ...styles.input, textAlign: "center", fontSize: 22, letterSpacing: 8, fontFamily: "'Roboto Mono',monospace" }} />
+                </>
+              )}
+              {erroComercial && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erroComercial}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }}
+                  onClick={() => { setPedirComercial(false); setUsuarioComercialId(""); setPinComercial(""); setErroComercial(""); }}>Voltar</button>
+                {usuariosComercial.length > 0 && (
+                  <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={validarComercial}>Entrar</button>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>
+                Só entra quem tiver o acesso "App Gestão Comercial" liberado no perfil, cadastrado pelo Administrador.
+              </div>
             </div>
           )}
         </div>
