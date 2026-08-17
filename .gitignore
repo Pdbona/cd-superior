@@ -2,3 +2,6 @@ node_modules
 dist
 .DS_Store
 *.log
+
+# Dados reais de clientes (planilhas do WMS) — nunca versionar, repo é público
+Estoque/

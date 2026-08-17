@@ -55,6 +55,7 @@ const TABS_GESTOR = [
   { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
   { id: "fotos", label: "Gerar Romaneio", sub: "Recebimento & Expedição", icon: FileText },
   { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
+  { id: "estoque", label: "Estoque", sub: "Saldo por cliente", icon: Boxes },
   { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
   { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
   { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings },
@@ -142,6 +143,9 @@ const SUBITENS_POR_ABA = {
     { id: "cliente", label: "Relatórios para o Cliente" },
     { id: "prestador", label: "Relatório para o Prestador de Serviço" },
     { id: "raiox", label: "Raio X da MdO" }
+  ],
+  estoque: [
+    { id: "importar", label: "Importar Arquivo de Estoque" }
   ],
   ajustes: [
     { id: "ajustemanual", label: "Ajuste Manual de Registros" }
@@ -482,7 +486,7 @@ const DEFAULT_PARAMS = {
      ausente ou true = aba liberada; só false esconde. */
   permissoesGestor: {
     operacoes: true, acompanhar: true, dashboard: true, fotos: true,
-    relatorios: true, ajustes: true, rateio: true, parametros: true, perfis: true,
+    relatorios: true, estoque: true, ajustes: true, rateio: true, parametros: true, perfis: true,
     coletor: true, comercial: true
   },
   /* permissoesGestorSub: subitens do Gestor, mesmo formato de perfil.sub —
@@ -2340,6 +2344,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
         {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} />}
+        {tab === "estoque" && <MonitorEstoque sub={subAba} usuario={usuario} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} sub={subAba} />}
         {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
       </main>
@@ -6610,6 +6615,510 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
         />
       )}
     </div>
+  );
+}
+
+/* ============================================================
+   ESTOQUE — leitura do WMS (planilha Excel)
+   ------------------------------------------------------------
+   Sem backend próprio: quem tiver a tela de Importar liberada (subitem
+   "importar" da aba Estoque) escolhe manualmente, no seletor de arquivos
+   do próprio dispositivo, o arquivo Estoque_DDMMAAAA.xlsx mais recente
+   da pasta do Drive — que já chega sincronizada localmente, então é só
+   apontar pro arquivo. O app extrai os dados e grava UM retrato no
+   Firestore (mesmo padrão chave/valor de storage.js usado no resto do
+   app); a partir daí, qualquer pessoa que abrir a aba Estoque já vê os
+   dados atualizados, sem precisar importar de novo — importação única
+   por atualização (combinado com Pablo em 17/ago/2026).
+   ============================================================ */
+const K_ESTOQUE = "sbs_sup_estoque_v1";
+const ESTOQUE_TTL_DIAS = 90;
+const AROS_PADRAO = ["R13", "R14", "R15", "R16", "R17", "R18", "R19", "R20", "R21", "R22", "R22.5"];
+
+/* Converte número no formato brasileiro (1.234,56) ou já numérico (célula
+   do Excel formatada como número) para Number puro. */
+function numBR(v) {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  if (v == null || v === "") return 0;
+  const s = String(v).trim().replace(/[^\d,.-]/g, "");
+  if (!s) return 0;
+  if (s.includes(",") && s.includes(".")) return Number(s.replace(/\./g, "").replace(",", ".")) || 0;
+  if (s.includes(",")) return Number(s.replace(",", ".")) || 0;
+  return Number(s) || 0;
+}
+
+/* Extrai o aro do pneu a partir da descrição da mercadoria — só R13 a
+   R22.5 (únicos aros usados na frota, combinado com Pablo). Fora dessa
+   faixa (ex.: "R100", código de peça) não é aro de pneu — fica em
+   branco de propósito, como pedido. */
+function extrairAro(texto) {
+  if (!texto) return "";
+  const m = String(texto).match(/R\s?(1[3-9]|2[0-2])([.,]5)?\b/i);
+  if (!m) return "";
+  return `R${m[1]}${m[2] ? ".5" : ""}`;
+}
+
+/* Acha, entre os cabeçalhos reais da planilha, a coluna que corresponde a
+   cada campo esperado — tolera acento, maiúscula/minúscula e pontuação
+   diferentes do padrão exato do WMS (ex.: "Qt Disp" sem ponto). */
+function acharColuna(headers, ...alvos) {
+  const norm = (s) => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+  const alvosNorm = alvos.map(norm);
+  return headers.find(h => alvosNorm.some(a => norm(h).includes(a)));
+}
+
+/* Lê o arquivo .xlsx do WMS e devolve o retrato pronto pra gravar no
+   Firestore: um array de clientes, cada um com seus itens e totais. */
+async function processarPlanilhaEstoque(file) {
+  const XLSX = await import("xlsx");
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const linhas = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  if (!linhas.length) throw new Error("A planilha está vazia ou não tem linhas reconhecíveis.");
+
+  const headers = Object.keys(linhas[0]);
+  const colCliente = acharColuna(headers, "Nome Cliente");
+  const colSku = acharColuna(headers, "Cod Merc", "Codigo Merc");
+  const colDesc = acharColuna(headers, "Nome Mercadoria");
+  const colQtd = acharColuna(headers, "Qt Disp", "Quantidade Disp");
+  const colValor = acharColuna(headers, "Vl Disp", "Valor Disp");
+  const faltando = [
+    !colCliente && "Nome Cliente", !colSku && "Cód. Merc.", !colDesc && "Nome Mercadoria",
+    !colQtd && "Qt. Disp", !colValor && "Vl. Disp. (R$)"
+  ].filter(Boolean);
+  if (faltando.length) {
+    throw new Error(`Não encontrei estas colunas na planilha: ${faltando.join(", ")}. Confira se é o arquivo certo do WMS.`);
+  }
+
+  const porCliente = new Map();
+  linhas.forEach(l => {
+    const cliente = String(l[colCliente] ?? "").trim();
+    if (!cliente) return;
+    const item = {
+      sku: String(l[colSku] ?? "").trim(),
+      descricao: String(l[colDesc] ?? "").trim(),
+      aro: extrairAro(l[colDesc]),
+      qtd: numBR(l[colQtd]),
+      valor: numBR(l[colValor])
+    };
+    if (!porCliente.has(cliente)) porCliente.set(cliente, []);
+    porCliente.get(cliente).push(item);
+  });
+
+  if (porCliente.size === 0) {
+    throw new Error("Nenhuma linha com cliente preenchido foi encontrada nesta planilha.");
+  }
+
+  const clientes = Array.from(porCliente.entries())
+    .map(([cliente, itens]) => ({
+      cliente,
+      itens,
+      qtdTotal: itens.reduce((s, i) => s + i.qtd, 0),
+      valorTotal: itens.reduce((s, i) => s + i.valor, 0)
+    }))
+    .sort((a, b) => a.cliente.localeCompare(b.cliente, "pt-BR"));
+
+  return { arquivo: file.name, importadoEm: Date.now(), clientes };
+}
+
+async function lerEstoque() {
+  try {
+    const r = await storage.get(K_ESTOQUE);
+    if (r?.value) {
+      const parsed = JSON.parse(r.value);
+      if (parsed && Array.isArray(parsed.clientes)) return parsed;
+    }
+  } catch (e) { console.error("Estoque:", e); }
+  return null;
+}
+
+/* Ordena Aro (↑, vazio por último) → Descrição (A-Z) — regra fixa da
+   Tela 2 (Relatório Detalhado) e também usada na busca da Tela 3. */
+function ordenarItensEstoque(itens) {
+  return [...itens].sort((a, b) => {
+    const av = a.aro ? parseFloat(a.aro.replace("R", "")) : Infinity;
+    const bv = b.aro ? parseFloat(b.aro.replace("R", "")) : Infinity;
+    if (av !== bv) return av - bv;
+    return a.descricao.localeCompare(b.descricao, "pt-BR");
+  });
+}
+
+function imprimirEstoqueCliente(cliente, itens, qtdTotal, valorTotal) {
+  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const w = window.open("", "_blank");
+  if (!w) return;
+  const linhas = itens.map(it => `
+    <tr>
+      <td>${esc(it.sku)}</td>
+      <td>${esc(it.descricao)}</td>
+      <td>${esc(it.aro || "—")}</td>
+      <td style="text-align:right">${it.qtd.toLocaleString("pt-BR")}</td>
+      <td style="text-align:right">${brl(it.valor)}</td>
+    </tr>`).join("");
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
+<title>Estoque — ${esc(cliente)}</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;color:#1A2B3C;padding:26px}
+  h1{color:#1E3A5F;font-size:19px;margin:0 0 3px}
+  .sub{color:#8A9BB0;font-size:12px;margin-bottom:16px}
+  .barra{height:4px;background:linear-gradient(90deg,#FF6B00,#1E3A5F);margin-bottom:18px;border-radius:2px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{background:#1E3A5F;color:#fff;padding:9px 8px;text-align:left}
+  td{padding:7px 8px;border-bottom:1px solid #C5CDD8}
+  tfoot td{font-weight:700;border-top:2px solid #1E3A5F;padding-top:10px}
+  @media print{ body{padding:0} }
+</style></head><body>
+  <h1>Estoque Disponível — ${esc(cliente)}</h1>
+  <div class="sub">Superior Transportes · SBS Solution — gerado em ${new Date().toLocaleString("pt-BR")}</div>
+  <div class="barra"></div>
+  <table>
+    <thead><tr><th>SKU</th><th>Descrição</th><th>Aro</th><th style="text-align:right">Qtd.</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${linhas}</tbody>
+    <tfoot><tr><td colspan="3">TOTAL GERAL</td><td style="text-align:right">${qtdTotal.toLocaleString("pt-BR")}</td><td style="text-align:right">${brl(valorTotal)}</td></tr></tfoot>
+  </table>
+  <script>window.onload = () => window.print();</script>
+</body></html>`);
+  w.document.close();
+}
+
+function MonitorEstoque({ sub, usuario }) {
+  const subOn = (id) => subLiberado(sub, id);
+  const podeImportar = subOn("importar");
+
+  const [snapshot, setSnapshot] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [erroCarregar, setErroCarregar] = useState("");
+  const [importando, setImportando] = useState(false);
+  const [erroImportar, setErroImportar] = useState("");
+  const [msg, setMsg] = useState("");
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
+  const inputRef = React.useRef(null);
+
+  const [clienteAberto, setClienteAberto] = useState(null);
+  const [filtroAberto, setFiltroAberto] = useState(false);
+
+  const recarregar = useCallback(async () => {
+    setCarregando(true);
+    setErroCarregar("");
+    try {
+      const dados = await lerEstoque();
+      setSnapshot(dados);
+    } catch (e) {
+      console.error(e);
+      setErroCarregar("Não foi possível carregar o estoque. Verifique a conexão e tente novamente.");
+    } finally {
+      setCarregando(false);
+    }
+  }, []);
+
+  useEffect(() => { recarregar(); }, [recarregar]);
+
+  const handleArquivo = async (e) => {
+    const file = e.target.files?.[0];
+    if (inputRef.current) inputRef.current.value = "";
+    if (!file) return;
+    setErroImportar("");
+    setImportando(true);
+    try {
+      const nomeOk = /estoque_\d{8}/i.test(file.name);
+      const novo = await processarPlanilhaEstoque(file);
+      if (usuario) novo.importadoPor = usuario;
+      await storage.set(K_ESTOQUE, JSON.stringify(novo));
+      setSnapshot(novo);
+      flash(nomeOk
+        ? `Estoque atualizado a partir de "${file.name}".`
+        : `Estoque atualizado a partir de "${file.name}" (nome fora do padrão Estoque_DDMMAAAA — confira se era mesmo o arquivo mais recente).`);
+    } catch (e) {
+      console.error(e);
+      setErroImportar(e.message || "Falha ao importar o arquivo. Verifique se é a planilha correta do WMS.");
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  const atualizadoTexto = useMemo(() => {
+    if (!snapshot?.importadoEm) return null;
+    const d = new Date(snapshot.importadoEm);
+    return `${d.toLocaleDateString("pt-BR")} às ${d.toLocaleTimeString("pt-BR")}`;
+  }, [snapshot]);
+
+  const desatualizado = snapshot?.importadoEm
+    ? (Date.now() - snapshot.importadoEm) > ESTOQUE_TTL_DIAS * 24 * 60 * 60 * 1000
+    : false;
+
+  const todosItens = useMemo(() => {
+    if (!snapshot) return [];
+    return snapshot.clientes.flatMap(c => c.itens.map(it => ({ ...it, cliente: c.cliente })));
+  }, [snapshot]);
+
+  const clienteDetalhe = useMemo(() => {
+    if (!clienteAberto || !snapshot) return null;
+    return snapshot.clientes.find(c => c.cliente === clienteAberto) || null;
+  }, [clienteAberto, snapshot]);
+
+  const itensOrdenados = useMemo(
+    () => clienteDetalhe ? ordenarItensEstoque(clienteDetalhe.itens) : [],
+    [clienteDetalhe]);
+
+  if (carregando) {
+    return (
+      <div>
+        <SectionTitle icon={Boxes}>Estoque</SectionTitle>
+        <div style={styles.empty}><RefreshCw size={26} color={C.prataClaro} /><div style={{ marginTop: 8 }}>Carregando estoque…</div></div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <SectionTitle icon={Boxes}>
+        Estoque {snapshot && <Badge>{snapshot.clientes.length} {snapshot.clientes.length === 1 ? "cliente" : "clientes"}</Badge>}
+      </SectionTitle>
+
+      {msg && <div style={{ ...styles.toast, borderRadius: 8, marginBottom: 14 }}><CheckCircle2 size={16} /> {msg}</div>}
+      {erroCarregar && <div style={styles.erro}><AlertTriangle size={16} /> {erroCarregar}</div>}
+      {desatualizado && (
+        <div style={styles.alertBox}>
+          <AlertTriangle size={16} />
+          <div>Os dados de estoque têm mais de {ESTOQUE_TTL_DIAS} dias — {podeImportar ? "importe um arquivo mais recente." : "avise quem faz a importação."}</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, color: C.prata }}>
+          {atualizadoTexto ? <>Atualizado em: <strong style={{ color: C.texto }}>{atualizadoTexto}</strong>{snapshot.arquivo && <> · {snapshot.arquivo}</>}</>
+            : "Nenhum arquivo de estoque foi importado ainda."}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {snapshot && (
+            <button style={styles.btnGhost} onClick={() => setFiltroAberto(true)}>
+              <Filter size={15} /> Busca &amp; Filtros
+            </button>
+          )}
+          {podeImportar && (
+            <>
+              <input ref={inputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleArquivo} />
+              <button style={styles.btnPrimary} onClick={() => inputRef.current?.click()} disabled={importando}>
+                {importando ? <RefreshCw size={16} style={{ animation: "spin 1s linear infinite" }} /> : <FileSpreadsheet size={16} />}
+                {importando ? "Importando…" : "Importar Estoque"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {erroImportar && <div style={styles.erro}><AlertTriangle size={16} /> {erroImportar}</div>}
+
+      {!snapshot ? (
+        <EmptyState text={podeImportar
+          ? 'Nenhum estoque importado ainda — clique em "Importar Estoque" e selecione o arquivo mais recente da pasta.'
+          : "Nenhum estoque importado ainda. Peça para o responsável importar o arquivo mais recente do WMS."} />
+      ) : (
+        <div style={styles.opCardGrid}>
+          {snapshot.clientes.map(c => (
+            <div style={styles.card} key={c.cliente}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy, marginBottom: 12, lineHeight: 1.3 }}>
+                {c.cliente}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <span style={styles.kpiLabel}>Qtd. Disponível</span>
+                <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{c.qtdTotal.toLocaleString("pt-BR")}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 16 }}>
+                <span style={styles.kpiLabel}>Valor Disponível</span>
+                <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: C.verde }}>{brl(c.valorTotal)}</span>
+              </div>
+              <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center" }} onClick={() => setClienteAberto(c.cliente)}>
+                <Search size={15} /> Detalhes
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {clienteDetalhe && (
+        <Modal titulo={`Estoque — ${clienteDetalhe.cliente}`} largura={900} onFechar={() => setClienteAberto(null)}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>SKU</th>
+                  <th style={styles.th}>Descrição</th>
+                  <th style={styles.th}>Aro</th>
+                  <th style={{ ...styles.th, textAlign: "right" }}>Qtd.</th>
+                  <th style={{ ...styles.th, textAlign: "right" }}>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {itensOrdenados.map((it, i) => (
+                  <tr key={`${it.sku}_${i}`}>
+                    <td style={styles.tdMono}>{it.sku}</td>
+                    <td style={styles.td}>{it.descricao}</td>
+                    <td style={styles.td}>{it.aro || "—"}</td>
+                    <td style={{ ...styles.td, textAlign: "right" }}>{it.qtd.toLocaleString("pt-BR")}</td>
+                    <td style={{ ...styles.td, textAlign: "right" }}>{brl(it.valor)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={3} style={styles.tf}>TOTAL GERAL</td>
+                  <td style={{ ...styles.tfMono, textAlign: "right" }}>{clienteDetalhe.qtdTotal.toLocaleString("pt-BR")}</td>
+                  <td style={{ ...styles.tfMono, textAlign: "right" }}>{brl(clienteDetalhe.valorTotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+            <button style={styles.btnPrimary}
+              onClick={() => imprimirEstoqueCliente(clienteDetalhe.cliente, itensOrdenados, clienteDetalhe.qtdTotal, clienteDetalhe.valorTotal)}>
+              <FileText size={16} /> Imprimir
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {filtroAberto && snapshot && (
+        <FiltroEstoque
+          clientes={snapshot.clientes.map(c => c.cliente)}
+          todosItens={todosItens}
+          onFechar={() => setFiltroAberto(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* Tela 3 — Busca & Filtros. Cruza todos os clientes/itens de uma vez;
+   diferente da Tela 2 (Detalhes), que já vem restrita a um cliente. */
+function FiltroEstoque({ clientes, todosItens, onFechar }) {
+  const vazio = { cliente: "", sku: "", descricao: "", aros: [], qtdMin: "", qtdMax: "", valorMin: "", valorMax: "" };
+  const [draft, setDraft] = useState(vazio);
+  const [aplicado, setAplicado] = useState(null);
+
+  const toggleAro = (aro) => setDraft(d => ({
+    ...d, aros: d.aros.includes(aro) ? d.aros.filter(a => a !== aro) : [...d.aros, aro]
+  }));
+
+  const resultado = useMemo(() => {
+    if (!aplicado) return null;
+    const f = aplicado;
+    const toNum = (s) => s === "" ? null : Number(String(s).replace(",", "."));
+    const qMin = toNum(f.qtdMin) ?? -Infinity;
+    const qMax = toNum(f.qtdMax) ?? Infinity;
+    const vMin = toNum(f.valorMin) ?? -Infinity;
+    const vMax = toNum(f.valorMax) ?? Infinity;
+    const skuQ = f.sku.trim().toLowerCase();
+    const descQ = f.descricao.trim().toLowerCase();
+    return ordenarItensEstoque(todosItens.filter(it =>
+      (!f.cliente || it.cliente === f.cliente) &&
+      (!skuQ || it.sku.toLowerCase().includes(skuQ)) &&
+      (!descQ || it.descricao.toLowerCase().includes(descQ)) &&
+      (f.aros.length === 0 || f.aros.includes(it.aro)) &&
+      it.qtd >= qMin && it.qtd <= qMax &&
+      it.valor >= vMin && it.valor <= vMax
+    ));
+  }, [todosItens, aplicado]);
+
+  const totalResultado = useMemo(() => {
+    if (!resultado) return null;
+    return resultado.reduce((acc, it) => ({ qtd: acc.qtd + it.qtd, valor: acc.valor + it.valor }), { qtd: 0, valor: 0 });
+  }, [resultado]);
+
+  return (
+    <Modal titulo="Busca & Filtros — Estoque" largura={980} onFechar={onFechar}>
+      <div style={styles.formGrid}>
+        <Field label="Cliente">
+          <select value={draft.cliente} onChange={e => setDraft(d => ({ ...d, cliente: e.target.value }))} style={styles.input}>
+            <option value="">Todos os clientes</option>
+            {clientes.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="SKU (busca parcial)">
+          <input value={draft.sku} onChange={e => setDraft(d => ({ ...d, sku: e.target.value }))} style={styles.input} placeholder="Ex.: 12345" />
+        </Field>
+        <Field label="Descrição (busca parcial)">
+          <input value={draft.descricao} onChange={e => setDraft(d => ({ ...d, descricao: e.target.value }))} style={styles.input} placeholder="Ex.: pneu radial" />
+        </Field>
+        <Field label="Qtd. mínima">
+          <input value={draft.qtdMin} onChange={e => setDraft(d => ({ ...d, qtdMin: e.target.value }))} style={styles.input} inputMode="numeric" placeholder="0" />
+        </Field>
+        <Field label="Qtd. máxima">
+          <input value={draft.qtdMax} onChange={e => setDraft(d => ({ ...d, qtdMax: e.target.value }))} style={styles.input} inputMode="numeric" placeholder="Sem limite" />
+        </Field>
+        <Field label="Valor mínimo (R$)">
+          <input value={draft.valorMin} onChange={e => setDraft(d => ({ ...d, valorMin: e.target.value }))} style={styles.input} inputMode="decimal" placeholder="0" />
+        </Field>
+        <Field label="Valor máximo (R$)">
+          <input value={draft.valorMax} onChange={e => setDraft(d => ({ ...d, valorMax: e.target.value }))} style={styles.input} inputMode="decimal" placeholder="Sem limite" />
+        </Field>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <label style={styles.fieldLabel}>Aro</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {AROS_PADRAO.map(aro => (
+            <button key={aro} type="button" onClick={() => toggleAro(aro)}
+              style={draft.aros.includes(aro) ? { ...styles.chip, ...styles.chipOn } : styles.chip}>
+              {aro}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <button style={styles.btnGhost} onClick={() => { setDraft(vazio); setAplicado(null); }}>
+          <Eraser size={15} /> Limpar Filtros
+        </button>
+        <button style={styles.btnPrimary} onClick={() => setAplicado(draft)}>
+          <Filter size={15} /> Aplicar
+        </button>
+      </div>
+
+      {resultado && (
+        <div style={{ marginTop: 22 }}>
+          <div style={{ fontSize: 12.5, color: C.prata, marginBottom: 10 }}>
+            {resultado.length === 0 ? "Nenhum item encontrado com estes filtros." : `${resultado.length} ${resultado.length === 1 ? "item encontrado" : "itens encontrados"}`}
+          </div>
+          {resultado.length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Cliente</th>
+                    <th style={styles.th}>SKU</th>
+                    <th style={styles.th}>Descrição</th>
+                    <th style={styles.th}>Aro</th>
+                    <th style={{ ...styles.th, textAlign: "right" }}>Qtd.</th>
+                    <th style={{ ...styles.th, textAlign: "right" }}>Valor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultado.map((it, i) => (
+                    <tr key={`${it.cliente}_${it.sku}_${i}`}>
+                      <td style={styles.td}>{it.cliente}</td>
+                      <td style={styles.tdMono}>{it.sku}</td>
+                      <td style={styles.td}>{it.descricao}</td>
+                      <td style={styles.td}>{it.aro || "—"}</td>
+                      <td style={{ ...styles.td, textAlign: "right" }}>{it.qtd.toLocaleString("pt-BR")}</td>
+                      <td style={{ ...styles.td, textAlign: "right" }}>{brl(it.valor)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={4} style={styles.tf}>TOTAL DO FILTRO</td>
+                    <td style={{ ...styles.tfMono, textAlign: "right" }}>{totalResultado.qtd.toLocaleString("pt-BR")}</td>
+                    <td style={{ ...styles.tfMono, textAlign: "right" }}>{brl(totalResultado.valor)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
