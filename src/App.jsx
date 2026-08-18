@@ -5669,7 +5669,10 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
                       <span>{c.tipo?.label}</span>
                       {op.volume ? <span>{op.volume.toLocaleString("pt-BR")} un</span> : null}
-                      <span>{fmtDT(op.fim)}</span>
+                    </div>
+                    <div style={{ marginTop: 4 }}><LinhaPessoas op={op} /></div>
+                    <div style={{ fontSize: 11, color: C.prata, marginTop: 4 }}>
+                      {fmtDT(op.inicio)} → {fmtDT(op.fim)}
                     </div>
                   </div>
                 ))}
