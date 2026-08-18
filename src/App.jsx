@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Share2, Boxes, Timer, PauseCircle, PlayCircle
+  Camera, X, Share2, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -50,20 +50,37 @@ const PIN_ADMINISTRADOR = "130399";
    também precisam da lista, para montar o checklist de telas liberadas
    por perfil. */
 const TABS_GESTOR = [
-  { id: "operacoes", label: "Operações", sub: "Planejamento", icon: ClipboardList },
-  { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
-  { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
-  { id: "fotos", label: "Gerar Romaneio", sub: "Recebimento & Expedição", icon: FileText },
-  { id: "relatorios", label: "Relatório Gerencial", sub: "Excel & Diretoria", icon: FileSpreadsheet },
-  { id: "estoque", label: "Estoque", sub: "Saldo por cliente", icon: Boxes },
-  { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
-  { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
-  { id: "parametros", label: "Parâmetros", sub: "Valores & clientes", icon: Settings },
+  { id: "operacoes", label: "Programação", icon: ClipboardList },
+  { id: "acompanhar", label: "Acompanhamento", icon: Activity },
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "fotos", label: "Romaneio", icon: FileText },
+  { id: "relatorios", label: "Relatórios Gerenciais", icon: FileSpreadsheet },
+  { id: "estoque", label: "Importar Estoque", icon: Boxes },
+  { id: "ajustes", label: "Ajustes", icon: Eraser },
+  { id: "rateio", label: "Rateio", icon: Users },
+  { id: "parametros", label: "Parâmetros", icon: Settings },
   /* RBAC v2 fase 2: cadastro de perfis próprios (PIN + telas). Fica no
      mesmo TABS_GESTOR porque tanto o Gestor quanto o Administrador
      enxergam essa aba — o que muda é quem pode desligá-la (só o
      Administrador, em "Telas do Gestor"). */
-  { id: "perfis", label: "Perfis", sub: "Cadastro de acessos", icon: Lock }
+  { id: "perfis", label: "Perfis e Usuários", icon: Lock }
+];
+
+/* Menu lateral (sidebar) — combinado com Pablo em 18/ago/2026, quando a
+   barra horizontal de abas virou menu lateral agrupado, com os textos de
+   apoio (o antigo `sub` de cada aba) removidos. Cada entrada aponta pro
+   MESMO id de TABS_GESTOR (ou "coletor"/"comercial", que não são abas de
+   verdade — ver TELA_COLETOR/TELA_COMERCIAL abaixo) — só a organização
+   visual mudou; RBAC (permissoesGestor / perfil.telas) continua igual,
+   sem precisar mexer em nada já salvo no Firestore. */
+const MENU_LATERAL = [
+  { tipo: "grupo", id: "planejamento", label: "Planejamento", icon: ClipboardList,
+    itens: ["operacoes", "acompanhar", "fotos", "estoque", "ajustes", "rateio", "coletor"] },
+  { tipo: "item", id: "dashboard" },
+  { tipo: "item", id: "relatorios" },
+  { tipo: "grupo", id: "cadastros", label: "Cadastros", icon: Database,
+    itens: ["parametros", "perfis"] },
+  { tipo: "item", id: "comercial" }
 ];
 
 /* Tela do Coletor — o app do Conferente (registro de início/fim de operação
@@ -1266,6 +1283,15 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
   const gestores = params.gestores || [];
   const perfis = params.perfis || [];
   const pessoasPerfil = params.pessoasPerfil || [];
+  /* Duas colunas na tela de acesso (combinado com Pablo em 18/ago/2026):
+     coluna 1 = acesso do dia a dia (Gestor, Conferente e os perfis
+     próprios marcados coluna 1 — que é o padrão de todo perfil novo, ver
+     criarPerfil em GestaoAcessos); coluna 2 = perfis de uso menos
+     frequente (só quem o Administrador marcar explicitamente coluna 2 em
+     "Perfis e Usuários"). */
+  const perfisVisiveis = perfis.filter(p => !p.linkProprio);
+  const perfisColuna1 = perfisVisiveis.filter(p => p.coluna !== 2);
+  const perfisColuna2 = perfisVisiveis.filter(p => p.coluna === 2);
   /* Sem conferente cadastrado, o acesso segue livre — senão o app trava
      numa instalação nova, antes de o gestor conseguir cadastrar alguém. */
   const exigePin = conferentes.length > 0;
@@ -1362,7 +1388,7 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
       <div style={styles.accentBar} />
 
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div style={{ width: "100%", maxWidth: 460 }}>
+        <div style={{ width: "100%", maxWidth: pedirPin ? 460 : 860 }}>
           {onVoltar && (
             <button style={{ ...styles.btnGhost, fontSize: 12.5, marginBottom: 16 }} onClick={onVoltar}>
               ← Voltar ao Sistema de Gestão
@@ -1376,45 +1402,70 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
           </p>
 
           {!pedirPin ? (
-            <div style={{ display: "grid", gap: 14 }}>
-              <button style={styles.portaBtn} onClick={entrarConferente}>
-                <div style={{ ...styles.portaIcon, background: "#EAF6EE" }}><HardHat size={26} color={C.supVerde} strokeWidth={2.2} /></div>
-                <div style={{ textAlign: "left" }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>CONFERENTE</div>
-                  <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>
-                    Registrar início e fim das operações{exigePin && <> <Lock size={11} style={{ verticalAlign: -1 }} /></>}
-                  </div>
-                </div>
-              </button>
-              <button style={styles.portaBtn} onClick={() => { setPedirPin("gestor"); setPin(""); setErro(""); setModoRedefinir(false); }}>
-                <div style={{ ...styles.portaIcon, background: "#EEF2F8" }}><Briefcase size={26} color={C.navy2} strokeWidth={2.2} /></div>
-                <div style={{ textAlign: "left" }}>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
-                    GESTOR <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
-                  </div>
-                  <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Cadastro, acompanhamento, custos e metas</div>
-                </div>
-              </button>
-              {/* Perfis próprios criados pelo Gestor ou pelo Administrador na
-                  aba "Perfis" — cada um vira um botão aqui, na ordem em que
-                  foi cadastrado. Perfil com link próprio (linkProprio) fica
-                  de fora: quem tem esse perfil entra só pelo link dele
-                  (PortaLinkProprio), nunca por aqui — combinado com Pablo em
-                  17/ago/2026, pra não abrir uma segunda porta pro mesmo
-                  acesso com validação mais fraca (PIN cego em vez de
-                  nome + senha). */}
-              {perfis.filter(p => !p.linkProprio).map(p => (
-                <button key={p.id} style={styles.portaBtn}
-                  onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); setModoRedefinir(false); }}>
-                  <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+              {/* Coluna 1 — acesso do dia a dia: Gestor, perfis próprios marcados
+                 coluna 1 (padrão de todo perfil novo — ver criarPerfil em
+                 GestaoAcessos) e Conferente por último. Combinado com Pablo em
+                 18/ago/2026. */}
+              <div style={{ display: "grid", gap: 14, flex: "1 1 320px" }}>
+                <button style={styles.portaBtn} onClick={() => { setPedirPin("gestor"); setPin(""); setErro(""); setModoRedefinir(false); }}>
+                  <div style={{ ...styles.portaIcon, background: "#EEF2F8" }}><Briefcase size={26} color={C.navy2} strokeWidth={2.2} /></div>
                   <div style={{ textAlign: "left" }}>
                     <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
-                      {p.nome.toUpperCase()} <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
+                      GESTOR <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
                     </div>
-                    <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfil de acesso próprio</div>
+                    <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Cadastro, acompanhamento, custos e metas</div>
                   </div>
                 </button>
-              ))}
+                {/* Perfis próprios criados pelo Gestor ou pelo Administrador na
+                    aba "Perfis e Usuários" — cada um vira um botão aqui, na
+                    ordem em que foi cadastrado. Perfil com link próprio
+                    (linkProprio) fica de fora: quem tem esse perfil entra só
+                    pelo link dele (PortaLinkProprio), nunca por aqui —
+                    combinado com Pablo em 17/ago/2026, pra não abrir uma
+                    segunda porta pro mesmo acesso com validação mais fraca
+                    (PIN cego em vez de nome + senha). */}
+                {perfisColuna1.map(p => (
+                  <button key={p.id} style={styles.portaBtn}
+                    onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); setModoRedefinir(false); }}>
+                    <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
+                    <div style={{ textAlign: "left" }}>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
+                        {p.nome.toUpperCase()} <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
+                      </div>
+                      <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfil de acesso próprio</div>
+                    </div>
+                  </button>
+                ))}
+                <button style={styles.portaBtn} onClick={entrarConferente}>
+                  <div style={{ ...styles.portaIcon, background: "#EAF6EE" }}><HardHat size={26} color={C.supVerde} strokeWidth={2.2} /></div>
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>CONFERENTE</div>
+                    <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>
+                      Registrar início e fim das operações{exigePin && <> <Lock size={11} style={{ verticalAlign: -1 }} /></>}
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Coluna 2 — perfis de uso menos frequente (só quem o
+                 Administrador marcar coluna 2 em "Perfis e Usuários"). */}
+              {perfisColuna2.length > 0 && (
+                <div style={{ display: "grid", gap: 14, flex: "1 1 320px" }}>
+                  {perfisColuna2.map(p => (
+                    <button key={p.id} style={styles.portaBtn}
+                      onClick={() => { setPedirPin("perfil"); setPerfilAlvo(p); setPin(""); setErro(""); setModoRedefinir(false); }}>
+                      <div style={{ ...styles.portaIcon, background: "#EAF6EC" }}><Lock size={24} color={C.verde} strokeWidth={2.2} /></div>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: C.navy }}>
+                          {p.nome.toUpperCase()} <Lock size={13} style={{ verticalAlign: -1, marginLeft: 3 }} />
+                        </div>
+                        <div style={{ fontSize: 12.5, color: C.prata, marginTop: 2 }}>Perfil de acesso próprio</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ) : modoRedefinir ? (
             <div style={{ ...styles.card, textAlign: "center" }}>
@@ -2227,7 +2278,20 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
    APP DO GESTOR
    ============================================================ */
 function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, persistParams, diasTerc, persistDiasTerc, now, sair, sync, recarregar, usuario, permissoes, tituloPainel, sub }) {
-  const [tab, setTab] = useState("operacoes");
+  /* Tela principal ao abrir: Dashboard, para todos os perfis (combinado
+     com Pablo em 18/ago/2026 — antes era Operações/Programação). Se o
+     perfil não tiver Dashboard liberado, o efeito abaixo (TABS.length &&
+     !TABS.some...) já cai pra primeira aba que ele de fato tem. */
+  const [tab, setTab] = useState("dashboard");
+  /* Menu lateral — combinado com Pablo em 18/ago/2026 (troca a barra
+     horizontal de abas). menuMobileAberto só tem efeito visual abaixo de
+     880px (gaveta deslizante, ver .sbs-sidebar no FontInject); acima
+     disso o menu já fica sempre visível, então o estado simplesmente não
+     é consultado por nenhum CSS. gruposAbertos começa com os dois grupos
+     abertos — Pablo pediu que fossem retráteis, não necessariamente que
+     começassem fechados. */
+  const [menuMobileAberto, setMenuMobileAberto] = useState(false);
+  const [gruposAbertos, setGruposAbertos] = useState({ planejamento: true, cadastros: true });
   /* permissoes: quando vem preenchido (perfil customizado logado via
      modo "perfil"), filtra por ele; senão usa params.permissoesGestor —
      o mesmo componente atende o Gestor e qualquer perfil criado na aba
@@ -2289,16 +2353,39 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
       sair={TABS.length > 0 ? () => setModoColetor(false) : sair} sync={sync} recarregar={recarregar} />;
   }
 
+  /* Resolve uma entrada do MENU_LATERAL (id de TABS_GESTOR, ou "coletor"/
+     "comercial") pro objeto que a tela realmente usa — já filtrando por
+     RBAC (TABS/podeColetor/podeComercial) e marcando os dois casos
+     especiais (que não são `tab`, viram outra coisa ao clicar). */
+  const resolverItemMenu = (id) => {
+    if (id === "coletor") return podeColetor ? { id, label: "Acesso Coletor", icon: HardHat, especial: "coletor" } : null;
+    if (id === "comercial") return podeComercial ? { id, label: "Comercial", icon: DollarSign, especial: "comercial" } : null;
+    return TABS.find(t => t.id === id) || null;
+  };
+  const clicarItemMenu = (item) => {
+    if (item.especial === "coletor") setModoColetor(true);
+    else if (item.especial === "comercial") window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer");
+    else setTab(item.id);
+    setMenuMobileAberto(false);
+  };
+  const itemAtivo = (item) => item.especial === "coletor" ? false : item.especial === "comercial" ? false : tab === item.id;
+
   return (
     <div style={styles.page}>
       <FontInject />
       <header style={styles.header}>
-        <div style={{ color: C.branco }}>
-          <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
-            <Briefcase size={16} /> {tituloPainel ? `PAINEL · ${tituloPainel.toUpperCase()}` : "PAINEL DO GESTOR"}
-          </div>
-          <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
-            {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="sbs-hamburguer" style={{ ...styles.headerBtn, display: "none" }}
+            onClick={() => setMenuMobileAberto(v => !v)} title="Menu" aria-label="Abrir menu">
+            <Menu size={18} />
+          </button>
+          <div style={{ color: C.branco }}>
+            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14.5, display: "flex", alignItems: "center", gap: 7 }}>
+              <Briefcase size={16} /> {tituloPainel ? `PAINEL · ${tituloPainel.toUpperCase()}` : "PAINEL DO GESTOR"}
+            </div>
+            <div style={{ fontFamily: "'Roboto',sans-serif", fontSize: 11, color: C.prata }}>
+              {usuario ? <>{usuario} · Recebimento &amp; Expedição</> : <>Recebimento &amp; Expedição · Lean Logística</>}
+            </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -2311,51 +2398,59 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
       </header>
       <div style={styles.accentBar} />
 
-      <nav className="scroll-x" onWheel={rolarNaHorizontal} style={styles.tabNav}>
-        {TABS.map(t => {
-          const Ic = t.icon, active = tab === t.id;
-          return (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{ ...styles.tabBtn, ...(active ? styles.tabBtnActive : {}) }}>
-              <Ic size={18} strokeWidth={2.2} />
-              <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
-                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{t.label}</span>
-                <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>{t.sub}</span>
-              </span>
-            </button>
-          );
-        })}
-        {podeColetor && (
-          <button onClick={() => setModoColetor(true)} style={styles.tabBtn}>
-            <HardHat size={18} strokeWidth={2.2} />
-            <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
-              <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coletor</span>
-              <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>Tela do Conferente</span>
-            </span>
-          </button>
-        )}
-        {podeComercial && (
-          <button onClick={() => window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer")} style={styles.tabBtn}>
-            <DollarSign size={18} strokeWidth={2.2} />
-            <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.15 }}>
-              <span style={{ fontWeight: 700, fontSize: 13.5 }}>Comercial</span>
-              <span style={{ fontSize: 10, opacity: .75, fontWeight: 500 }}>Abre em nova aba</span>
-            </span>
-          </button>
-        )}
-      </nav>
+      <div style={styles.sidebarShell}>
+        <div className={`sbs-sidebar-backdrop${menuMobileAberto ? " aberta" : ""}`} onClick={() => setMenuMobileAberto(false)} />
+        <nav className={`sbs-sidebar${menuMobileAberto ? " aberta" : ""}`} style={styles.sidebar}>
+          {MENU_LATERAL.map(entrada => {
+            if (entrada.tipo === "item") {
+              const item = resolverItemMenu(entrada.id);
+              if (!item) return null;
+              const Ic = item.icon, ativo = itemAtivo(item);
+              return (
+                <button key={item.id} onClick={() => clicarItemMenu(item)}
+                  style={{ ...styles.sidebarItem, ...(ativo ? styles.sidebarItemAtivo : {}) }}>
+                  <Ic size={18} strokeWidth={2.2} /> {item.label}
+                </button>
+              );
+            }
+            const itensResolvidos = entrada.itens.map(resolverItemMenu).filter(Boolean);
+            if (itensResolvidos.length === 0) return null;
+            const GrupoIc = entrada.icon, aberto = gruposAbertos[entrada.id];
+            return (
+              <div key={entrada.id}>
+                <button onClick={() => setGruposAbertos(g => ({ ...g, [entrada.id]: !g[entrada.id] }))}
+                  style={styles.sidebarGrupo}>
+                  <GrupoIc size={17} strokeWidth={2.2} />
+                  <span style={{ flex: 1, textAlign: "left" }}>{entrada.label}</span>
+                  <ChevronDown size={15} style={{ transform: aberto ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+                </button>
+                {aberto && itensResolvidos.map(item => {
+                  const Ic = item.icon, ativo = itemAtivo(item);
+                  return (
+                    <button key={item.id} onClick={() => clicarItemMenu(item)}
+                      style={{ ...styles.sidebarSubItem, ...(ativo ? styles.sidebarItemAtivo : {}) }}>
+                      <Ic size={16} strokeWidth={2.2} /> {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
 
-      <main style={styles.main}>
-        {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
-        {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} sub={subAba} />}
-        {tab === "dashboard" && <Dashboard ops={ops} opsForecast={opsForecast} anonimizarCliente={anonimizarCliente} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
-        {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
-        {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
-        {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
-        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} clienteRestrito={clienteRestrito} />}
-        {tab === "estoque" && <MonitorEstoque sub={subAba} usuario={usuario} clienteRestrito={clienteRestrito} />}
-        {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} sub={subAba} />}
-        {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
-      </main>
+        <main style={{ flex: 1, minWidth: 0, padding: "22px 26px" }}>
+          {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
+          {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} sub={subAba} />}
+          {tab === "dashboard" && <Dashboard ops={ops} opsForecast={opsForecast} anonimizarCliente={anonimizarCliente} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
+          {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
+          {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
+          {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
+          {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} clienteRestrito={clienteRestrito} />}
+          {tab === "estoque" && <MonitorEstoque sub={subAba} usuario={usuario} clienteRestrito={clienteRestrito} />}
+          {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} sub={subAba} />}
+          {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
+        </main>
+      </div>
 
       <RodapeSBS direita={<>Monitor Operacional · Superior Transportes<br />Dados compartilhados entre gestor e conferentes</>} />
     </div>
@@ -2664,6 +2759,14 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
     setDraftPerfis(d => d.map(p => p.id === perfilId ? { ...p, nome } : p));
     mudou();
   };
+  /* Coluna do perfil na tela "Como você vai acessar?" (combinado com Pablo
+     em 18/ago/2026): 1 = acesso do dia a dia, 2 = uso menos frequente.
+     Ausente/1 = coluna 1 — mesma regra opt-out do resto do RBAC, então um
+     perfil salvo antes desta fase continua aparecendo na coluna 1. */
+  const setPerfilColuna = (perfilId, coluna) => {
+    setDraftPerfis(d => d.map(p => p.id === perfilId ? { ...p, coluna } : p));
+    mudou();
+  };
   const removerPerfil = (perfilId) => {
     setDraftPerfis(d => d.filter(p => p.id !== perfilId));
     /* pessoa sem perfil ficaria com PIN órfão e sem tela nenhuma */
@@ -2677,7 +2780,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
     if (NOMES_RESERVADOS.includes(nome.toLowerCase())) return setErroPerfil('Esse nome é reservado — use outro (ex.: "Administrativo").');
     if (draftPerfis.some(p => p.nome.toLowerCase() === nome.toLowerCase())) return setErroPerfil("Já existe um perfil com esse nome.");
     if (!Object.values(formPerfil.telas).some(Boolean)) return setErroPerfil("Marque pelo menos uma aba para o novo perfil.");
-    const novo = { id: uid(), nome, telas: { ...formPerfil.telas }, sub: { ...formPerfil.sub } };
+    const novo = { id: uid(), nome, telas: { ...formPerfil.telas }, sub: { ...formPerfil.sub }, coluna: 1 };
     if (formPerfil.linkProprio) { novo.linkProprio = true; novo.slug = slugUnico(nome, draftPerfis); }
     setDraftPerfis(d => [...d, novo]);
     setFormPerfil(null); setErroPerfil(""); setPerfilAberto(novo.id); mudou();
@@ -3078,6 +3181,25 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                         <div style={{ ...styles.infoBox, marginBottom: 14 }}>
                           <div style={{ fontWeight: 700, marginBottom: 6 }}>Link para compartilhar:</div>
                           <BotaoCopiarLink link={`${window.location.origin}${window.location.pathname}?portal=${perfil.slug}`} />
+                        </div>
+                      )}
+                      {!perfil.linkProprio && (
+                        <div style={{ marginBottom: 14 }}>
+                          <label style={styles.fieldLabel}>Coluna na tela "Como você vai acessar?"</label>
+                          <div style={{ display: "flex", gap: 8, maxWidth: 300, marginBottom: 4 }}>
+                            <button type="button" onClick={() => setPerfilColuna(perfil.id, 1)}
+                              style={(perfil.coluna || 1) === 1 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
+                              Coluna 1
+                            </button>
+                            <button type="button" onClick={() => setPerfilColuna(perfil.id, 2)}
+                              style={perfil.coluna === 2 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
+                              Coluna 2
+                            </button>
+                          </div>
+                          <div style={{ fontSize: 11, color: C.prata, lineHeight: 1.4 }}>
+                            Coluna 1 = acesso do dia a dia (Gestor, Conferente ficam aqui). Coluna 2 = uso menos
+                            frequente. Todo perfil novo nasce na coluna 1.
+                          </div>
                         </div>
                       )}
                       <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
@@ -9648,6 +9770,25 @@ function FontInject() {
     @media (prefers-reduced-motion: reduce) {
       .alerta-meta, .critico-meta, .piscar { animation: none; }
     }
+    /* Menu lateral — combinado com Pablo em 18/ago/2026: no celular vira
+       gaveta (some fora da tela, um botão de hambúrguer abre/fecha); no
+       desktop fica sempre visível, fixo à esquerda (regra padrão, sem
+       nada aqui — as classes abaixo só entram em telas estreitas). */
+    .sbs-hamburguer { display: none; }
+    .sbs-sidebar-backdrop { display: none; }
+    @media (max-width: 880px) {
+      .sbs-hamburguer { display: flex !important; }
+      .sbs-sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 3000;
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+        box-shadow: 3px 0 18px rgba(0,0,0,.28);
+      }
+      .sbs-sidebar.aberta { transform: translateX(0); }
+      .sbs-sidebar-backdrop.aberta {
+        display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 2999;
+      }
+    }
   `}</style>;
 }
 /* ---------- seção recolhível ----------
@@ -10054,6 +10195,16 @@ const styles = {
   tabNav: { display: "flex", gap: 4, padding: "0 16px", background: C.branco, borderBottom: `1px solid ${C.prataClaro}`, overflowX: "auto" },
   tabBtn: { display: "flex", alignItems: "center", gap: 8, padding: "13px 13px", border: "none", background: "transparent", color: C.prata, cursor: "pointer", borderBottom: "3px solid transparent", fontFamily: "'Montserrat',sans-serif", whiteSpace: "nowrap" },
   tabBtnActive: { color: C.navy, borderBottomColor: C.laranja },
+  /* Menu lateral — combinado com Pablo em 18/ago/2026 (substitui a barra
+     horizontal de abas acima). ".sbs-sidebar"/".sbs-sidebar-backdrop" (ver
+     FontInject) cuidam do comportamento de gaveta no celular; estes
+     estilos aqui cuidam só da aparência. */
+  sidebarShell: { display: "flex", alignItems: "stretch" },
+  sidebar: { width: 250, flexShrink: 0, background: C.branco, borderRight: `1px solid ${C.prataClaro}`, padding: "14px 12px", overflowY: "auto" },
+  sidebarItem: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "11px 14px", border: "none", background: "transparent", color: C.texto, cursor: "pointer", borderRadius: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13.5, textAlign: "left", marginBottom: 3 },
+  sidebarItemAtivo: { background: "#EEF2F8", color: C.navy },
+  sidebarGrupo: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "11px 14px", border: "none", background: "transparent", color: C.navy2, cursor: "pointer", borderRadius: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 11.5, textTransform: "uppercase", letterSpacing: .3 },
+  sidebarSubItem: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px 10px 30px", border: "none", background: "transparent", color: C.texto, cursor: "pointer", borderRadius: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 600, fontSize: 13, textAlign: "left", marginBottom: 2 },
   main: { padding: "22px 26px", maxWidth: 1220, margin: "0 auto" },
   secTitle: { fontFamily: "'Montserrat',sans-serif", fontSize: 18, fontWeight: 800, color: C.navy, borderLeft: `5px solid ${C.navy}`, paddingLeft: 12, margin: "26px 0 14px", display: "flex", alignItems: "center", gap: 9, lineHeight: 1.3 },
   card: { background: C.branco, border: `1px solid ${C.prataClaro}`, borderRadius: 10, padding: 20, boxShadow: "0 2px 10px rgba(30,58,95,.06)" },
