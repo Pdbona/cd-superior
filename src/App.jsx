@@ -8951,11 +8951,16 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
     <td class="m">${(r.ops ? (r.noPrazo / r.ops) * 100 : 0).toFixed(0)}%</td></tr>`).join("");
 
   const tempoMedioPeriodo = agg.n ? agg.horasReais / agg.n : 0;
+  /* tempo previsto no mês por tipo = soma das metaHoras de cada operação
+     programada daquele tipo (planoPorTipo já acumula isso em r.horas).
+     Antes usava a média genérica de operações já realizadas (tempoMedioPeriodo)
+     multiplicada pela quantidade programada — mesma média para todo tipo,
+     ignorando a metaHoras específica de cada um. */
   const linhasPlanoTipo = (planoPorTipo || []).map(r => `<tr>
     <td class="b">${esc(r.tipo)}</td><td class="m">${r.ops}</td>
     <td class="m">${nf(r.volume)}</td>
     <td class="m">${nf(Math.round(r.ops ? r.volume / r.ops : 0))}</td>
-    <td class="m">${hhmm(tempoMedioPeriodo * r.ops)}</td></tr>`).join("");
+    <td class="m">${hhmm(r.horas)}</td></tr>`).join("");
 
   const volPlanejado = planejadas.reduce((s, x) => s + (x.op.volume || 0), 0);
   const volumeMedioPeriodo = agg.n ? agg.volume / agg.n : 0;
@@ -9091,7 +9096,7 @@ ${plano ? `<main>
   ${linhasPlanoTipo ? `
   <h2 class="sec">Programação por Tipo de Operação</h2>
   <table>
-    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume previsto</th><th>Volume médio</th><th>Tempo médio mês</th></tr></thead>
+    <thead><tr><th>Tipo de operação</th><th>Operações</th><th>Volume previsto</th><th>Volume médio</th><th>Tempo previsto mês</th></tr></thead>
     <tbody>${linhasPlanoTipo}</tbody>
   </table>` : ""}
 
