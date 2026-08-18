@@ -420,6 +420,10 @@ async function salvarFotos({ op, momento, fotos, usuario }) {
     /* referência do cliente (NF/pedido do lado do cliente) — campo ainda não
        existe no cadastro da operação; propagado assim que existir */
     refCliente: op.refCliente ?? anterior.refCliente ?? null,
+    /* motorista — capturado no fechamento (ver AppConferente/finalizar);
+       propagado pro romaneio (abrirRomaneio). */
+    motorista: op.motorista ?? anterior.motorista ?? null,
+    motoristaCpf: op.motoristaCpf ?? anterior.motoristaCpf ?? null,
     /* a contagem da retenção começa na PRIMEIRA captura da operação,
        para que o par início/fim expire junto e não fique meia evidência */
     expiraEm: (anterior.criadoEm || agora) + RETENCAO_MS
@@ -618,6 +622,19 @@ const slugUnico = (nome, perfis, exceto) => {
   return slug;
 };
 const brl = (v) => "R$ " + (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/* CPF do motorista, no fechamento da operação (combinado com Pablo em
+   18/ago/2026) — só valida FORMATO (11 dígitos), sem checar o dígito
+   verificador: um conferente em campo, sob pressão, não pode ficar
+   travado por um CPF real digitado errado numa casa. */
+const cpfDigits = (v) => String(v || "").replace(/\D/g, "").slice(0, 11);
+const cpfMascara = (v) => {
+  const d = cpfDigits(v);
+  return d
+    .replace(/(\d{3})(\d)/, "$1.$2")
+    .replace(/(\d{3})(\d)/, "$1.$2")
+    .replace(/(\d{3})(\d{1,2})$/, "$1-$2");
+};
+const cpfExibicao = (v) => { const d = cpfDigits(v); return d.length === 11 ? cpfMascara(d) : (v || ""); };
 const hhmm = (h) => {
   if (h == null) return "—";
   const m = Math.round(h * 60);
@@ -1781,6 +1798,12 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
   const [fotosIni, setFotosIni] = useState({});
   const [fotosFim, setFotosFim] = useState({});
   const [volReal, setVolReal] = useState({});
+  /* Motorista — nome e CPF de quem retira/entrega a carga, obrigatórios
+     antes de finalizar (combinado com Pablo em 18/ago/2026), pra constar
+     no romaneio junto com a assinatura do conferente. Por operação, igual
+     a volReal/obs. */
+  const [motoristaNome, setMotoristaNome] = useState({});
+  const [motoristaCpf, setMotoristaCpf] = useState({});
   const [salvando, setSalvando] = useState(null);
   /* motivo selecionado para pausar, por operação */
   const [pausaMotivoSel, setPausaMotivoSel] = useState({});
@@ -1907,6 +1930,14 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     if (!bruto || isNaN(vr) || vr <= 0) {
       return alertar("Informe a quantidade de volumes antes de finalizar.");
     }
+    const nomeMotorista = (motoristaNome[id] || "").trim();
+    if (!nomeMotorista) {
+      return alertar("Informe o nome do motorista antes de finalizar.");
+    }
+    const cpfMotorista = cpfDigits(motoristaCpf[id]);
+    if (cpfMotorista.length !== 11) {
+      return alertar("Informe o CPF do motorista (11 dígitos) antes de finalizar.");
+    }
     const fotos = fotosFim[id] || [];
     const minFim = minFotosFim(alvo);
     if (fotos.length < minFim) {
@@ -1916,12 +1947,15 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
     setSalvando(id);
     const atualizada = { ...alvo, status: "concluida", fim: Date.now(),
       conferenteFim: usuario || null, volumeReal: vr,
+      motorista: nomeMotorista, motoristaCpf: cpfMotorista,
       observacao: obs[id] ?? alvo.observacao ?? "" };
     try {
       await salvarFotos({ op: atualizada, momento: "fim", fotos, usuario });
       await persistOps(ops.map(o => o.id === id ? atualizada : o));
       setFotosFim(d => { const n = { ...d }; delete n[id]; return n; });
       setVolReal(d => { const n = { ...d }; delete n[id]; return n; });
+      setMotoristaNome(d => { const n = { ...d }; delete n[id]; return n; });
+      setMotoristaCpf(d => { const n = { ...d }; delete n[id]; return n; });
       confirmar("Operação finalizada e registrada!");
     } catch (e) {
       console.error(e);
@@ -2194,6 +2228,27 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                           })()}
                         </div>
 
+                        {/* Motorista — obrigatório antes de finalizar (combinado
+                            com Pablo em 18/ago/2026): vai pro romaneio junto com
+                            a assinatura do conferente. */}
+                        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                          <div style={{ flex: "1 1 200px" }}>
+                            <label style={styles.fieldLabel}>Nome do Motorista *</label>
+                            <input type="text" style={{ ...styles.input, width: "100%" }}
+                              placeholder="Nome completo"
+                              value={motoristaNome[op.id] ?? ""}
+                              onChange={e => setMotoristaNome(d => ({ ...d, [op.id]: e.target.value }))} />
+                          </div>
+                          <div style={{ flex: "1 1 160px" }}>
+                            <label style={styles.fieldLabel}>CPF do Motorista *</label>
+                            <input type="text" inputMode="numeric" maxLength={14}
+                              style={{ ...styles.input, width: "100%", fontFamily: "'Roboto Mono',monospace" }}
+                              placeholder="000.000.000-00"
+                              value={cpfMascara(motoristaCpf[op.id] || "")}
+                              onChange={e => setMotoristaCpf(d => ({ ...d, [op.id]: cpfDigits(e.target.value) }))} />
+                          </div>
+                        </div>
+
                         <CapturaFotos
                           fotos={fotosFim[op.id] || []}
                           setFotos={(f) => setFotosFim(d => ({ ...d, [op.id]: f }))}
@@ -2205,7 +2260,9 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
 
                         {(() => {
                           const vr = parseInt(volReal[op.id], 10);
-                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= minFotosFim(op);
+                          const prontoFim = vr > 0 && (fotosFim[op.id] || []).length >= minFotosFim(op)
+                            && (motoristaNome[op.id] || "").trim().length > 0
+                            && cpfDigits(motoristaCpf[op.id]).length === 11;
                           const gravando = salvando === op.id;
                           return (
                             <button
@@ -6422,13 +6479,13 @@ function abrirRomaneio(reg, pacote, dados) {
   .avaria-box.com { border-left-color: #C62828; }
   .avaria-status { font-size: 9.5px; font-weight: 800; text-transform: uppercase; color: #2E7D32; margin-bottom: 4px; }
   .avaria-box.com .avaria-status { color: #C62828; }
-  .rodape-assinatura { display: flex; justify-content: space-between; margin-top: 18px; padding-top: 14px; border-top: 1px solid #e0e0e0; }
+  .rodape-assinatura { display: flex; justify-content: space-between; gap: 24px; margin-top: 18px; padding-top: 14px; border-top: 1px solid #e0e0e0; }
   .assinatura-col { text-align: center; flex: 1; }
-  .assinatura-label { font-size: 8.5px; color: #8A9BB0; text-transform: uppercase; margin-bottom: 16px; }
-  .assinatura-linha { border-top: 1px solid #1A2B3C; width: 70%; margin: 0 auto 4px; }
-  .assinatura-nome { font-size: 9.5px; font-weight: 700; }
-  .meta-col { font-size: 8.5px; color: #8A9BB0; line-height: 1.7; flex: 1; text-align: center; }
-  .footer { margin-top: 28px; background: #003d7a; color: #fff; padding: 10px 16px; border-top: 3px solid #FF6B00; display: flex; align-items: center; justify-content: space-between; }
+  .assinatura-label { font-size: 8.5px; color: #8A9BB0; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 6px; }
+  .assinatura-nome { font-size: 12.5px; font-weight: 700; color: #1A2B3C; margin-bottom: 14px; }
+  .assinatura-linha { border-top: 1px solid #1A2B3C; width: 80%; margin: 0 auto; }
+  .assinatura-cpf { font-size: 8.5px; color: #8A9BB0; margin-top: 4px; }
+  .footer { margin-top: 28px; background: #003d7a; color: #fff; padding: 10px 16px; border-top: 3px solid #FF6B00; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   .footer img { height: 20px; vertical-align: middle; margin-right: 6px; opacity: .9; border-radius: 8px; }
   .footer-txt { font-size: 8px; }
 </style>
@@ -6498,18 +6555,21 @@ function abrirRomaneio(reg, pacote, dados) {
 
   <div class="rodape-assinatura">
     <div class="assinatura-col">
-      <div class="assinatura-label">Assinado por</div>
-      <div class="assinatura-linha"></div>
+      <div class="assinatura-label">Conferente</div>
       <div class="assinatura-nome">${reg.conferenteInicio || "Operação Superior"}</div>
+      <div class="assinatura-linha"></div>
     </div>
-    <div class="meta-col">
-      <div><strong>Referência:</strong> ${reg.ref}</div>
-      <div>Documento gerado automaticamente pelo sistema</div>
+    <div class="assinatura-col">
+      <div class="assinatura-label">Motorista</div>
+      <div class="assinatura-nome">${reg.motorista || "—"}</div>
+      <div class="assinatura-linha"></div>
+      ${reg.motoristaCpf ? `<div class="assinatura-cpf">CPF ${cpfExibicao(reg.motoristaCpf)}</div>` : ""}
     </div>
   </div>
 
   <div class="footer">
     <div><img src="${SBS_LOGO}" alt="SBS" /><span class="footer-txt">Desenvolvido por SBS Solution</span></div>
+    <div class="footer-txt">Documento gerado automaticamente pelo sistema</div>
   </div>
 </div>
 <script>document.title = "${nomeArquivo}_${(reg.ref || "").replace(/[^a-zA-Z0-9-]/g, "_")}";</script>
