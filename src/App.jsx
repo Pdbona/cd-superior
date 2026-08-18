@@ -5362,20 +5362,36 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
       todasDoDia.forEach(o => {
         const c = calcOp(o, params);
         volume += o.volume || 0;
-        pessoas += c.pessoas || 0;
+        /* pessoas = MdO efetivamente PLANEJADA (terceirizada + Superior) —
+           nunca o headcount padrão do tipo. c.pessoas (via pessoasDaOperacao)
+           cai pro padrão do tipo quando a operação ainda não tem
+           qtdTerceirizada/qtdPessoasSuperior preenchidos, o que inflava o
+           forecast com gente especulada e não escalada de fato. */
+        const tercPlan = o.qtdTerceirizada || 0;
+        const supPlan = o.qtdPessoasSuperior != null ? o.qtdPessoasSuperior : (o.qtdSuperior || 0);
+        const pessoasPlan = tercPlan + supPlan;
+        pessoas += pessoasPlan;
         horas += c.metaHoras || 0;
         const alvo = o.direcao === "recebimento" ? rec : exp;
         alvo.ops += 1;
         alvo.volume += o.volume || 0;
-        alvo.pessoas += c.pessoas || 0;
+        alvo.pessoas += pessoasPlan;
         const dim = avaliarDimensionamento(c.tipo, o.volume, c.pessoas);
         if (dim && dim.critico) subdim++;
       });
+      /* Janela real de trabalho do dia — só entre as operações JÁ
+         REALIZADAS (concluídas), pra comparar contra o turno (8h) e pegar
+         estouro/troca de turno. As pendentes/em andamento não entram: ainda
+         não têm hora de início/fim definitiva. */
+      const iniciosReais = concluidasDoDia.map(o => o.inicio).filter(Boolean);
+      const finsReais = concluidasDoDia.map(o => o.fim).filter(Boolean);
+      const primeiraInicioReal = iniciosReais.length ? Math.min(...iniciosReais) : null;
+      const ultimoFimReal = finsReais.length ? Math.max(...finsReais) : null;
       dias.push({ ts, rotulo: rotuloDia(ts),
         curto: new Date(ts).toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
         data: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
         ops: todasDoDia.length, pendentes: doDia.length, concluidas: concluidasDoDia.length,
-        volume, pessoas, horas, subdim, rec, exp, hoje: i === 0 });
+        volume, pessoas, horas, subdim, rec, exp, primeiraInicioReal, ultimoFimReal, hoje: i === 0 });
     }
     return dias;
   }, [opsF, params]);
@@ -5438,6 +5454,18 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                       <div style={{ fontSize: 9.5, color: C.prata, textAlign: "center", marginTop: 2 }}>
                         {d.pessoas}p · {hhmm(d.horas)}
                       </div>
+                      {/* janela real de trabalho (só operações já realizadas):
+                          início da 1ª até fim da última — ajuda a flagrar
+                          troca de turno ou estouro do dia de 8h */}
+                      {d.primeiraInicioReal && (
+                        <div style={{
+                          fontSize: 9, textAlign: "center", marginTop: 1,
+                          color: (d.ultimoFimReal && (d.ultimoFimReal - d.primeiraInicioReal) > 8 * 3600000)
+                            ? C.laranjaEsc : C.prata
+                        }}>
+                          {hora(d.primeiraInicioReal)} → {d.ultimoFimReal ? hora(d.ultimoFimReal) : "em aberto"}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
