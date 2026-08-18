@@ -7197,6 +7197,10 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
   const [ate, setAte] = useState(toISO(hoje));
   const [cliFiltro, setCliFiltro] = useState("todos");
   const [msg, setMsg] = useState("");
+  /* Cliente clicado no gráfico Previsto × Realizado (barra ou ponto da
+     linha de aderência) — abre o modal com as operações daquele cliente
+     que geraram os números. Combinado com Pablo em 18/ago/2026. */
+  const [clienteSelecionado, setClienteSelecionado] = useState(null);
 
   const dados = useMemo(() => {
     const ini = new Date(de + "T00:00:00").getTime();
@@ -7241,13 +7245,18 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
     return Object.values(m).sort((a, b) => b.economia - a.economia);
   }, [dados]);
 
-  /* série pronta pro gráfico de Aderência por Cliente (Relatório para a
-     Diretoria) — combinado com Pablo em 18/ago/2026: substituiu os
-     cartões de texto por gráficos, então esse % por cliente precisa
-     existir separado do agregado geral (agg.noPrazoPct). */
-  const porClienteAderencia = useMemo(() =>
-    porCliente.map(c => ({ cliente: c.cliente, aderencia: c.ops ? (c.noPrazo / c.ops) * 100 : 0 })),
+  /* porCliente + % de aderência, pronto pro gráfico único Previsto × Realizado
+     com a linha de aderência (Relatório para a Diretoria) — combinado com
+     Pablo em 18/ago/2026. */
+  const porClienteGrafico = useMemo(() =>
+    porCliente.map(c => ({ ...c, aderencia: c.ops ? (c.noPrazo / c.ops) * 100 : 0 })),
     [porCliente]);
+
+  /* Operações do cliente clicado no gráfico — drill-down (ver
+     clienteSelecionado acima). */
+  const opsClienteSelecionado = useMemo(() =>
+    clienteSelecionado ? dados.filter(({ op }) => op.cliente === clienteSelecionado) : [],
+    [clienteSelecionado, dados]);
 
   const porTipo = useMemo(() => {
     const m = {};
@@ -7636,48 +7645,83 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
         </div>
       </div>
 
-      {/* Gráficos por cliente — combinado com Pablo em 18/ago/2026: substituiu
-         os cartões de texto; um gráfico por linha, usando a largura máxima
-         da tela em vez de dois lado a lado. */}
-      {porCliente.length === 0 ? (
+      {/* Gráfico único por cliente — combinado com Pablo em 18/ago/2026: barra
+         "bullet" (previsto × realizado, realizado verde dentro do previsto
+         e vermelho quando passa) + linha de aderência à meta no mesmo
+         gráfico, largura máxima de tela. Clique numa barra ou no ponto da
+         linha abre as operações daquele cliente que geraram os números. */}
+      {porClienteGrafico.length === 0 ? (
         <div style={{ marginTop: 16 }}><EmptyState text="Nenhuma operação concluída no período selecionado." /></div>
       ) : (
-        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
+        <div style={{ marginTop: 18 }}>
           <div style={styles.chartCard}>
-            <div style={styles.chartTitle}>Referência × Custo Real × Economia — por Cliente</div>
-            <ResponsiveContainer width="100%" height={340}>
-              <BarChart data={porCliente} margin={{ top: 10, right: 16, left: 8, bottom: 65 }}>
+            <div style={styles.chartTitle}>Previsto × Realizado, com Aderência à Meta — por Cliente</div>
+            <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
+              Barra cinza = previsto (referência 100% terceirizado). Barra colorida = custo real — verde dentro do
+              previsto, vermelho quando passa. Linha laranja = aderência à meta. Clique numa barra ou ponto para ver
+              as operações que geraram aquele número.
+            </p>
+            <ResponsiveContainer width="100%" height={360}>
+              <ComposedChart data={porClienteGrafico} barGap="-100%" margin={{ top: 10, right: 40, left: 8, bottom: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
                   tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
-                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
-                <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
+                <YAxis yAxisId="money" tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
+                <YAxis yAxisId="pct" orientation="right" domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                <Tooltip contentStyle={tooltipStyle}
+                  formatter={(v, n) => n === "Aderência à meta" ? [`${Number(v).toFixed(0)}%`, n] : [brl(v), n]} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Referência 100% terc." />
-                <Bar dataKey="custoReal" fill={C.navy2} radius={[4, 4, 0, 0]} name="Custo real" />
-                <Bar dataKey="economia" fill={C.laranja} radius={[4, 4, 0, 0]} name="Economia" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div style={styles.chartCard}>
-            <div style={styles.chartTitle}>Aderência à Meta — por Cliente</div>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={porClienteAderencia} margin={{ top: 10, right: 16, left: 0, bottom: 65 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
-                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
-                <Tooltip formatter={(v) => `${Number(v).toFixed(0)}%`} contentStyle={tooltipStyle} />
-                <Bar dataKey="aderencia" radius={[4, 4, 0, 0]} name="Aderência à meta">
-                  {porClienteAderencia.map(c => (
-                    <Cell key={c.cliente} fill={c.aderencia >= 80 ? C.verde : c.aderencia >= 50 ? C.amarelo : C.vermelho} />
+                <Bar yAxisId="money" dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} barSize={BARSIZE_PREVISTO}
+                  name="Previsto (referência 100% terc.)" cursor="pointer"
+                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
+                <Bar yAxisId="money" dataKey="custoReal" barSize={BARSIZE_REALIZADO} shape={BarraRealizadoCentralizada}
+                  name="Realizado (custo real)" cursor="pointer"
+                  onClick={(data) => setClienteSelecionado(data.payload.cliente)}>
+                  {porClienteGrafico.map(c => (
+                    <Cell key={c.cliente} fill={c.custoReal <= c.referencia ? C.verde : C.vermelho} />
                   ))}
                 </Bar>
-              </BarChart>
+                <Line yAxisId="pct" type="monotone" dataKey="aderencia" stroke={C.laranja} strokeWidth={3}
+                  dot={(p) => <DotClicavel key={`ad-${p.payload.cliente}`} {...p} r={4} fill={C.laranja}
+                    onSelecionar={(payload) => setClienteSelecionado(payload.cliente)} />}
+                  name="Aderência à meta" />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>
+      )}
+
+      {clienteSelecionado && (
+        <Modal titulo={`Operações concluídas — ${clienteSelecionado}`} onFechar={() => setClienteSelecionado(null)} largura={820}>
+          {opsClienteSelecionado.length === 0 ? (
+            <EmptyState text="Nenhuma operação encontrada para este cliente no período." />
+          ) : (
+            <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%" }}>
+              <table style={{ ...styles.table, minWidth: 640 }}>
+                <thead>
+                  <tr>{["ID Superior", "Tipo", "Fluxo", "Vol. Realizado", "Custo Real", "Bônus", "Prazo"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {opsClienteSelecionado.map(({ op, c }, i) => (
+                    <tr key={op.id} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                      <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{op.ref}</td>
+                      <td style={styles.td}>{c.tipo?.label || "—"}</td>
+                      <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                      <td style={styles.tdMono}>{c.volApurado != null ? c.volApurado.toLocaleString("pt-BR") : "—"}</td>
+                      <td style={styles.tdMono}>{brl(c.custoReal)}</td>
+                      <td style={styles.tdMono}>{brl(c.bonusPago)}</td>
+                      <td style={styles.td}>
+                        <span style={{ ...styles.pill, background: c.cumpriuMeta ? "#E8F5E9" : "#FFEBEE", color: c.cumpriuMeta ? C.verde : C.vermelho }}>
+                          {c.cumpriuMeta ? "No prazo" : "Atrasada"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Modal>
       )}
 
       </>)}
@@ -9966,6 +10010,23 @@ function DotClicavel({ cx, cy, payload, r, fill, onSelecionar }) {
       <circle cx={cx} cy={cy} r={r} fill={fill} />
     </g>
   );
+}
+
+/* Barra "bullet" — previsto (fundo, cinza, largo) × realizado (frente,
+   colorida, mais fina) — usada no gráfico Previsto × Realizado por Cliente
+   (Relatório para a Diretoria). `barGap="-100%"` no ComposedChart faz as
+   duas barras (mesma categoria X) começarem no mesmo ponto — este shape só
+   desloca a barra mais fina pra ficar centralizada dentro da mais larga.
+   Como os dois barSize são constantes fixas, o deslocamento também é fixo,
+   sem precisar ler a geometria da barra de fundo. Testado num sandbox
+   isolado (React+Recharts) antes de entrar aqui — combinado com Pablo em
+   18/ago/2026. */
+const BARSIZE_PREVISTO = 42, BARSIZE_REALIZADO = 20;
+function BarraRealizadoCentralizada(props) {
+  const { x, y, width, height, fill } = props;
+  if (!(height > 0)) return null;
+  const offset = (BARSIZE_PREVISTO - BARSIZE_REALIZADO) / 2;
+  return <rect x={x + offset} y={y} width={width} height={height} fill={fill} rx={3} ry={3} />;
 }
 function TipoIcon({ tipo, big }) {
   const isTruck = tipo?.icon === "truck" || /carga|caminh/i.test(tipo?.label || "");
