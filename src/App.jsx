@@ -5645,7 +5645,13 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         Indicadores <Badge>{nomeMes(mAtual)}</Badge>
         {aggMesAnt.n > 0 && <span style={{ fontSize: 12, fontWeight: 500, color: C.prata }}>mês vs {nomeMes(mAnterior)}</span>}
       </SectionTitle>
-      <div style={styles.kpiDuploGrid}>
+      {/* Na tela do Cliente, o cartão de Performance e o gráfico por tipo
+         ficam lado a lado no mesmo grid (pedido por Pablo em 18/ago/2026)
+         — antes o gráfico vinha empilhado embaixo. Pro Gestor não muda
+         nada: kpiDuploGrid como sempre, com os 3 cartões. */}
+      <div style={anonimizarCliente
+        ? { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, margin: "6px 0 18px", alignItems: "start" }
+        : styles.kpiDuploGrid}>
         <KpiDuplo
           label="Performance" icon={Target} color={corAderencia(aggMes.n ? aggMes.noPrazoPct : null)}
           hojeValor={aggDia.n ? `${aggDia.noPrazoPct.toFixed(0)}%` : "—"}
@@ -5683,31 +5689,30 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
           variacao={variacao(aggMes.bonusPago, aggMesAnt.bonusPago)} melhorMaior
           rodape={`Custo lançado na economia (${brl(params.bonusSuperior)}/bônus). O valor distribuído à equipe (${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)}/bônus) fica na aba Rateio.`} />
         </>)}
-      </div>
 
-      {/* Performance por Tipo de Operação — só na tela do Cliente, pedido
-         por Pablo em 18/ago/2026: compara hoje × mês × mês anterior, sem
-         nenhum valor de custo. */}
-      {anonimizarCliente && porTipoPerformance.length > 0 && (
-        <div style={{ ...styles.chartCard, marginTop: 14 }}>
-          <div style={styles.chartTitle}>Performance por Tipo de Operação</div>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={porTipoPerformance} margin={{ top: 10, right: 12, left: 0, bottom: 40 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-              <XAxis dataKey="tipo" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-20} textAnchor="end" height={60} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
-              <Tooltip contentStyle={tooltipStyle} formatter={(v) => v == null ? ["—", ""] : [`${Number(v).toFixed(0)}%`, ""]} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="hoje" fill={C.laranja} radius={[4, 4, 0, 0]} name="Hoje" />
-              <Bar dataKey="mes" fill={C.navy} radius={[4, 4, 0, 0]} name={nomeMes(mAtual)} />
-              <Bar dataKey="mesAnterior" fill={C.prataClaro} radius={[4, 4, 0, 0]} name={nomeMes(mAnterior)} />
-            </BarChart>
-          </ResponsiveContainer>
-          <div style={{ fontSize: 11, color: C.prata, marginTop: 6, paddingLeft: 4 }}>
-            % de operações dentro da meta de tempo, por tipo de operação. Tipo sem operação no recorte não aparece a barra.
+        {/* Performance por Tipo de Operação — só na tela do Cliente:
+           compara hoje × mês × mês anterior, sem nenhum valor de custo. */}
+        {anonimizarCliente && porTipoPerformance.length > 0 && (
+          <div style={styles.chartCard}>
+            <div style={styles.chartTitle}>Performance por Tipo de Operação</div>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={porTipoPerformance} margin={{ top: 10, right: 12, left: 0, bottom: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                <XAxis dataKey="tipo" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-20} textAnchor="end" height={60} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                <Tooltip contentStyle={tooltipStyle} formatter={(v) => v == null ? ["—", ""] : [`${Number(v).toFixed(0)}%`, ""]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="hoje" fill={C.laranja} radius={[4, 4, 0, 0]} name="Hoje" />
+                <Bar dataKey="mes" fill={C.navy} radius={[4, 4, 0, 0]} name={nomeMes(mAtual)} />
+                <Bar dataKey="mesAnterior" fill={C.prataClaro} radius={[4, 4, 0, 0]} name={nomeMes(mAnterior)} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={{ fontSize: 11, color: C.prata, marginTop: 6, paddingLeft: 4 }}>
+              % de operações dentro da meta de tempo, por tipo de operação. Tipo sem operação no recorte não aparece a barra.
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
       </>)}
 
       {/* ===== EVOLUÇÃO — PERFORMANCE E ECONOMIA LADO A LADO ===== */}
