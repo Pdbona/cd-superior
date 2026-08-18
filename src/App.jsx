@@ -132,7 +132,7 @@ const SUBITENS_POR_ABA = {
     { id: "fechamento", label: "Fechamento do Mês" },
     { id: "cancelamentos", label: "Cancelamentos por Cliente" },
     { id: "forameta", label: "Operações Fora da Meta" },
-    { id: "economiadia", label: "Economia por Dia" },
+    { id: "economiadia", label: "Economia no Mês" },
     { id: "maodeobra", label: "Mão de Obra — Planejado x Realizado" }
   ],
   fotos: [
@@ -5027,27 +5027,6 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
     economia: s.economia + d.economiaDia
   }), { referencia: 0, custoReal: 0, bonus: 0, economia: 0 }), [porDiaMes]);
 
-  /* dataset só do gráfico "Economia por Dia": mostra TODOS os dias do mês
-     no eixo X (não só os que têm operação/terceirizado), para o eixo não
-     "pular" datas. Os dias sem dado saem com custoRealDia/economiaDia = 0
-     (calcDia já cobre isso), então a coluna simplesmente não aparece —
-     sem precisar de tratamento especial para dias futuros. A lista de
-     cards abaixo continua usando porDiaMes (só os dias com dado, senão
-     viraria uma lista de ~30 cards vazios). */
-  const porDiaMesGrafico = useMemo(() => {
-    const hoje = inicioDoDia(Date.now());
-    const ano = Math.floor(mAtual / 12), mes = mAtual % 12;
-    const totalDias = new Date(ano, mes + 1, 0).getDate();
-    return Array.from({ length: totalDias }, (_, i) => {
-      const ts = new Date(ano, mes, i + 1).getTime();
-      return {
-        ...calcDia(ts, ops, params, diasTerc),
-        rotulo: new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
-        futuro: ts > hoje
-      };
-    });
-  }, [ops, params, diasTerc, mAtual]);
-
   /* ---- MÃO DE OBRA — PLANEJADO x REALIZADO (combinado com Pablo em
      17/ago/2026) ----
      Barras: quantas pessoas terceirizadas e próprias (Superior) por dia —
@@ -5060,7 +5039,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
        feita no cadastro, pode incluir operação ainda pendente.
 
        Realizado terceirizada = diasTerc[dia].qtd — o mesmo número que já
-       vale pra "Economia por Dia" (contratado de fato, não a soma do que
+       vale pra "Economia no Mês" (contratado de fato, não a soma do que
        cada operação pediu).
 
        Realizado própria = soma de headcount(op).sup só das operações já
@@ -5716,7 +5695,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
 
       {/* ===== VISÃO POR DIA ===== */}
       {subOn("economiadia") && (<>
-      <SectionTitle icon={Calendar}>Economia por Dia — {nomeMes(mAtual)}</SectionTitle>
+      <SectionTitle icon={Calendar}>Economia no Mês — {nomeMes(mAtual)}</SectionTitle>
       <p style={styles.helper}>
         Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
         Planejamento/Ajustes), não a soma do que cada operação pediu — porque a mesma pessoa pode ter trabalhado
@@ -5731,25 +5710,6 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         <EmptyState text="Nenhum dia com operação ou terceirizado cadastrado neste mês." />
       ) : (
         <>
-          <div style={{ ...styles.chartCard, marginBottom: 14 }}>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={porDiaMesGrafico} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
-                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
-                <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="custoRealDia" fill={C.prata} radius={[4, 4, 0, 0]} name="Custo real do dia" />
-                <Bar dataKey="economiaDia" fill={C.supVerde} radius={[4, 4, 0, 0]} name="Economia do dia">
-                  {/* dia com economia negativa (custo real veio maior que a referência) pinta a
-                     coluna de vermelho — senão fica difícil enxergar o problema no meio do verde */}
-                  {porDiaMesGrafico.map((d, i) => (
-                    <Cell key={`eco-${d.rotulo}-${i}`} fill={d.economiaDia < 0 ? C.vermelho : C.supVerde} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
           <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
             {porDiaMes.slice().reverse().map(d => (
               <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
