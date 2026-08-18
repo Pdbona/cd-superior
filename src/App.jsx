@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Share2, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu
+  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -6078,27 +6078,6 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
     });
   };
 
-  /* Compartilhamento nativo do celular (WhatsApp, e-mail). Só aparece
-     onde o navegador suporta arquivos — no desktop fica oculto. */
-  const podeCompartilhar = typeof navigator !== "undefined" &&
-    navigator.share && navigator.canShare;
-
-  const compartilhar = async () => {
-    try {
-      const arquivos = await Promise.all(todas.map(async (f) => {
-        const blob = await (await fetch(f.d)).blob();
-        return new File([blob], nomeArquivoFoto(reg, f.momento, f.seq), { type: "image/jpeg" });
-      }));
-      if (navigator.canShare({ files: arquivos })) {
-        await navigator.share({
-          files: arquivos,
-          title: `Evidência ${reg.ref}`,
-          text: `${reg.ref} · ${reg.cliente} · ${fmtDT(reg.tsInicio)}`
-        });
-      }
-    } catch (e) { /* usuário cancelou — nada a fazer */ }
-  };
-
   const dias = diasParaExpirar(reg.expiraEm);
 
   /* Regrava o momento (inicio/fim) inteiro com a lista de dataURLs já
@@ -6402,11 +6381,6 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
                   <button onClick={baixarTodas} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
                     <Download size={15} /> Baixar fotos ({todas.length})
                   </button>
-                  {podeCompartilhar && (
-                    <button onClick={compartilhar} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
-                      <Share2 size={15} /> Enviar ao cliente
-                    </button>
-                  )}
                 </div>
               </>
             )}
