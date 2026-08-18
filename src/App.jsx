@@ -1265,7 +1265,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
         </div>
       </div>
 
-      <RodapeSBS direita="Superior Transportes" />
+      <RodapeSBS />
     </div>
   );
 }
@@ -1561,7 +1561,7 @@ function PortaEntrada({ params, persistParams, onVoltar, onEntrar }) {
         </div>
       </div>
 
-      <RodapeSBS direita="Superior Transportes" />
+      <RodapeSBS />
     </div>
   );
 }
@@ -1664,7 +1664,7 @@ function PortaLinkProprio({ params, slug, onEntrar }) {
         </div>
       </div>
 
-      <RodapeSBS direita="Superior Transportes" />
+      <RodapeSBS />
     </div>
   );
 }
@@ -2269,7 +2269,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
         )}
       </main>
 
-      <RodapeSBS direita="Superior Transportes" />
+      <RodapeSBS />
     </div>
   );
 }
@@ -2452,7 +2452,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
         </main>
       </div>
 
-      <RodapeSBS direita={<>Monitor Operacional · Superior Transportes<br />Dados compartilhados entre gestor e conferentes</>} />
+      <RodapeSBS direita="Dados compartilhados entre gestor e conferentes" />
     </div>
   );
 }
@@ -9868,7 +9868,10 @@ function Modal({ titulo, onFechar, children, largura }) {
    a do Administrador, leva a logo da SBS (bordas arredondadas) + "Desenvolvido
    pela SBS Solution e Byplo." no rodapé. O cabeçalho, nessas mesmas telas,
    fica só com a logo do cliente (Superior). `direita` é o texto opcional do
-   lado direito do rodapé (ex.: "Superior Transportes"). */
+   lado direito do rodapé — só para nota funcional (ex.: "Dados
+   compartilhados entre gestor e conferentes"), sem menção à Superior:
+   combinado com Pablo em 18/ago/2026, o nome do cliente saiu do rodapé de
+   todas as telas (já aparece na logo do cabeçalho). */
 function RodapeSBS({ direita }) {
   return (
     <footer style={styles.footer}>
