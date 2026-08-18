@@ -417,9 +417,8 @@ async function salvarFotos({ op, momento, fotos, usuario }) {
     nFim: pacote.fim.length,
     volume: op.volume ?? anterior.volume ?? null,
     volumeReal: op.volumeReal ?? anterior.volumeReal ?? null,
-    /* referência do cliente (NF/pedido do lado do cliente) — campo ainda não
-       existe no cadastro da operação; propagado assim que existir */
-    refCliente: op.refCliente ?? anterior.refCliente ?? null,
+    /* ID do Cliente (ID/CNTR/NF), capturado no cadastro da operação */
+    idCliente: op.idCliente ?? anterior.idCliente ?? null,
     /* motorista — capturado no fechamento (ver AppConferente/finalizar);
        propagado pro romaneio (abrirRomaneio). */
     motorista: op.motorista ?? anterior.motorista ?? null,
@@ -6512,7 +6511,7 @@ function abrirRomaneio(reg, pacote, dados) {
     <div class="secao-titulo">Referências da Operação</div>
     <div class="grid2">
       ${dado("Referência Superior", reg.ref)}
-      ${dado("Referência Cliente / NF", reg.refCliente || reg.cliente)}
+      ${dado("ID do Cliente", reg.idCliente)}
       ${dado("Cliente", reg.cliente)}
       ${dado("Doca", reg.doca)}
       ${dado("SKUs Planejados", reg.skus ? `${reg.skus.toLocaleString("pt-BR")} ref.` : null)}
