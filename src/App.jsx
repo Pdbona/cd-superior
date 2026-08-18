@@ -5054,6 +5054,32 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
   const varEconomia = variacao(aggMes.economia, aggMesAnt.economia);
   const varMeta = aggMesAnt.n ? aggMes.noPrazoPct - aggMesAnt.noPrazoPct : null;
 
+  /* Performance por Tipo de Operação — Hoje × Mês × Mês Anterior (combinado
+     com Pablo em 18/ago/2026, tela do Cliente): só aderência à meta, sem
+     nenhum número de custo/economia — o cliente não vê essa parte do
+     negócio, só o nível de serviço. null (em vez de 0) quando o tipo não
+     teve operação naquele recorte, pra a barra simplesmente não aparecer
+     em vez de mostrar "0% de performance" enganosamente. */
+  const porTipoPerformance = useMemo(() => {
+    const contar = (lista) => {
+      const m = {};
+      lista.forEach(({ c }) => {
+        const k = c.tipo?.label || "—";
+        if (!m[k]) m[k] = { n: 0, noPrazo: 0 };
+        m[k].n++; if (c.cumpriuMeta) m[k].noPrazo++;
+      });
+      return m;
+    };
+    const mHoje = contar(doDia), mMes = contar(doMes), mMesAnt = contar(doMesAnterior);
+    const tipos = new Set([...Object.keys(mHoje), ...Object.keys(mMes), ...Object.keys(mMesAnt)]);
+    return Array.from(tipos).sort((a, b) => a.localeCompare(b, "pt-BR")).map(tipo => ({
+      tipo,
+      hoje: mHoje[tipo] ? (mHoje[tipo].noPrazo / mHoje[tipo].n) * 100 : null,
+      mes: mMes[tipo] ? (mMes[tipo].noPrazo / mMes[tipo].n) * 100 : null,
+      mesAnterior: mMesAnt[tipo] ? (mMesAnt[tipo].noPrazo / mMesAnt[tipo].n) * 100 : null
+    }));
+  }, [doDia, doMes, doMesAnterior]);
+
   /* Cancelamentos pelo CLIENTE — não entram em custo/economia/produtividade,
      mas viram indicador próprio para embasar negociação futura.
      Motivo "superior" (teste/erro do gestor) não gera nenhum indicador. */
@@ -5360,62 +5386,68 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         </>
       )}
 
-      {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
-      {emAndamento.length > 0 && subOn("agora") && (
-        <>
-          <SectionTitle icon={Gauge}>
-            Operação Agora
-            <Badge>{emAndamento.length} em andamento</Badge>
-            {emRisco.length > 0 && (
-              <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
-                <AlertTriangle size={11} /> {emRisco.length} em risco
-              </span>
-            )}
-          </SectionTitle>
-          <div style={styles.opCardGrid}>
-            {emAndamento.map(({ op, c, el, st, pausada }) => (
-              <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* ===== REALIZADAS HOJE — fechamento do dia em andamento =====
-         Vem antes de "Realizado — Período Anterior" (combinado com Pablo em
-         16/ago/2026): o gestor quer ver primeiro o que já fechou hoje, e só
-         depois, se precisar, consultar um período passado. */}
-      {subOn("hoje") && (
-        <>
-          <SectionTitle icon={CheckCircle2}>
-            Realizadas Hoje
-            <Badge>{realizadasHoje.length} concluída{realizadasHoje.length !== 1 ? "s" : ""}</Badge>
-            {realizadasHoje.length > 0 && (
-              <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
-                {realizadasHoje.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un
-              </span>
-            )}
-          </SectionTitle>
-          {realizadasHoje.length === 0 ? (
-            <div style={{ marginBottom: 22 }}>
-              <EmptyState text="Nenhuma operação concluída hoje ainda." />
-            </div>
-          ) : (
+      {/* Na tela do Cliente (anonimizarCliente), "Operação Agora" e
+         "Realizadas Hoje" ficam lado a lado — combinado com Pablo em
+         18/ago/2026. Pro Gestor o layout não muda: sem grid aqui, os dois
+         blocos continuam empilhados como sempre. */}
+      <div style={anonimizarCliente ? { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 16, alignItems: "start" } : undefined}>
+        {/* ===== OPERAÇÃO AGORA — o que está rodando neste instante ===== */}
+        {emAndamento.length > 0 && subOn("agora") && (
+          <div>
+            <SectionTitle icon={Gauge}>
+              Operação Agora
+              <Badge>{emAndamento.length} em andamento</Badge>
+              {emRisco.length > 0 && (
+                <span className="piscar" style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho, marginLeft: 4 }}>
+                  <AlertTriangle size={11} /> {emRisco.length} em risco
+                </span>
+              )}
+            </SectionTitle>
             <div style={styles.opCardGrid}>
-              {realizadasHoje.map(({ op, c }) => {
-                const reg = fotosPorOp[op.id];
-                const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
-                return (
-                  <CardOpFeita key={op.id} op={op} c={c}
-                    temFotos={n > 0 ? n : null}
-                    onVerFotos={() => setFotoAberta(reg)} />
-                );
-              })}
+              {emAndamento.map(({ op, c, el, st, pausada }) => (
+                <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
+              ))}
             </div>
-          )}
+          </div>
+        )}
 
-          {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
-        </>
-      )}
+        {/* ===== REALIZADAS HOJE — fechamento do dia em andamento =====
+           Vem antes de "Realizado — Período Anterior" (combinado com Pablo em
+           16/ago/2026): o gestor quer ver primeiro o que já fechou hoje, e só
+           depois, se precisar, consultar um período passado. */}
+        {subOn("hoje") && (
+          <div>
+            <SectionTitle icon={CheckCircle2}>
+              Realizadas Hoje
+              <Badge>{realizadasHoje.length} concluída{realizadasHoje.length !== 1 ? "s" : ""}</Badge>
+              {realizadasHoje.length > 0 && (
+                <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 4 }}>
+                  {realizadasHoje.reduce((s, x) => s + (x.op.volume || 0), 0).toLocaleString("pt-BR")} un
+                </span>
+              )}
+            </SectionTitle>
+            {realizadasHoje.length === 0 ? (
+              <div style={{ marginBottom: 22 }}>
+                <EmptyState text="Nenhuma operação concluída hoje ainda." />
+              </div>
+            ) : (
+              <div style={styles.opCardGrid}>
+                {realizadasHoje.map(({ op, c }) => {
+                  const reg = fotosPorOp[op.id];
+                  const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
+                  return (
+                    <CardOpFeita key={op.id} op={op} c={c}
+                      temFotos={n > 0 ? n : null}
+                      onVerFotos={() => setFotoAberta(reg)} />
+                  );
+                })}
+              </div>
+            )}
+
+            {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
+          </div>
+        )}
+      </div>
 
       {/* ===== REALIZADO — PERÍODO ANTERIOR =====
          Mesma visão em quadradinhos do Forecast, só que pra trás: o gestor
@@ -5625,6 +5657,10 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
           variacao={varMeta} sufixoVar="p.p." melhorMaior
           rodape={`Aderência à meta · tolerância de ${TOLERANCIA_META_MIN} min`} />
 
+        {/* Economia e Bônus (custo) são números do negócio entre a Superior e
+           a terceirizada — não aparecem pro Cliente (combinado com Pablo em
+           18/ago/2026: ele só precisa ver nível de serviço, não custo). */}
+        {!anonimizarCliente && (<>
         <KpiDuplo
           label="Economia" icon={TrendingDown} color={C.laranja} highlight
           hojeValor={brl(aggDia.economia)}
@@ -5646,7 +5682,32 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
           mesCor={C.supVerde}
           variacao={variacao(aggMes.bonusPago, aggMesAnt.bonusPago)} melhorMaior
           rodape={`Custo lançado na economia (${brl(params.bonusSuperior)}/bônus). O valor distribuído à equipe (${brl(params.bonusRateio != null ? params.bonusRateio : params.bonusSuperior)}/bônus) fica na aba Rateio.`} />
+        </>)}
       </div>
+
+      {/* Performance por Tipo de Operação — só na tela do Cliente, pedido
+         por Pablo em 18/ago/2026: compara hoje × mês × mês anterior, sem
+         nenhum valor de custo. */}
+      {anonimizarCliente && porTipoPerformance.length > 0 && (
+        <div style={{ ...styles.chartCard, marginTop: 14 }}>
+          <div style={styles.chartTitle}>Performance por Tipo de Operação</div>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={porTipoPerformance} margin={{ top: 10, right: 12, left: 0, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+              <XAxis dataKey="tipo" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-20} textAnchor="end" height={60} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+              <Tooltip contentStyle={tooltipStyle} formatter={(v) => v == null ? ["—", ""] : [`${Number(v).toFixed(0)}%`, ""]} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="hoje" fill={C.laranja} radius={[4, 4, 0, 0]} name="Hoje" />
+              <Bar dataKey="mes" fill={C.navy} radius={[4, 4, 0, 0]} name={nomeMes(mAtual)} />
+              <Bar dataKey="mesAnterior" fill={C.prataClaro} radius={[4, 4, 0, 0]} name={nomeMes(mAnterior)} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 11, color: C.prata, marginTop: 6, paddingLeft: 4 }}>
+            % de operações dentro da meta de tempo, por tipo de operação. Tipo sem operação no recorte não aparece a barra.
+          </div>
+        </div>
+      )}
       </>)}
 
       {/* ===== EVOLUÇÃO — PERFORMANCE E ECONOMIA LADO A LADO ===== */}
