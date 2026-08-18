@@ -2872,6 +2872,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
       .map(p => {
         const base = { id: p.id || uid(), nome: p.nome.trim(), telas: p.telas || {}, sub: p.sub || {} };
         if (p.linkProprio) { base.linkProprio = true; base.slug = p.slug; }
+        if (p.coluna === 2) base.coluna = 2;
         return base;
       });
     const idsValidos = new Set(cleanPerfis.map(p => p.id));
