@@ -4015,7 +4015,10 @@ function Acompanhamento({ ops, params, now, sub }) {
                 <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13.5, color: C.navy }}>{op.ref}</strong>
                 <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 14, color: c.cumpriuMeta ? C.verde : C.vermelho }}>{hhmm(c.tempoReal)}</span>
               </div>
-              <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente}</div>
+              <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>
+                {op.cliente}
+                {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
+              </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>
                 Meta {hhmm(c.metaHoras)} · Economia <strong style={{ color: C.laranja }}>{brl(c.economia)}</strong>
               </div>
@@ -4056,7 +4059,10 @@ function CardRateio({ op, c, equipe, params, onToggle }) {
         <TipoIcon tipo={c.tipo} />
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{op.ref}</div>
-          <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente} · {c.tipo?.label}</div>
+          <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>
+            {op.cliente} · {c.tipo?.label}
+            {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
+          </div>
           <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2 }}>
             <CheckCircle2 size={11} style={{ verticalAlign: -1 }} /> Finalizada {dataSemana(op.fim)} às {hora(op.fim)}
           </div>
@@ -5628,7 +5634,10 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                       <strong style={{ fontSize: 13, color: C.navy }}>{op.ref}</strong>
                       <DirTag dir={op.direcao} />
                     </div>
-                    <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{op.cliente}</div>
+                    <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>
+                      {op.cliente}
+                      {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
+                    </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
                       <span>{c.tipo?.label}</span>
                       {op.volume ? <span>{op.volume.toLocaleString("pt-BR")} un</span> : null}
@@ -6189,6 +6198,7 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
                 </div>
                 <div style={{ fontSize: 12.5, color: C.prataClaro, marginTop: 3 }}>
                   {reg.cliente}
+                  {reg.idCliente && ` · ID Cliente ${reg.idCliente}`}
                   {reg.doca && ` · Doca ${reg.doca}`}
                   {reg.conferenteInicio && ` · ${reg.conferenteInicio}`}
                 </div>
@@ -6754,7 +6764,10 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
                           fontFamily: "'Montserrat',sans-serif", fontWeight: 800,
                           fontSize: 14.5, color: C.navy, overflow: "hidden", textOverflow: "ellipsis"
                         }}>{reg.ref}</div>
-                        <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{reg.cliente}</div>
+                        <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>
+                          {reg.cliente}
+                          {reg.idCliente && <span style={{ color: C.prata }}> · ID Cliente {reg.idCliente}</span>}
+                        </div>
                       </div>
                       <DirTag dir={reg.direcao} />
                     </div>
