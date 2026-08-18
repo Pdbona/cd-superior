@@ -54,7 +54,7 @@ const TABS_GESTOR = [
   { id: "acompanhar", label: "Acompanhamento", sub: "Status ao vivo", icon: Activity },
   { id: "dashboard", label: "Dashboard", sub: "Gestão à vista", icon: LayoutDashboard },
   { id: "fotos", label: "Gerar Romaneio", sub: "Recebimento & Expedição", icon: FileText },
-  { id: "relatorios", label: "Relatórios", sub: "Excel & Diretoria", icon: FileSpreadsheet },
+  { id: "relatorios", label: "Relatório Gerencial", sub: "Excel & Diretoria", icon: FileSpreadsheet },
   { id: "estoque", label: "Estoque", sub: "Saldo por cliente", icon: Boxes },
   { id: "ajustes", label: "Ajustes", sub: "Corrigir registros", icon: Eraser },
   { id: "rateio", label: "Rateio", sub: "Bônus por colaborador", icon: Users },
@@ -139,11 +139,11 @@ const SUBITENS_POR_ABA = {
     { id: "romaneio", label: "Gerar Romaneio" }
   ],
   relatorios: [
+    { id: "estoque", label: "Relatório de Estoque" },
     { id: "diretoria", label: "Relatório para a Diretoria" },
     { id: "cliente", label: "Relatórios para o Cliente" },
     { id: "prestador", label: "Relatório para o Prestador de Serviço" },
-    { id: "raiox", label: "Raio X da MdO" },
-    { id: "estoque", label: "Relatório de Estoque" }
+    { id: "raiox", label: "Raio X da MdO" }
   ],
   estoque: [
     { id: "importar", label: "Importar Arquivo de Estoque" }
@@ -2271,6 +2271,13 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
      do Comercial com os subitens que essa pessoa não tem, já que o Comercial
      não enxerga o RBAC daqui (outro projeto Firebase — ver urlComercial). */
   const subComercial = (permissoes ? sub : params.permissoesGestorSub)?.comercial;
+  /* Mesmo mecanismo do perfil Cliente (link próprio) usado lá em cima em
+     App — aqui replicado a partir de anonimizarCliente + usuario, que já
+     chegam prontos como prop, em vez de receber mais uma prop nova.
+     Usado só pelo Estoque (que se auto-carrega direto do Firestore, sem
+     passar pelo `ops` já filtrado): combinado com Pablo em 18/ago/2026,
+     perfil Cliente só pode ver o próprio estoque, nunca o dos outros. */
+  const clienteRestrito = anonimizarCliente ? usuario : null;
   /* Perfil cujo único acesso é o coletor (TABS vazio) cai direto nele —
      senão a pessoa logaria e veria um painel em branco. */
   useEffect(() => {
@@ -2344,8 +2351,8 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
         {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
         {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
         {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
-        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} />}
-        {tab === "estoque" && <MonitorEstoque sub={subAba} usuario={usuario} />}
+        {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} clienteRestrito={clienteRestrito} />}
+        {tab === "estoque" && <MonitorEstoque sub={subAba} usuario={usuario} clienteRestrito={clienteRestrito} />}
         {tab === "parametros" && <Parametros params={params} persistParams={persistParams} persistOps={persistOps} ops={ops} sub={subAba} />}
         {tab === "perfis" && <GestaoAcessos params={params} persistParams={persistParams} sub={subAba} />}
       </main>
@@ -6811,7 +6818,7 @@ function imprimirEstoqueCliente(cliente, itens, qtdTotal, valorTotal) {
    o botão de importar mesmo que o perfil, ali, tenha permissão de
    "importar" marcada para a aba Estoque de verdade; quem importa faz
    isso pela aba Estoque, este aqui é só consulta. */
-function MonitorEstoque({ sub, usuario, somenteLeitura }) {
+function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
   const subOn = (id) => subLiberado(sub, id);
   const podeImportar = !somenteLeitura && subOn("importar");
 
@@ -6876,19 +6883,33 @@ function MonitorEstoque({ sub, usuario, somenteLeitura }) {
     ? (Date.now() - snapshot.importadoEm) > ESTOQUE_TTL_DIAS * 24 * 60 * 60 * 1000
     : false;
 
-  const todosItens = useMemo(() => {
+  /* Perfil Cliente (link próprio, clienteRestrito preenchido) só pode ver o
+     próprio estoque — mesma regra já aplicada a `ops` lá em cima em App,
+     replicada aqui porque este painel se auto-carrega direto do Firestore
+     e não passa por aquele filtro. Combinado com Pablo em 18/ago/2026. */
+  const clientesVisiveis = useMemo(() => {
     if (!snapshot) return [];
-    return snapshot.clientes.flatMap(c => c.itens.map(it => ({ ...it, cliente: c.cliente })));
-  }, [snapshot]);
+    return clienteRestrito ? snapshot.clientes.filter(c => c.cliente === clienteRestrito) : snapshot.clientes;
+  }, [snapshot, clienteRestrito]);
+
+  const todosItens = useMemo(() =>
+    clientesVisiveis.flatMap(c => c.itens.map(it => ({ ...it, cliente: c.cliente }))),
+    [clientesVisiveis]);
 
   const clienteDetalhe = useMemo(() => {
-    if (!clienteAberto || !snapshot) return null;
-    return snapshot.clientes.find(c => c.cliente === clienteAberto) || null;
-  }, [clienteAberto, snapshot]);
+    if (!clienteAberto) return null;
+    return clientesVisiveis.find(c => c.cliente === clienteAberto) || null;
+  }, [clienteAberto, clientesVisiveis]);
 
   const itensOrdenados = useMemo(
     () => clienteDetalhe ? ordenarItensEstoque(clienteDetalhe.itens) : [],
     [clienteDetalhe]);
+
+  /* Resumo geral (pedido por Pablo em 18/ago/2026) — soma dos clientes
+     visíveis (já respeita clienteRestrito, igual aos cards). */
+  const totalGeral = useMemo(() => clientesVisiveis.reduce(
+    (acc, c) => ({ qtd: acc.qtd + c.qtdTotal, valor: acc.valor + c.valorTotal }),
+    { qtd: 0, valor: 0 }), [clientesVisiveis]);
 
   if (carregando) {
     return (
@@ -6902,7 +6923,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura }) {
   return (
     <div>
       <SectionTitle icon={Boxes}>
-        Estoque {snapshot && <Badge>{snapshot.clientes.length} {snapshot.clientes.length === 1 ? "cliente" : "clientes"}</Badge>}
+        Estoque {snapshot && !clienteRestrito && <Badge>{clientesVisiveis.length} {clientesVisiveis.length === 1 ? "cliente" : "clientes"}</Badge>}
       </SectionTitle>
 
       {msg && <div style={{ ...styles.toast, borderRadius: 8, marginBottom: 14 }}><CheckCircle2 size={16} /> {msg}</div>}
@@ -6943,27 +6964,42 @@ function MonitorEstoque({ sub, usuario, somenteLeitura }) {
         <EmptyState text={podeImportar
           ? 'Nenhum estoque importado ainda — clique em "Importar Estoque" e selecione o arquivo mais recente da pasta.'
           : "Nenhum estoque importado ainda. Peça para o responsável importar o arquivo mais recente do WMS."} />
+      ) : clientesVisiveis.length === 0 ? (
+        <EmptyState text={clienteRestrito
+          ? `Nenhum estoque encontrado para "${clienteRestrito}" na última importação.`
+          : "Nenhum cliente encontrado nesta importação."} />
       ) : (
-        <div style={styles.opCardGrid}>
-          {snapshot.clientes.map(c => (
-            <div style={styles.card} key={c.cliente}>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy, marginBottom: 12, lineHeight: 1.3 }}>
-                {c.cliente}
+        <>
+          {/* Resumo geral — pedido por Pablo em 18/ago/2026 */}
+          <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16 }}>
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, textTransform: "uppercase", letterSpacing: .3 }}>
+              Total geral{clienteRestrito ? "" : ` (${clientesVisiveis.length} ${clientesVisiveis.length === 1 ? "cliente" : "clientes"})`}
+            </span>
+            <span>Qtd.: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{totalGeral.qtd.toLocaleString("pt-BR")}</strong></span>
+            <span>Valor: <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.verde }}>{brl(totalGeral.valor)}</strong></span>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 14 }}>
+            {clientesVisiveis.map(c => (
+              <div key={c.cliente} style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column" }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.verde, marginBottom: 14, lineHeight: 1.3 }}>
+                  {c.cliente}
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={styles.kpiLabel}>Qtd. Disponível</div>
+                  <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>{c.qtdTotal.toLocaleString("pt-BR")}</div>
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={styles.kpiLabel}>Valor Disponível</div>
+                  <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, color: C.verde, whiteSpace: "nowrap" }}>{brl(c.valorTotal)}</div>
+                </div>
+                <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center", marginTop: "auto" }} onClick={() => setClienteAberto(c.cliente)}>
+                  <Search size={15} /> Detalhes
+                </button>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                <span style={styles.kpiLabel}>Qtd. Disponível</span>
-                <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{c.qtdTotal.toLocaleString("pt-BR")}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 16 }}>
-                <span style={styles.kpiLabel}>Valor Disponível</span>
-                <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15, color: C.verde }}>{brl(c.valorTotal)}</span>
-              </div>
-              <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center" }} onClick={() => setClienteAberto(c.cliente)}>
-                <Search size={15} /> Detalhes
-              </button>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
 
       {clienteDetalhe && (
@@ -7010,7 +7046,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura }) {
 
       {filtroAberto && snapshot && (
         <FiltroEstoque
-          clientes={snapshot.clientes.map(c => c.cliente)}
+          clientes={clientesVisiveis.map(c => c.cliente)}
           todosItens={todosItens}
           onFechar={() => setFiltroAberto(false)}
         />
@@ -7151,7 +7187,7 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
   );
 }
 
-function Relatorios({ ops, params, diasTerc, sub }) {
+function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
   const subOn = (id) => subLiberado(sub, id);
   const hoje = new Date();
   const primeiroDia = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
@@ -7204,6 +7240,14 @@ function Relatorios({ ops, params, diasTerc, sub }) {
     });
     return Object.values(m).sort((a, b) => b.economia - a.economia);
   }, [dados]);
+
+  /* série pronta pro gráfico de Aderência por Cliente (Relatório para a
+     Diretoria) — combinado com Pablo em 18/ago/2026: substituiu os
+     cartões de texto por gráficos, então esse % por cliente precisa
+     existir separado do agregado geral (agg.noPrazoPct). */
+  const porClienteAderencia = useMemo(() =>
+    porCliente.map(c => ({ cliente: c.cliente, aderencia: c.ops ? (c.noPrazo / c.ops) * 100 : 0 })),
+    [porCliente]);
 
   const porTipo = useMemo(() => {
     const m = {};
@@ -7547,12 +7591,21 @@ function Relatorios({ ops, params, diasTerc, sub }) {
 
   return (
     <div>
+      {/* ===== RELATÓRIO DE ESTOQUE — primeiro subitem da tela, como pedido
+         por Pablo em 18/ago/2026. Somente leitura: mostra o resultado da
+         última importação feita por quem tem a tela Estoque liberada
+         (Administrativo/Gestor) — sem botão de importar aqui. */}
+      {subOn("estoque") && <MonitorEstoque somenteLeitura clienteRestrito={clienteRestrito} />}
+
       {subOn("diretoria") && (<>
       <SectionTitle icon={FileSpreadsheet}>Relatório para a Diretoria</SectionTitle>
       <p style={styles.helper}>
         Peça interna: além da performance operacional, traz <strong>custo, economia e bônus</strong> —
-        é o que a diretoria precisa para avaliar o ganho financeiro do modelo. O Excel acompanha com o
-        detalhamento completo para auditoria.
+        é o que a diretoria precisa para avaliar o ganho financeiro do modelo. No período selecionado:{" "}
+        <strong style={{ color: C.navy }}>{plOp(agg.n)}</strong> concluídas, aderência à meta de{" "}
+        <strong style={{ color: agg.noPrazoPct >= 80 ? C.verde : agg.noPrazoPct >= 50 ? C.amarelo : C.vermelho }}>
+          {agg.noPrazoPct.toFixed(0)}%
+        </strong>. O Excel acompanha com o detalhamento completo para auditoria.
       </p>
 
       {/* Filtros */}
@@ -7566,16 +7619,6 @@ function Relatorios({ ops, params, diasTerc, sub }) {
               {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
             </select>
           </Field>
-        </div>
-
-        {/* Resumo do período */}
-        <div style={{ ...styles.previa, marginTop: 18 }}>
-          <Previa label="Operações no período" valor={String(agg.n)} cor={C.navy} />
-          <Previa label="Referência 100% terc." valor={brl(agg.referencia)} cor={C.navy2} />
-          <Previa label="Custo real" valor={brl(agg.custoReal)} />
-          <Previa destaque label="Economia gerada" valor={brl(agg.economia)} cor={C.laranja} />
-          <Previa label="Aderência à meta" valor={`${agg.noPrazoPct.toFixed(0)}%`}
-            cor={agg.noPrazoPct >= 80 ? C.verde : agg.noPrazoPct >= 50 ? C.amarelo : C.vermelho} />
         </div>
 
         {msg && <div style={{ ...styles.infoBox, marginTop: 14, borderColor: C.verde, background: "#E8F5E9", color: C.verde, fontWeight: 600 }}>{msg}</div>}
@@ -7592,6 +7635,50 @@ function Relatorios({ ops, params, diasTerc, sub }) {
           </button>
         </div>
       </div>
+
+      {/* Gráficos por cliente — combinado com Pablo em 18/ago/2026: substituiu
+         os cartões de texto; um gráfico por linha, usando a largura máxima
+         da tela em vez de dois lado a lado. */}
+      {porCliente.length === 0 ? (
+        <div style={{ marginTop: 16 }}><EmptyState text="Nenhuma operação concluída no período selecionado." /></div>
+      ) : (
+        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
+          <div style={styles.chartCard}>
+            <div style={styles.chartTitle}>Referência × Custo Real × Economia — por Cliente</div>
+            <ResponsiveContainer width="100%" height={340}>
+              <BarChart data={porCliente} margin={{ top: 10, right: 16, left: 8, bottom: 65 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
+                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
+                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
+                <Tooltip formatter={(v) => brl(v)} contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Referência 100% terc." />
+                <Bar dataKey="custoReal" fill={C.navy2} radius={[4, 4, 0, 0]} name="Custo real" />
+                <Bar dataKey="economia" fill={C.laranja} radius={[4, 4, 0, 0]} name="Economia" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={styles.chartCard}>
+            <div style={styles.chartTitle}>Aderência à Meta — por Cliente</div>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={porClienteAderencia} margin={{ top: 10, right: 16, left: 0, bottom: 65 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
+                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                <Tooltip formatter={(v) => `${Number(v).toFixed(0)}%`} contentStyle={tooltipStyle} />
+                <Bar dataKey="aderencia" radius={[4, 4, 0, 0]} name="Aderência à meta">
+                  {porClienteAderencia.map(c => (
+                    <Cell key={c.cliente} fill={c.aderencia >= 80 ? C.verde : c.aderencia >= 50 ? C.amarelo : C.vermelho} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       </>)}
 
@@ -7731,12 +7818,6 @@ function Relatorios({ ops, params, diasTerc, sub }) {
 
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
       {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
-
-      {/* ===== RELATÓRIO DE ESTOQUE — vínculo por perfil, dentro de Relatórios
-         (combinado com Pablo em 17/ago/2026). Somente leitura: mostra o
-         resultado da última importação feita por quem tem a tela Estoque
-         liberada (Administrativo/Gestor) — sem botão de importar aqui. */}
-      {subOn("estoque") && <MonitorEstoque somenteLeitura />}
     </div>
   );
 }
@@ -7761,6 +7842,10 @@ function RaioXMdO({ ops, params, diasTerc }) {
   const [diaAberto, setDiaAberto] = useState(null);
   const [msg, setMsg] = useState("");
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3500); };
+  /* Período minimizado por padrão — combinado com Pablo em 18/ago/2026: a
+     tabela "Hoje" já responde o que interessa no dia a dia; o período (que
+     pode ter várias semanas) fica escondido atrás de um clique. */
+  const [periodoAberto, setPeriodoAberto] = useState(false);
 
   const construirLinha = (ts, doDia) => {
     const calcs = doDia.map(o => ({ op: o, c: calcOp(o, params) }));
@@ -7907,16 +7992,18 @@ function RaioXMdO({ ops, params, diasTerc }) {
       </div>
       <Tabela linhas={[linhaHoje]} totais={null} />
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, margin: "26px 0 10px" }}>
-        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>
-          Período <span style={{ fontWeight: 500, color: C.prata, fontSize: 12 }}>(mês atual por padrão — ajuste as datas)</span>
-        </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <Field label="De"><input type="date" style={styles.input} value={de} onChange={e => setDe(e.target.value)} /></Field>
-          <Field label="Até"><input type="date" style={styles.input} value={ate} onChange={e => setAte(e.target.value)} /></Field>
-        </div>
+      <div style={{ marginTop: 26 }}>
+        <Sanfona titulo="Período" sub="Mês atual por padrão — clique para abrir e ajustar as datas" icone={Calendar} cor={C.navy2}
+          contagem={linhasPeriodo.length}
+          aberto={periodoAberto}
+          onToggle={() => setPeriodoAberto(v => !v)}>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            <Field label="De"><input type="date" style={styles.input} value={de} onChange={e => setDe(e.target.value)} /></Field>
+            <Field label="Até"><input type="date" style={styles.input} value={ate} onChange={e => setAte(e.target.value)} /></Field>
+          </div>
+          <Tabela linhas={linhasPeriodo} totais={totaisPeriodo} />
+        </Sanfona>
       </div>
-      <Tabela linhas={linhasPeriodo} totais={totaisPeriodo} />
 
       {msg && <div style={{ ...styles.infoBox, marginTop: 14, borderColor: C.verde, background: "#E8F5E9", color: C.verde, fontWeight: 600 }}>{msg}</div>}
 
