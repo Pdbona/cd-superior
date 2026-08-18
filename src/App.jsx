@@ -7245,11 +7245,16 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
     return Object.values(m).sort((a, b) => b.economia - a.economia);
   }, [dados]);
 
-  /* porCliente + % de aderência, pronto pro gráfico único Previsto × Realizado
-     com a linha de aderência (Relatório para a Diretoria) — combinado com
-     Pablo em 18/ago/2026. */
+  /* porCliente + % de aderência, pronto pros gráficos por cliente do
+     Relatório para a Diretoria (combinado com Pablo em 18/ago/2026):
+     dentroPct/foraPct alimentam a barra 100% empilhada de Aderência —
+     substituiu a linha, que não fazia sentido pra categoria (cliente) sem
+     ordem/sequência natural, ao contrário de dia-a-dia. */
   const porClienteGrafico = useMemo(() =>
-    porCliente.map(c => ({ ...c, aderencia: c.ops ? (c.noPrazo / c.ops) * 100 : 0 })),
+    porCliente.map(c => {
+      const aderencia = c.ops ? (c.noPrazo / c.ops) * 100 : 0;
+      return { ...c, aderencia, dentroPct: aderencia, foraPct: 100 - aderencia };
+    }),
     [porCliente]);
 
   /* Operações do cliente clicado no gráfico — drill-down (ver
@@ -7645,47 +7650,66 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
         </div>
       </div>
 
-      {/* Gráfico único por cliente — combinado com Pablo em 18/ago/2026: barra
-         "bullet" (previsto × realizado, realizado verde dentro do previsto
-         e vermelho quando passa) + linha de aderência à meta no mesmo
-         gráfico, largura máxima de tela. Clique numa barra ou no ponto da
-         linha abre as operações daquele cliente que geraram os números. */}
+      {/* Gráficos por cliente, largura máxima de tela (combinado com Pablo em
+         18/ago/2026): barra "bullet" Previsto × Realizado (realizado verde
+         dentro do previsto, vermelho quando passa) e, embaixo, Aderência à
+         Meta como barra 100% empilhada (verde = dentro da meta, vermelho =
+         fora — Pablo preferiu essa forma à linha, que não fazia sentido
+         para uma categoria sem sequência natural como cliente). Clique em
+         qualquer barra dos dois gráficos abre as operações daquele cliente
+         que geraram os números. */}
       {porClienteGrafico.length === 0 ? (
         <div style={{ marginTop: 16 }}><EmptyState text="Nenhuma operação concluída no período selecionado." /></div>
       ) : (
-        <div style={{ marginTop: 18 }}>
+        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
           <div style={styles.chartCard}>
-            <div style={styles.chartTitle}>Previsto × Realizado, com Aderência à Meta — por Cliente</div>
+            <div style={styles.chartTitle}>Previsto × Realizado — por Cliente</div>
             <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
               Barra cinza = previsto (referência 100% terceirizado). Barra colorida = custo real — verde dentro do
-              previsto, vermelho quando passa. Linha laranja = aderência à meta. Clique numa barra ou ponto para ver
-              as operações que geraram aquele número.
+              previsto, vermelho quando passa. Clique numa barra para ver as operações que geraram aquele número.
             </p>
-            <ResponsiveContainer width="100%" height={360}>
-              <ComposedChart data={porClienteGrafico} barGap="-100%" margin={{ top: 10, right: 40, left: 8, bottom: 90 }}>
+            <ResponsiveContainer width="100%" height={340}>
+              <BarChart data={porClienteGrafico} barGap="-100%" margin={{ top: 10, right: 16, left: 8, bottom: 90 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
                   tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
-                <YAxis yAxisId="money" tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
-                <YAxis yAxisId="pct" orientation="right" domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
-                <Tooltip contentStyle={tooltipStyle}
-                  formatter={(v, n) => n === "Aderência à meta" ? [`${Number(v).toFixed(0)}%`, n] : [brl(v), n]} />
+                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
+                <Tooltip contentStyle={tooltipStyle} formatter={(v) => brl(v)} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar yAxisId="money" dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} barSize={BARSIZE_PREVISTO}
+                <Bar dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} barSize={BARSIZE_PREVISTO}
                   name="Previsto (referência 100% terc.)" cursor="pointer"
                   onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
-                <Bar yAxisId="money" dataKey="custoReal" barSize={BARSIZE_REALIZADO} shape={BarraRealizadoCentralizada}
+                <Bar dataKey="custoReal" barSize={BARSIZE_REALIZADO} shape={BarraRealizadoCentralizada}
                   name="Realizado (custo real)" cursor="pointer"
                   onClick={(data) => setClienteSelecionado(data.payload.cliente)}>
                   {porClienteGrafico.map(c => (
                     <Cell key={c.cliente} fill={c.custoReal <= c.referencia ? C.verde : C.vermelho} />
                   ))}
                 </Bar>
-                <Line yAxisId="pct" type="monotone" dataKey="aderencia" stroke={C.laranja} strokeWidth={3}
-                  dot={(p) => <DotClicavel key={`ad-${p.payload.cliente}`} {...p} r={4} fill={C.laranja}
-                    onSelecionar={(payload) => setClienteSelecionado(payload.cliente)} />}
-                  name="Aderência à meta" />
-              </ComposedChart>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={styles.chartCard}>
+            <div style={styles.chartTitle}>Aderência à Meta — por Cliente</div>
+            <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
+              Barra 100% empilhada: verde = % das operações dentro da meta, vermelho = % fora da meta. Clique numa
+              barra para ver as operações que geraram aquele número.
+            </p>
+            <ResponsiveContainer width="100%" height={320}>
+              <BarChart data={porClienteGrafico} margin={{ top: 10, right: 16, left: 0, bottom: 90 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
+                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${Number(v).toFixed(0)}%`} />
+                <Legend wrapperStyle={{ fontSize: 12 }}
+                  payload={[{ value: "Dentro da Meta", type: "square", color: C.verde }, { value: "Fora da Meta", type: "square", color: C.vermelho }]} />
+                <Bar dataKey="dentroPct" stackId="aderencia" fill={C.verde} name="Dentro da Meta" cursor="pointer"
+                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
+                <Bar dataKey="foraPct" stackId="aderencia" fill={C.vermelho} radius={[4, 4, 0, 0]} name="Fora da Meta" cursor="pointer"
+                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
