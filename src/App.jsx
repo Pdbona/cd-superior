@@ -7743,56 +7743,73 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
       {porClienteGrafico.length === 0 ? (
         <div style={{ marginTop: 16 }}><EmptyState text="Nenhuma operação concluída no período selecionado." /></div>
       ) : (
-        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
-          <div style={styles.chartCard}>
-            <div style={styles.chartTitle}>Previsto × Realizado — por Cliente</div>
-            <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
-              Barra cinza = previsto (referência 100% terceirizado). Barra colorida = custo real — verde dentro do
-              previsto, vermelho quando passa. Clique numa barra para ver as operações que geraram aquele número.
-            </p>
-            <ResponsiveContainer width="100%" height={340}>
-              <BarChart data={porClienteGrafico} barGap="-100%" margin={{ top: 10, right: 16, left: 8, bottom: 90 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
-                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
-                <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={tickBRL} />
-                <Tooltip contentStyle={tooltipStyle} formatter={(v) => brl(v)} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="referencia" fill={C.prataClaro} radius={[4, 4, 0, 0]} barSize={BARSIZE_PREVISTO}
-                  name="Previsto (referência 100% terc.)" cursor="pointer"
-                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
-                <Bar dataKey="custoReal" barSize={BARSIZE_REALIZADO} shape={BarraRealizadoCentralizada}
-                  name="Realizado (custo real)" cursor="pointer"
-                  onClick={(data) => setClienteSelecionado(data.payload.cliente)}>
-                  {porClienteGrafico.map(c => (
-                    <Cell key={c.cliente} fill={c.custoReal <= c.referencia ? C.verde : C.vermelho} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+        <div style={{ marginTop: 18 }}>
+          <div style={styles.chartGrid}>
+            <div style={styles.chartCard}>
+              <div style={styles.chartTitle}>Aderência à Meta — por Cliente</div>
+              <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
+                Barra 100% empilhada: verde = % das operações dentro da meta, vermelho = % fora da meta. Clique numa
+                barra para ver as operações que geraram aquele número.
+              </p>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={porClienteGrafico} margin={{ top: 10, right: 16, left: 0, bottom: 90 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                  <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
+                    tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${Number(v).toFixed(0)}%`} />
+                  <Legend wrapperStyle={{ fontSize: 12 }}
+                    payload={[{ value: "Dentro da Meta", type: "square", color: C.verde }, { value: "Fora da Meta", type: "square", color: C.vermelho }]} />
+                  <Bar dataKey="dentroPct" stackId="aderencia" fill={C.verde} name="Dentro da Meta" cursor="pointer"
+                    onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
+                  <Bar dataKey="foraPct" stackId="aderencia" fill={C.vermelho} radius={[4, 4, 0, 0]} name="Fora da Meta" cursor="pointer"
+                    onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
 
-          <div style={styles.chartCard}>
-            <div style={styles.chartTitle}>Aderência à Meta — por Cliente</div>
-            <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 8px", paddingLeft: 4, lineHeight: 1.4 }}>
-              Barra 100% empilhada: verde = % das operações dentro da meta, vermelho = % fora da meta. Clique numa
-              barra para ver as operações que geraram aquele número.
-            </p>
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={porClienteGrafico} margin={{ top: 10, right: 16, left: 0, bottom: 90 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="cliente" tick={{ fontSize: 10.5, fill: C.texto }} interval={0} angle={-25} textAnchor="end" height={90}
-                  tickFormatter={v => v.length > 22 ? `${v.slice(0, 22)}…` : v} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}%`} />
-                <Tooltip contentStyle={tooltipStyle} formatter={(v) => `${Number(v).toFixed(0)}%`} />
-                <Legend wrapperStyle={{ fontSize: 12 }}
-                  payload={[{ value: "Dentro da Meta", type: "square", color: C.verde }, { value: "Fora da Meta", type: "square", color: C.vermelho }]} />
-                <Bar dataKey="dentroPct" stackId="aderencia" fill={C.verde} name="Dentro da Meta" cursor="pointer"
-                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
-                <Bar dataKey="foraPct" stackId="aderencia" fill={C.vermelho} radius={[4, 4, 0, 0]} name="Fora da Meta" cursor="pointer"
-                  onClick={(data) => setClienteSelecionado(data.payload.cliente)} />
-              </BarChart>
-            </ResponsiveContainer>
+            {/* Trazido do "Baixar Dashboard Diretoria"/"Visualizar agora" pra
+               tela, como pedido por Pablo em 18/ago/2026 — antes só existia
+               no HTML de impressão (montarHTMLDiretoria). */}
+            <div style={styles.chartCard}>
+              <div style={styles.chartTitle}>Tempo Realizado × Tempo-Alvo por Dia</div>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={volumeDiario} margin={{ top: 10, right: 12, left: 8, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
+                  <XAxis dataKey="rotulo" tick={{ fontSize: 11, fill: C.texto }} />
+                  <YAxis tick={{ fontSize: 11, fill: C.texto }} tickFormatter={v => `${v}h`} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [`${Number(v).toFixed(1)}h`, n]}
+                    labelFormatter={(rotulo, payload) => {
+                      const d = payload?.[0]?.payload;
+                      return d ? `${rotulo} — ${d.noPrazo}/${d.ops} no prazo` : rotulo;
+                    }} />
+                  <Bar dataKey="meta" fill={C.prataClaro} radius={[4, 4, 0, 0]} name="Tempo-alvo do dia" />
+                  <Bar dataKey="horas" radius={[4, 4, 0, 0]} name="Realizado">
+                    {volumeDiario.map((d, i) => (
+                      <Cell key={d.ts ?? i} fill={d.ops > 0 && d.noPrazo === d.ops ? C.verde : d.noPrazo > 0 ? C.amarelo : C.vermelho} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.prata, marginTop: 8, paddingLeft: 4 }}>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: C.prataClaro, marginRight: 4, verticalAlign: -1 }} />Tempo-alvo do dia</span>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: C.verde, marginRight: 4, verticalAlign: -1 }} />Todas no prazo</span>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: C.amarelo, marginRight: 4, verticalAlign: -1 }} />Parte no prazo</span>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: C.vermelho, marginRight: 4, verticalAlign: -1 }} />Nenhuma no prazo</span>
+              </div>
+            </div>
+
+            <div style={{ ...styles.chartCard, display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{ ...styles.chartTitle, alignSelf: "flex-start" }}>Aderência às Metas de Tempo</div>
+              <GaugeAderencia pct={agg.noPrazoPct} noPrazo={agg.noPrazo} total={agg.n} />
+              <div style={{ ...styles.infoBox, marginTop: 14, width: "100%" }}>
+                Consumo de <strong>{agg.aderenciaTempo.toFixed(0)}%</strong> do tempo previsto —{" "}
+                {agg.aderenciaTempo <= 100
+                  ? <>a operação executou <strong>{(100 - agg.aderenciaTempo).toFixed(0)}% mais rápido</strong> que a meta acumulada.</>
+                  : <>houve consumo de <strong>{(agg.aderenciaTempo - 100).toFixed(0)}% acima</strong> da meta acumulada.</>}
+                {agg.bonusPerdido > 0 && <> Em operações fora da meta, <strong>{brl(agg.bonusPerdido)}</strong> em bônus não foram desembolsados.</>}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -10137,21 +10154,24 @@ function DotClicavel({ cx, cy, payload, r, fill, onSelecionar }) {
   );
 }
 
-/* Barra "bullet" — previsto (fundo, cinza, largo) × realizado (frente,
-   colorida, mais fina) — usada no gráfico Previsto × Realizado por Cliente
-   (Relatório para a Diretoria). `barGap="-100%"` no ComposedChart faz as
-   duas barras (mesma categoria X) começarem no mesmo ponto — este shape só
-   desloca a barra mais fina pra ficar centralizada dentro da mais larga.
-   Como os dois barSize são constantes fixas, o deslocamento também é fixo,
-   sem precisar ler a geometria da barra de fundo. Testado num sandbox
-   isolado (React+Recharts) antes de entrar aqui — combinado com Pablo em
-   18/ago/2026. */
-const BARSIZE_PREVISTO = 42, BARSIZE_REALIZADO = 20;
-function BarraRealizadoCentralizada(props) {
-  const { x, y, width, height, fill } = props;
-  if (!(height > 0)) return null;
-  const offset = (BARSIZE_PREVISTO - BARSIZE_REALIZADO) / 2;
-  return <rect x={x + offset} y={y} width={width} height={height} fill={fill} rx={3} ry={3} />;
+/* Medidor semicircular de aderência — usado em "Aderência às Metas de
+   Tempo" (Relatório para a Diretoria). Mesma matemática do medidor que já
+   existia só no HTML de impressão (montarHTMLDiretoria), portada pra tela
+   como pedido por Pablo em 18/ago/2026: raio 96, arco de 34,122 a 226,122
+   (semicírculo virado pra cima), ângulo do ponteiro proporcional a `pct`. */
+function GaugeAderencia({ pct, noPrazo, total }) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  const ang = Math.PI * (1 - p / 100);
+  const gx = 130 + 96 * Math.cos(ang), gy = 122 - 96 * Math.sin(ang);
+  const cor = p >= 80 ? C.verde : p >= 50 ? C.amarelo : C.vermelho;
+  return (
+    <svg viewBox="0 0 260 150" style={{ maxWidth: 260, width: "100%", display: "block" }}>
+      <path d="M 34 122 A 96 96 0 0 1 226 122" fill="none" stroke={C.prataClaro} strokeWidth={19} strokeLinecap="round" />
+      <path d={`M 34 122 A 96 96 0 0 1 ${gx.toFixed(1)} ${gy.toFixed(1)}`} fill="none" stroke={cor} strokeWidth={19} strokeLinecap="round" />
+      <text x={130} y={112} textAnchor="middle" fontFamily="'Roboto Mono',monospace" fontSize={38} fontWeight={700} fill={cor}>{p.toFixed(0)}%</text>
+      <text x={130} y={140} textAnchor="middle" fontFamily="'Roboto',sans-serif" fontSize={12} fill={C.prata}>{noPrazo} de {total} operações no prazo</text>
+    </svg>
+  );
 }
 function TipoIcon({ tipo, big }) {
   const isTruck = tipo?.icon === "truck" || /carga|caminh/i.test(tipo?.label || "");
