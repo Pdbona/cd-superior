@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu
+  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -80,7 +80,8 @@ const MENU_LATERAL = [
   { tipo: "item", id: "relatorios" },
   { tipo: "grupo", id: "cadastros", label: "Cadastros", icon: Database,
     itens: ["parametros", "perfis"] },
-  { tipo: "item", id: "comercial" }
+  { tipo: "item", id: "comercial" },
+  { tipo: "item", id: "administrativo" }
 ];
 
 /* Tela do Coletor — o app do Conferente (registro de início/fim de operação
@@ -123,6 +124,12 @@ const urlComercial = (subComercial) => {
    fixas dela) nem no botão livre do Hub (HubEntrada), que continua sem
    checar perfil nenhum. */
 const TELA_COMERCIAL = { id: "comercial", label: "App Gestão Comercial (link externo)", icon: DollarSign };
+
+/* Acesso ao App Gestão ADM — mesmo modelo do Comercial: outro app, outro
+   repo, outro deploy, sem login próprio (validado aqui, pelo perfil).
+   Combinado com Pablo em 19/ago/2026. */
+const URL_APP_ADMINISTRATIVO = "https://Pdbona.github.io/gestao-adm-superior/";
+const TELA_ADMINISTRATIVO = { id: "administrativo", label: "App Gestão ADM (link externo)", icon: Landmark };
 
 /* Subitens controláveis por perfil, aba por aba (RBAC v2 fase 5) — granularidade
    fina, além do liga/desliga da aba inteira. A ordem de cada lista é a mesma
@@ -1157,6 +1164,35 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
     setErroComercial("Usuário ou senha incorretos.");
   };
 
+  /* Acesso ao App Gestão ADM — mesmo gate do Comercial (usuário + senha
+     contra o mesmo cadastro), só muda a chave de permissão checada. */
+  const [pedirAdministrativo, setPedirAdministrativo] = useState(false);
+  const [usuarioAdministrativoId, setUsuarioAdministrativoId] = useState("");
+  const [pinAdministrativo, setPinAdministrativo] = useState("");
+  const [erroAdministrativo, setErroAdministrativo] = useState("");
+
+  const abrirAdministrativo = () => window.open(URL_APP_ADMINISTRATIVO, "_blank", "noopener,noreferrer");
+
+  const validarAdministrativo = () => {
+    if (!usuarioAdministrativoId) return setErroAdministrativo("Selecione seu usuário.");
+    const gestor = gestores.find(g => g.id === usuarioAdministrativoId);
+    if (gestor) {
+      if (gestor.pin !== pinAdministrativo) { setErroAdministrativo("Usuário ou senha incorretos."); setPinAdministrativo(""); return; }
+      if (params?.permissoesGestor?.administrativo === false) return setErroAdministrativo("Você não tem acesso a esta área.");
+      setErroAdministrativo(""); return abrirAdministrativo();
+    }
+    const pessoa = pessoasPerfil.find(p => p.id === usuarioAdministrativoId);
+    if (pessoa) {
+      if (pessoa.bloqueado) { setErroAdministrativo("Acesso bloqueado. Procure o Administrador."); setPinAdministrativo(""); return; }
+      if (pessoa.pin !== pinAdministrativo) { setErroAdministrativo("Usuário ou senha incorretos."); setPinAdministrativo(""); return; }
+      const perfil = perfis.find(p => p.id === pessoa.perfilId);
+      const ef = permissoesEfetivas(pessoa, perfil);
+      if (ef.telas?.administrativo !== true) return setErroAdministrativo("Você não tem acesso a esta área.");
+      setErroAdministrativo(""); return abrirAdministrativo();
+    }
+    setErroAdministrativo("Usuário ou senha incorretos.");
+  };
+
   const hubBtn = (disabled) => ({
     display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
     gap: 10, background: disabled ? "#F2F3F5" : C.branco,
@@ -1181,7 +1217,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
 
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div style={{ width: "100%", maxWidth: 520 }}>
-          {!pedirPinAdmin && !pedirComercial ? (
+          {!pedirPinAdmin && !pedirComercial && !pedirAdministrativo ? (
             <>
               <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 19, fontWeight: 800, color: C.navy, textAlign: "center", marginBottom: 6 }}>
                 Como você vai acessar?
@@ -1200,10 +1236,10 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
                   <div style={{ ...styles.portaIcon, background: "#EAF6EE" }}><Truck size={26} color={C.supVerde} strokeWidth={2.2} /></div>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>OPERACIONAL</div>
                 </button>
-                <button style={hubBtn(true)} disabled title="Em desenvolvimento">
-                  <div style={{ ...styles.portaIcon, background: "#E9EBEE" }}><FileText size={26} color={C.prata} strokeWidth={2.2} /></div>
-                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.prata }}>ADMINISTRATIVO</div>
-                  <div style={{ fontSize: 11, color: C.prata }}>Em desenvolvimento</div>
+                <button style={hubBtn(false)}
+                  onClick={() => { setPedirAdministrativo(true); setUsuarioAdministrativoId(""); setPinAdministrativo(""); setErroAdministrativo(""); }}>
+                  <div style={{ ...styles.portaIcon, background: "#FFF3E0" }}><Landmark size={26} color={C.laranjaEsc} strokeWidth={2.2} /></div>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 15, color: C.navy }}>ADMINISTRATIVO</div>
                 </button>
                 <button style={hubBtn(true)} disabled title="Em desenvolvimento">
                   <div style={{ ...styles.portaIcon, background: "#E9EBEE" }}><Users size={26} color={C.prata} strokeWidth={2.2} /></div>
@@ -1237,7 +1273,7 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
               </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>Acesso restrito ao administrador do sistema.</div>
             </div>
-          ) : (
+          ) : pedirComercial ? (
             <div style={{ ...styles.card, textAlign: "center" }}>
               <DollarSign size={26} color={C.navy2} />
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
@@ -1275,6 +1311,46 @@ function HubEntrada({ params, onOperacional, onEntrarAdmin }) {
               </div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>
                 Só entra quem tiver o acesso "App Gestão Comercial" liberado no perfil, cadastrado pelo Administrador.
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...styles.card, textAlign: "center" }}>
+              <Landmark size={26} color={C.laranjaEsc} />
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, color: C.navy, margin: "10px 0 14px", fontSize: 15 }}>
+                Acesso Administrativo
+              </div>
+              {usuariosComercial.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: C.prata, marginBottom: 8 }}>
+                  Nenhum usuário cadastrado ainda — peça pro Administrador cadastrar e liberar o acesso.
+                </div>
+              ) : (
+                <>
+                  <div style={{ textAlign: "left", marginBottom: 12 }}>
+                    <Field label="Usuário">
+                      <select style={styles.input} value={usuarioAdministrativoId} autoFocus
+                        onChange={e => { setUsuarioAdministrativoId(e.target.value); setErroAdministrativo(""); }}>
+                        <option value="">Selecione…</option>
+                        {usuariosComercial.map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <input type="password" inputMode="numeric" value={pinAdministrativo}
+                    onChange={e => { setPinAdministrativo(e.target.value); setErroAdministrativo(""); }}
+                    onKeyDown={e => e.key === "Enter" && validarAdministrativo()}
+                    placeholder="Senha"
+                    style={{ ...styles.input, textAlign: "center", fontSize: 22, letterSpacing: 8, fontFamily: "'Roboto Mono',monospace" }} />
+                </>
+              )}
+              {erroAdministrativo && <div style={{ color: C.vermelho, fontSize: 12.5, marginTop: 8, fontWeight: 600 }}>{erroAdministrativo}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <button style={{ ...styles.btnGhost, flex: 1, justifyContent: "center" }}
+                  onClick={() => { setPedirAdministrativo(false); setUsuarioAdministrativoId(""); setPinAdministrativo(""); setErroAdministrativo(""); }}>Voltar</button>
+                {usuariosComercial.length > 0 && (
+                  <button style={{ ...styles.btnPrimary, flex: 1, justifyContent: "center" }} onClick={validarAdministrativo}>Entrar</button>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: C.prata, marginTop: 12 }}>
+                Só entra quem tiver o acesso "App Gestão ADM" liberado no perfil, cadastrado pelo Administrador.
               </div>
             </div>
           )}
@@ -2391,6 +2467,9 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
      do Comercial com os subitens que essa pessoa não tem, já que o Comercial
      não enxerga o RBAC daqui (outro projeto Firebase — ver urlComercial). */
   const subComercial = (permissoes ? sub : params.permissoesGestorSub)?.comercial;
+  /* Acesso ao App Gestão ADM — mesma regra opt-out/opt-in do Comercial,
+     mesmo link externo sem RBAC próprio (ver TELA_ADMINISTRATIVO). */
+  const podeAdministrativo = permissoes ? permissoesEfetivas?.administrativo === true : permissoesEfetivas?.administrativo !== false;
   /* Mesmo mecanismo do perfil Cliente (link próprio) usado lá em cima em
      App — aqui replicado a partir de anonimizarCliente + usuario, que já
      chegam prontos como prop, em vez de receber mais uma prop nova.
@@ -2416,15 +2495,17 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
   const resolverItemMenu = (id) => {
     if (id === "coletor") return podeColetor ? { id, label: "Acesso Coletor", icon: HardHat, especial: "coletor" } : null;
     if (id === "comercial") return podeComercial ? { id, label: "Comercial", icon: DollarSign, especial: "comercial" } : null;
+    if (id === "administrativo") return podeAdministrativo ? { id, label: "Administrativo", icon: Landmark, especial: "administrativo" } : null;
     return TABS.find(t => t.id === id) || null;
   };
   const clicarItemMenu = (item) => {
     if (item.especial === "coletor") setModoColetor(true);
     else if (item.especial === "comercial") window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer");
+    else if (item.especial === "administrativo") window.open(URL_APP_ADMINISTRATIVO, "_blank", "noopener,noreferrer");
     else setTab(item.id);
     setMenuMobileAberto(false);
   };
-  const itemAtivo = (item) => item.especial === "coletor" ? false : item.especial === "comercial" ? false : tab === item.id;
+  const itemAtivo = (item) => item.especial ? false : tab === item.id;
 
   return (
     <div style={styles.page}>
@@ -2761,7 +2842,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      restringível pelo Gestor (não está em TELAS_RESTRITAS_ADMIN, não faz
      sentido restringir: não dá superpoder nenhum, só abre o app do
      conferente). */
-  const telasDisponiveis = [...TABS_GESTOR.filter(t => !telasRestritas.includes(t.id)), TELA_COLETOR, TELA_COMERCIAL];
+  const telasDisponiveis = [...TABS_GESTOR.filter(t => !telasRestritas.includes(t.id)), TELA_COLETOR, TELA_COMERCIAL, TELA_ADMINISTRATIVO];
   const perfilPorId = (id) => draftPerfis.find(p => p.id === id);
   const mudou = () => setSalvo(false);
 
@@ -3160,7 +3241,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 </div>
                 {!gestorAberto && (
                   <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
-                    {[...TABS_GESTOR, TELA_COLETOR, TELA_COMERCIAL].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
+                    {[...TABS_GESTOR, TELA_COLETOR, TELA_COMERCIAL, TELA_ADMINISTRATIVO].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
                   </div>
                 )}
               </div>
