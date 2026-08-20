@@ -131,6 +131,18 @@ const TELA_COMERCIAL = { id: "comercial", label: "App Gestão Comercial (link ex
 const URL_APP_ADMINISTRATIVO = "https://Pdbona.github.io/gestao-adm-superior/";
 const TELA_ADMINISTRATIVO = { id: "administrativo", label: "App Gestão ADM (link externo)", icon: Landmark };
 
+/* Mesma ideia de urlComercial: manda só o que essa pessoa NÃO tem
+   (?ocultar=id1,id2 — ids batem com SUBITENS_POR_ABA.administrativo /
+   Layout.ABAS lá no App Gestão ADM), mais ?usuario= (nome de quem já
+   logou aqui) pra ele pular a própria tela de identificação. */
+const urlAdministrativo = (usuario, subAdministrativo) => {
+  const ocultos = (SUBITENS_POR_ABA.administrativo || [])
+    .filter(s => subAdministrativo?.[s.id] === false).map(s => s.id);
+  const params = new URLSearchParams({ usuario: usuario || "" });
+  if (ocultos.length) params.set("ocultar", ocultos.join(","));
+  return `${URL_APP_ADMINISTRATIVO}?${params.toString()}`;
+};
+
 /* Subitens controláveis por perfil, aba por aba (RBAC v2 fase 5) — granularidade
    fina, além do liga/desliga da aba inteira. A ordem de cada lista é a mesma
    ordem em que os blocos aparecem na tela (combinado com Pablo em 16/ago/2026:
@@ -213,6 +225,17 @@ const SUBITENS_POR_ABA = {
     { id: "padroes", label: "Proposta Padrão" },
     { id: "notif", label: "Notificações" },
     { id: "logs", label: "Logs" }
+  ],
+  /* Igual ao Comercial: outro app/repo, sem RBAC próprio — a URL manda o
+     que esconder (?ocultar=, ver urlAdministrativo). Ids batem com
+     Layout.ABAS no App Gestão ADM; mantenha as duas listas em sincronia
+     manualmente (combinado com Pablo em 20/ago/2026). */
+  administrativo: [
+    { id: "importacao", label: "Importação" },
+    { id: "faturamento", label: "Faturamento" },
+    { id: "despesas", label: "Despesas" },
+    { id: "fornecedores", label: "Fornecedores" },
+    { id: "resultado", label: "Resultado" }
   ]
 };
 
@@ -2293,6 +2316,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
   /* Acesso ao App Gestão ADM — mesma regra opt-out/opt-in do Comercial,
      mesmo link externo sem RBAC próprio (ver TELA_ADMINISTRATIVO). */
   const podeAdministrativo = permissoes ? permissoesEfetivas?.administrativo === true : permissoesEfetivas?.administrativo !== false;
+  const subAdministrativo = (permissoes ? sub : params.permissoesGestorSub)?.administrativo;
   /* Mesmo mecanismo do perfil Cliente (link próprio) usado lá em cima em
      App — aqui replicado a partir de anonimizarCliente + usuario, que já
      chegam prontos como prop, em vez de receber mais uma prop nova.
@@ -2324,7 +2348,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
   const clicarItemMenu = (item) => {
     if (item.especial === "coletor") setModoColetor(true);
     else if (item.especial === "comercial") window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer");
-    else if (item.especial === "administrativo") window.open(`${URL_APP_ADMINISTRATIVO}?usuario=${encodeURIComponent(usuario)}`, "_blank", "noopener,noreferrer");
+    else if (item.especial === "administrativo") window.open(urlAdministrativo(usuario, subAdministrativo), "_blank", "noopener,noreferrer");
     else setTab(item.id);
     setMenuMobileAberto(false);
   };
