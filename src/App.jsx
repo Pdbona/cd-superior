@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark
+  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark, Pencil
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -172,7 +172,13 @@ const SUBITENS_POR_ABA = {
     { id: "maodeobra", label: "Mão de Obra — Planejado x Realizado" }
   ],
   fotos: [
-    { id: "romaneio", label: "Gerar Romaneio" }
+    { id: "romaneio", label: "Gerar Romaneio" },
+    /* opt-in (ver SUBITENS_OPT_IN) — diferente de todo o resto desta lista:
+       precisa ser marcado explicitamente pra valer, porque libera reabrir
+       e alterar um TFA (Termo de Faltas, Excessos e Avarias) já gravado —
+       documento que devia ficar travado depois de gerado. Combinado com
+       Pablo em 21/ago/2026. */
+    { id: "editartfa", label: "Editar TFA (Romaneio) já Gerado" }
   ],
   relatorios: [
     { id: "estoque", label: "Relatório de Estoque" },
@@ -239,13 +245,35 @@ const SUBITENS_POR_ABA = {
   ]
 };
 
+/* Subitens que invertem a regra padrão: em vez de "some só se marcado
+   `false`" (opt-out, o resto da lista, liberado por padrão até alguém
+   desmarcar), estes só valem se marcados `true` explicitamente (opt-in) —
+   reservado para ações sensíveis que não devem valer automaticamente pra
+   ninguém até o Gestor/Administrador ligar uma a uma. Ao contrário do
+   resto da lista, aqui o atalho "sub ausente = sem restrição, libera tudo"
+   NÃO se aplica — um Gestor cujo acesso nunca foi customizado (sub
+   undefined) fica sem o opt-in até alguém marcar, e não com ele por
+   omissão. */
+const SUBITENS_OPT_IN = new Set(["editartfa"]);
+
 /* Lê a permissão de um subitem dentro da aba já aberta. `sub` é o recorte
    { [subId]: bool } daquela aba, resolvido para quem está logado (perfil +
    ajuste individual). null = sem restrição (Gestor/Administrador de verdade,
-   ou perfil salvo antes desta fase) e tudo aparece. */
+   ou perfil salvo antes desta fase) e tudo aparece — exceto os opt-in
+   (ver SUBITENS_OPT_IN), que exigem `true` explícito mesmo com sub nulo. */
 function subLiberado(sub, subId) {
+  if (SUBITENS_OPT_IN.has(subId)) return sub?.[subId] === true;
   if (!sub) return true;
   return sub[subId] !== false;
+}
+
+/* Mesma regra de subLiberado, mas para ler o valor bruto salvo num objeto
+   `sub`/`subCustom` (sem o atalho `!sub` de "sem restrição") — usado pelos
+   toggles do editor de acessos, onde é preciso saber o estado efetivo
+   atual (ligado/desligado) pra inverter, e não apenas se o subitem aparece
+   pra quem está logado. */
+function subEfetivo(subId, valor) {
+  return SUBITENS_OPT_IN.has(subId) ? valor === true : valor !== false;
 }
 
 /* Permissões que de fato valem para uma pessoa: o ajuste individual dela
@@ -2295,6 +2323,11 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
      card ganhou a mesma granularidade dos perfis próprios). Ausente em
      qualquer um dos dois casos = undefined em subLiberado = liberado. */
   const subAba = (permissoes ? sub : params.permissoesGestorSub)?.[tab];
+  /* Recorte fixo da aba "fotos" (não a aba corrente) — o Dashboard abre o
+     mesmo VisorFotos por atalho (clique numa operação de "Realizadas
+     Hoje"), e a permissão de editar TFA sempre mora em "fotos", não na
+     aba de onde o gestor entrou. */
+  const subFotos = (permissoes ? sub : params.permissoesGestorSub)?.fotos;
 
   /* Tela do Coletor dentro do painel — combinado com Pablo em 16/ago/2026:
      quem tem esse acesso (Gestor por padrão, ou qualquer perfil que marque
@@ -2425,8 +2458,8 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
         <main style={{ flex: 1, minWidth: 0, padding: "22px 26px" }}>
           {tab === "operacoes" && <Operacoes ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
           {tab === "acompanhar" && <Acompanhamento ops={ops} params={params} now={now} sub={subAba} />}
-          {tab === "dashboard" && <Dashboard ops={ops} opsForecast={opsForecast} anonimizarCliente={anonimizarCliente} params={params} now={now} diasTerc={diasTerc} sub={subAba} />}
-          {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} />}
+          {tab === "dashboard" && <Dashboard ops={ops} opsForecast={opsForecast} anonimizarCliente={anonimizarCliente} params={params} now={now} diasTerc={diasTerc} sub={subAba} subFotos={subFotos} persistOps={persistOps} usuario={usuario} />}
+          {tab === "fotos" && <GaleriaFotos ops={ops} params={params} persistOps={persistOps} sub={subAba} usuario={usuario} />}
           {tab === "ajustes" && <AjusteRegistros ops={ops} params={params} persistOps={persistOps} diasTerc={diasTerc} persistDiasTerc={persistDiasTerc} sub={subAba} />}
           {tab === "rateio" && <Rateio ops={ops} params={params} persistOps={persistOps} persistParams={persistParams} sub={subAba} />}
           {tab === "relatorios" && <Relatorios ops={ops} params={params} diasTerc={diasTerc} sub={subAba} clienteRestrito={clienteRestrito} />}
@@ -2720,7 +2753,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   };
   const toggleGestorSub = (abaId, subId) => {
     setDraftPermissoesGestorSub(d => ({
-      ...d, [abaId]: { ...d[abaId], [subId]: d[abaId]?.[subId] === false }
+      ...d, [abaId]: { ...d[abaId], [subId]: !subEfetivo(subId, d[abaId]?.[subId]) }
     }));
     mudou();
   };
@@ -2735,7 +2768,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   };
   const togglePerfilSub = (perfilId, abaId, subId) => {
     setDraftPerfis(d => d.map(p => p.id === perfilId
-      ? { ...p, sub: { ...p.sub, [abaId]: { ...p.sub?.[abaId], [subId]: p.sub?.[abaId]?.[subId] === false } } }
+      ? { ...p, sub: { ...p.sub, [abaId]: { ...p.sub?.[abaId], [subId]: !subEfetivo(subId, p.sub?.[abaId]?.[subId]) } } }
       : p));
     mudou();
   };
@@ -2836,8 +2869,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
     setDraftPessoas(d => d.map(p => {
       if (p.id !== pessoaId) return p;
       const base = p.subCustom || JSON.parse(JSON.stringify(perfilPorId(p.perfilId)?.sub || {}));
-      const atual = base[abaId]?.[subId] !== false;
-      return { ...p, subCustom: { ...base, [abaId]: { ...base[abaId], [subId]: atual ? false : true } } };
+      return { ...p, subCustom: { ...base, [abaId]: { ...base[abaId], [subId]: !subEfetivo(subId, base[abaId]?.[subId]) } } };
     }));
     mudou();
   };
@@ -2913,7 +2945,9 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 {subitens.map(s => (
                   <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12,
                     color: C.texto, cursor: somenteLeitura ? "default" : "pointer" }}>
-                    <input type="checkbox" checked={subMapa?.[t.id]?.[s.id] !== false} disabled={somenteLeitura}
+                    <input type="checkbox"
+                      checked={SUBITENS_OPT_IN.has(s.id) ? subMapa?.[t.id]?.[s.id] === true : subMapa?.[t.id]?.[s.id] !== false}
+                      disabled={somenteLeitura}
                       onChange={() => onSub(t.id, s.id)} />
                     {s.label}
                   </label>
@@ -2977,7 +3011,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 telas={formPerfil.telas} subMapa={formPerfil.sub}
                 onTela={id => setFormPerfil(f => ({ ...f, telas: { ...f.telas, [id]: !f.telas[id] } }))}
                 onSub={(abaId, subId) => setFormPerfil(f => ({ ...f,
-                  sub: { ...f.sub, [abaId]: { ...f.sub?.[abaId], [subId]: f.sub?.[abaId]?.[subId] === false } } }))} />
+                  sub: { ...f.sub, [abaId]: { ...f.sub?.[abaId], [subId]: !subEfetivo(subId, f.sub?.[abaId]?.[subId]) } } }))} />
               {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
               <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
                 <button style={styles.btnGhost} onClick={() => { setFormPerfil(null); setErroPerfil(""); }}>Cancelar</button>
@@ -4977,7 +5011,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
 /* ============================================================
    GESTOR — ABA 3: DASHBOARD
    ============================================================ */
-function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc, sub }) {
+function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc, sub, subFotos, persistOps, usuario }) {
   /* sub: quais blocos desta aba aparecem para o perfil logado (ver
      SUBITENS_POR_ABA). null = sem restrição, mostra tudo. */
   const subOn = (id) => subLiberado(sub, id);
@@ -5008,6 +5042,8 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
   const [realDe, setRealDe] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
   const [realAte, setRealAte] = useState(hojeISO);
   const [diaRealSel, setDiaRealSel] = useState(null);
+  /* Economia no Mês: lista de dias fica recolhida por padrão */
+  const [expandEconomia, setExpandEconomia] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -5462,7 +5498,11 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
               </div>
             )}
 
-            {fotoAberta && <VisorFotos reg={fotoAberta} onFechar={() => setFotoAberta(null)} />}
+            {fotoAberta && (
+              <VisorFotos reg={fotoAberta} op={ops.find(o => o.id === fotoAberta.opId) || null}
+                persistOps={persistOps} ops={ops} sub={subFotos} usuario={usuario}
+                onFechar={() => setFotoAberta(null)} />
+            )}
           </div>
         )}
       </div>
@@ -5923,21 +5963,28 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         <EmptyState text="Nenhum dia com operação ou terceirizado cadastrado neste mês." />
       ) : (
         <>
-          <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
-            {porDiaMes.slice().reverse().map(d => (
-              <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
-                opacity: d.futuro ? .55 : 1 }}>
-                <div style={{ minWidth: 80, fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 13, color: C.navy }}>{d.rotulo}</div>
-                <div style={{ fontSize: 11.5, color: C.prata }}>{d.ops.length} operaç{d.ops.length !== 1 ? "ões" : "ão"}</div>
-                <div style={{ fontSize: 11.5, color: C.texto }}>Ref. <strong>{brl(d.referenciaDia)}</strong></div>
-                <div style={{ fontSize: 11.5, color: C.texto }}>Terc. contratado <strong>{d.qtdTercDia}</strong> ({brl(d.custoTercDia)})</div>
-                <div style={{ fontSize: 11.5, color: C.texto }}>Bônus <strong>{brl(d.bonusDia)}</strong></div>
-                <div style={{ fontSize: 12, fontWeight: 700, marginLeft: "auto", color: d.economiaDia >= 0 ? C.supVerde : C.vermelho }}>
-                  {brl(d.economiaDia)}
+          <button style={{ ...styles.btnSecondary, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}
+            onClick={() => setExpandEconomia(!expandEconomia)}>
+            <span style={{ fontSize: 14 }}>{expandEconomia ? "▼" : "▶"}</span>
+            {expandEconomia ? "Recolher" : "Expandir"} detalhes diários
+          </button>
+          {expandEconomia && (
+            <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
+              {porDiaMes.slice().reverse().map(d => (
+                <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
+                  opacity: d.futuro ? .55 : 1 }}>
+                  <div style={{ minWidth: 80, fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 13, color: C.navy }}>{d.rotulo}</div>
+                  <div style={{ fontSize: 11.5, color: C.prata }}>{d.ops.length} operaç{d.ops.length !== 1 ? "ões" : "ão"}</div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Ref. <strong>{brl(d.referenciaDia)}</strong></div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Terc. contratado <strong>{d.qtdTercDia}</strong> ({brl(d.custoTercDia)})</div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Bônus <strong>{brl(d.bonusDia)}</strong></div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginLeft: "auto", color: d.economiaDia >= 0 ? C.supVerde : C.vermelho }}>
+                    {brl(d.economiaDia)}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </>
       )}
       </>)}
@@ -5998,19 +6045,45 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
 
 /* Visualizador de uma operação: baixa as imagens só quando aberto,
    para a lista da galeria continuar leve. */
-function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
+function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
+  const subOn = (id) => subLiberado(sub, id);
   const [pacote, setPacote] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [zoom, setZoom] = useState(null);
   const [falhou, setFalhou] = useState(false);
 
-  /* Cadastro do romaneio: observação livre + avaria (sim/não + descrição).
-     Parte do próprio op, senão fica perdido se ele fechar e reabrir o modal. */
+  /* Cadastro do romaneio: observação livre + avaria (sim/não + descrição —
+     o TFA, Termo de Faltas, Excessos e Avarias). Parte do próprio op, senão
+     fica perdido se ele fechar e reabrir o modal.
+
+     Trava (combinado com Pablo em 21/ago/2026): depois que o TFA é gerado
+     uma vez (romaneioGeradoEm gravado), os campos ficam bloqueados e o
+     botão vira "Abrir Romaneio" em vez de gerar de novo — o TFA é um
+     documento de auditoria, não devia mudar silenciosamente depois de
+     fechado. Só quem tem o subitem opt-in "editartfa" (ver SUBITENS_OPT_IN)
+     vê o botão "Editar TFA" pra destravar; ao salvar de novo, o carimbo
+     original (romaneioGeradoEm/Por) não muda — só ganha romaneioEditadoEm/
+     Por, prá manter os dois momentos no histórico. */
+  const jaGerado = !!op?.romaneioGeradoEm;
+  const podeEditarTFA = subOn("editartfa");
+  const [modoEdicao, setModoEdicao] = useState(false);
+  const travado = jaGerado && !modoEdicao;
   const [obs, setObs] = useState(op?.observacao || "");
   const [avariaTem, setAvariaTem] = useState(op?.avariaTem || false);
   const [avariaDescricao, setAvariaDescricao] = useState(op?.avariaDescricao || "");
   const [erroRomaneio, setErroRomaneio] = useState("");
   const [gravando, setGravando] = useState(false);
+
+  const iniciarEdicaoTFA = () => {
+    setObs(op?.observacao || ""); setAvariaTem(op?.avariaTem || false);
+    setAvariaDescricao(op?.avariaDescricao || ""); setErroRomaneio("");
+    setModoEdicao(true);
+  };
+  const cancelarEdicaoTFA = () => {
+    setObs(op?.observacao || ""); setAvariaTem(op?.avariaTem || false);
+    setAvariaDescricao(op?.avariaDescricao || ""); setErroRomaneio("");
+    setModoEdicao(false);
+  };
 
   /* Edição de fotos pelo gestor: corrige uma foto errada do conferente sem
      precisar anular a operação. Upload substitui/complementa direto pela
@@ -6109,8 +6182,12 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
     }
   };
 
-  /* Grava observação/avaria na operação (se houver persistOps disponível)
-     e, na sequência, abre a janela do romaneio pronta para "Salvar como PDF". */
+  /* Grava observação/TFA na operação (se houver persistOps disponível) e,
+     na sequência, abre a janela do romaneio pronta para "Salvar como PDF".
+     Primeira geração grava romaneioGeradoEm/Por (o carimbo que trava o
+     TFA); uma edição posterior (só chega aqui com modoEdicao ligado, que
+     só existe com a permissão editartfa) preserva esse carimbo original e
+     grava romaneioEditadoEm/Por à parte, sem apagar o histórico. */
   const gravarEGerarRomaneio = async () => {
     if (avariaTem && !avariaDescricao.trim()) {
       return setErroRomaneio("Descreva a avaria antes de gerar o romaneio.");
@@ -6119,16 +6196,29 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
     setGravando(true);
     try {
       if (persistOps && op && ops) {
-        const atualizada = { ...op, observacao: obs, avariaTem, avariaDescricao };
+        const agora = Date.now();
+        const atualizada = {
+          ...op, observacao: obs, avariaTem, avariaDescricao,
+          ...(jaGerado
+            ? { romaneioEditadoEm: agora, romaneioEditadoPor: usuario || "Gestor" }
+            : { romaneioGeradoEm: agora, romaneioGeradoPor: usuario || "Gestor" })
+        };
         await persistOps(ops.map(o => o.id === op.id ? atualizada : o));
       }
       abrirRomaneio(reg, pacote, { observacao: obs, avariaTem, avariaDescricao });
+      setModoEdicao(false);
     } catch (e) {
       console.error(e);
       setErroRomaneio("Não foi possível gravar. Verifique o sinal e tente de novo.");
     } finally {
       setGravando(false);
     }
+  };
+
+  /* Reabre o romaneio já gerado, sem regravar nada — é o que o botão faz
+     quando o TFA está travado. */
+  const reabrirRomaneioSalvo = () => {
+    abrirRomaneio(reg, pacote, { observacao: op?.observacao, avariaTem: op?.avariaTem, avariaDescricao: op?.avariaDescricao });
   };
 
   return (
@@ -6302,7 +6392,7 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
                   );
                 })}
 
-                {/* ===== CADASTRO DO ROMANEIO: observações + avaria ===== */}
+                {/* ===== CADASTRO DO ROMANEIO: observações + TFA (avaria) ===== */}
                 <div style={{
                   marginTop: 18, paddingTop: 16, borderTop: `2px solid ${C.prataClaro}`
                 }}>
@@ -6313,28 +6403,54 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
                     Romaneio de {reg.direcao === "expedicao" ? "Expedição" : "Recebimento"}
                   </div>
 
+                  {jaGerado && (
+                    <div style={{
+                      ...styles.infoBox, marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 9,
+                      background: modoEdicao ? "#FFF4EB" : "#F1F8F2", borderColor: modoEdicao ? C.laranja : C.verde
+                    }}>
+                      <Lock size={15} color={modoEdicao ? C.laranjaEsc : C.verde} style={{ flexShrink: 0, marginTop: 1 }} />
+                      <div style={{ fontSize: 12 }}>
+                        {modoEdicao ? (
+                          <><strong>Editando um TFA já gerado.</strong> Ao salvar, o carimbo original abaixo é
+                          preservado e um registro de edição é somado a ele.</>
+                        ) : (
+                          <><strong>TFA gerado em {fmtDT(op.romaneioGeradoEm)}</strong>
+                            {op.romaneioGeradoPor && ` por ${op.romaneioGeradoPor}`}. Os campos abaixo estão
+                            travados{podeEditarTFA ? " — use \"Editar TFA\" para alterar." : "."}</>
+                        )}
+                        {op.romaneioEditadoEm && (
+                          <div style={{ marginTop: 4, color: C.prata }}>
+                            Última edição em {fmtDT(op.romaneioEditadoEm)}{op.romaneioEditadoPor && ` por ${op.romaneioEditadoPor}`}.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <label style={{ fontSize: 11.5, color: C.prata, fontWeight: 600, display: "block", marginBottom: 4 }}>
                     Observações (opcional)
                   </label>
-                  <textarea value={obs} onChange={e => setObs(e.target.value)}
+                  <textarea value={obs} onChange={e => setObs(e.target.value)} disabled={travado}
                     placeholder="Alguma observação sobre a operação…"
-                    style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12, fontFamily: "'Roboto',sans-serif" }} />
+                    style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12,
+                      fontFamily: "'Roboto',sans-serif", opacity: travado ? .7 : 1, cursor: travado ? "not-allowed" : "text" }} />
 
                   <label style={{ fontSize: 11.5, color: C.prata, fontWeight: 600, display: "block", marginBottom: 6 }}>
-                    Houve avaria nesta operação?
+                    Houve avaria nesta operação? (TFA — Termo de Faltas, Excessos e Avarias)
                   </label>
                   <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                      <input type="radio" checked={!avariaTem} onChange={() => setAvariaTem(false)} /> Não
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: travado ? "not-allowed" : "pointer", opacity: travado ? .7 : 1 }}>
+                      <input type="radio" checked={!avariaTem} disabled={travado} onChange={() => setAvariaTem(false)} /> Não
                     </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                      <input type="radio" checked={avariaTem} onChange={() => setAvariaTem(true)} /> Sim
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: travado ? "not-allowed" : "pointer", opacity: travado ? .7 : 1 }}>
+                      <input type="radio" checked={avariaTem} disabled={travado} onChange={() => setAvariaTem(true)} /> Sim
                     </label>
                   </div>
                   {avariaTem && (
-                    <textarea value={avariaDescricao} onChange={e => setAvariaDescricao(e.target.value)}
+                    <textarea value={avariaDescricao} onChange={e => setAvariaDescricao(e.target.value)} disabled={travado}
                       placeholder="Descreva a avaria (ex: 1 caixa amassada no palete 3)…"
-                      style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12, fontFamily: "'Roboto',sans-serif" }} />
+                      style={{ ...styles.input, width: "100%", minHeight: 60, resize: "vertical", marginBottom: 12,
+                        fontFamily: "'Roboto',sans-serif", opacity: travado ? .7 : 1, cursor: travado ? "not-allowed" : "text" }} />
                   )}
 
                   {erroRomaneio && (
@@ -6343,10 +6459,30 @@ function VisorFotos({ reg, op, persistOps, ops, onFechar }) {
                 </div>
 
                 <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 4 }}>
-                  <button onClick={gravarEGerarRomaneio} disabled={gravando}
-                    style={{ ...styles.btnPrimary, flex: "1 1 220px", opacity: gravando ? .7 : 1 }}>
-                    <FileText size={15} /> {gravando ? "Gravando…" : "Gravar e Gerar Romaneio"}
-                  </button>
+                  {travado ? (
+                    <>
+                      <button onClick={reabrirRomaneioSalvo} style={{ ...styles.btnPrimary, flex: "1 1 220px" }}>
+                        <FileText size={15} /> Abrir Romaneio
+                      </button>
+                      {podeEditarTFA && (
+                        <button onClick={iniciarEdicaoTFA} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
+                          <Pencil size={15} /> Editar TFA
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={gravarEGerarRomaneio} disabled={gravando}
+                        style={{ ...styles.btnPrimary, flex: "1 1 220px", opacity: gravando ? .7 : 1 }}>
+                        <FileText size={15} /> {gravando ? "Gravando…" : jaGerado ? "Salvar Edição e Gerar Romaneio" : "Gravar e Gerar Romaneio"}
+                      </button>
+                      {jaGerado && modoEdicao && (
+                        <button onClick={cancelarEdicaoTFA} style={{ ...styles.btnGhost, flex: "0 1 140px" }}>
+                          Cancelar edição
+                        </button>
+                      )}
+                    </>
+                  )}
                   <button onClick={baixarTodas} style={{ ...styles.btnGhost, flex: "1 1 160px" }}>
                     <Download size={15} /> Baixar fotos ({todas.length})
                   </button>
@@ -6521,7 +6657,7 @@ function abrirRomaneio(reg, pacote, dados) {
   if (w) { w.document.write(html); w.document.close(); }
 }
 
-function GaleriaFotos({ ops, params, persistOps, sub }) {
+function GaleriaFotos({ ops, params, persistOps, sub, usuario }) {
   const subOn = (id) => subLiberado(sub, id);
   const [idx, setIdx] = useState([]);
   const [carregando, setCarregando] = useState(true);
@@ -6773,6 +6909,8 @@ function GaleriaFotos({ ops, params, persistOps, sub }) {
           op={ops.find(o => o.id === aberta.opId) || null}
           persistOps={persistOps}
           ops={ops}
+          sub={sub}
+          usuario={usuario}
           onFechar={() => setAberta(null)}
         />
       )}
