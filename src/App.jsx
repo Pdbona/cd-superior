@@ -5489,10 +5489,17 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                 {realizadasHoje.map(({ op, c }) => {
                   const reg = fotosPorOp[op.id];
                   const n = reg ? (reg.nIni || 0) + (reg.nFim || 0) : 0;
+                  const isCliente = !!anonimizarCliente;
                   return (
                     <CardOpFeita key={op.id} op={op} c={c}
                       temFotos={n > 0 ? n : null}
-                      onVerFotos={() => setFotoAberta(reg)} />
+                      onVerFotos={() => setFotoAberta(reg)}
+                      isClienteRestrito={isCliente}
+                      onAbrirRomaneio={() => abrirRomaneio(ops.find(o => o.id === op.id), null, {
+                        observacao: op?.observacao,
+                        avariaTem: op?.avariaTem,
+                        avariaDescricao: op?.avariaDescricao
+                      })} />
                   );
                 })}
               </div>
@@ -9330,6 +9337,11 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       expedicao: { ...DEFAULT_PARAMS.fotosMin.expedicao, ...(params.fotosMin?.expedicao || {}) }
     } });
   const [novoCliente, setNovoCliente] = useState("");
+  /* edição de cliente já cadastrado: guarda o nome ORIGINAL em edição e o
+     valor digitado — a confirmação propaga o novo nome para as operações
+     já registradas (ver renomearCliente), pra não perder rastreabilidade */
+  const [editandoCliente, setEditandoCliente] = useState(null);
+  const [nomeEdicaoCliente, setNomeEdicaoCliente] = useState("");
   const [novoMotivoPausa, setNovoMotivoPausa] = useState("");
   const [salvo, setSalvo] = useState(false);
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
@@ -9353,6 +9365,52 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
     if ((draft.clientes || []).some(c => c.toLowerCase() === v.toLowerCase())) { setNovoCliente(""); return; }
     setDraft(d => ({ ...d, clientes: [...(d.clientes || []), v] }));
     setNovoCliente(""); setSalvo(false);
+  };
+  /* Editar cliente já cadastrado: renomeia na lista de parâmetros E em toda
+     operação já registrada com o nome antigo — sem isso, o histórico ficaria
+     "quebrado" em dois clientes diferentes e os relatórios/consolidação por
+     cliente perderiam a rastreabilidade do que aconteceu antes da edição.
+     Roda fora do fluxo de "Salvar parâmetros" (persiste na hora) porque mexe
+     em dado histórico (ops), não só no cadastro. */
+  const iniciarEdicaoCliente = (nome) => { setEditandoCliente(nome); setNomeEdicaoCliente(nome); };
+  const cancelarEdicaoCliente = () => { setEditandoCliente(null); setNomeEdicaoCliente(""); };
+  const renomearCliente = async (nomeAntigo) => {
+    const v = nomeEdicaoCliente.trim();
+    if (!v) { cancelarEdicaoCliente(); return; }
+    if (v === nomeAntigo) { cancelarEdicaoCliente(); return; }
+    if ((params.clientes || []).some(c => c.toLowerCase() === v.toLowerCase() && c !== nomeAntigo)) {
+      alert(`Já existe um cliente chamado "${v}".`);
+      return;
+    }
+    const afetadas = (ops || []).filter(o => o.cliente === nomeAntigo).length;
+    /* Um cliente com acesso próprio (Acessos → perfil com linkProprio) loga
+       com o PRÓPRIO nome do cliente como "nome" do usuário (ver comentário
+       em ~3273). Sem renomear essa pessoa junto, o login continuaria com o
+       nome antigo e pararia de bater com as operações (que já estariam no
+       nome novo) — o cliente perderia o próprio painel. */
+    const idsPerfisLinkProprio = new Set((params.perfis || []).filter(p => p.linkProprio).map(p => p.id));
+    const pessoasAfetadas = (params.pessoasPerfil || [])
+      .filter(p => idsPerfisLinkProprio.has(p.perfilId) && p.nome === nomeAntigo).length;
+
+    const partes = [];
+    if (afetadas > 0) partes.push(`${afetadas} operação${afetadas > 1 ? "ões" : ""} já registrada${afetadas > 1 ? "s" : ""}`);
+    if (pessoasAfetadas > 0) partes.push(`o acesso próprio deste cliente (login)`);
+    const msg = partes.length > 0
+      ? `Renomear "${nomeAntigo}" para "${v}"?\n\nEsse nome será atualizado também em ${partes.join(" e ")}, para manter o histórico consolidado sob o novo nome.`
+      : `Renomear "${nomeAntigo}" para "${v}"?`;
+    if (!window.confirm(msg)) return;
+
+    const novosClientes = (params.clientes || []).map(c => c === nomeAntigo ? v : c);
+    const novasPessoas = pessoasAfetadas > 0
+      ? (params.pessoasPerfil || []).map(p =>
+          idsPerfisLinkProprio.has(p.perfilId) && p.nome === nomeAntigo ? { ...p, nome: v } : p)
+      : params.pessoasPerfil;
+    await persistParams({ ...params, clientes: novosClientes, pessoasPerfil: novasPessoas });
+    if (afetadas > 0) {
+      await persistOps((ops || []).map(o => o.cliente === nomeAntigo ? { ...o, cliente: v } : o));
+    }
+    setDraft(d => ({ ...d, clientes: novosClientes }));
+    cancelarEdicaoCliente();
   };
   /* --- motivos de pausa (almoço, jantar, café, atendimento diretoria etc.) --- */
   const addMotivoPausa = () => {
@@ -9469,9 +9527,21 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
           {(draft.clientes || []).length === 0
             ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum cliente cadastrado ainda.</span>
-            : draft.clientes.map(cl => (
+            : draft.clientes.map(cl => editandoCliente === cl ? (
+              <span key={cl} style={{ ...styles.clienteChip, paddingRight: 6 }}>
+                <Building2 size={13} />
+                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoCliente.length * 8) }}
+                  autoFocus value={nomeEdicaoCliente}
+                  onChange={e => setNomeEdicaoCliente(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") renomearCliente(cl); if (e.key === "Escape") cancelarEdicaoCliente(); }} />
+                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearCliente(cl)}>✓</button>
+                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoCliente}>×</button>
+              </span>
+            ) : (
               <span key={cl} style={styles.clienteChip}>
                 <Building2 size={13} /> {cl}
+                <button style={styles.chipEdit} title="Editar nome"
+                  onClick={() => iniciarEdicaoCliente(cl)}><Pencil size={12} /></button>
                 <button style={styles.chipX} title="Remover"
                   onClick={() => { setDraft(d => ({ ...d, clientes: d.clientes.filter(x => x !== cl) })); setSalvo(false); }}>×</button>
               </span>
@@ -10290,13 +10360,15 @@ function CardOpAgora({ op, c, el, st, pausada }) {
 }
 
 /* ---------- card compacto: operação concluída hoje ---------- */
-function CardOpFeita({ op, c, temFotos, onVerFotos }) {
+function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRomaneio }) {
   const naMeta = c.cumpriuMeta === true;
   const cor = naMeta ? C.verde : C.vermelho;
   const dif = c.tempoReal != null ? c.tempoReal - c.metaHoras : null;
   /* divergência entre o que o gestor programou e o que o conferente contou */
   const divergencia = (op.volumeReal != null && op.volume)
     ? op.volumeReal - op.volume : null;
+  /* Romaneio foi gerado? Se sim, o cliente (isClienteRestrito) pode ver */
+  const romaneioGerado = !!op?.romaneioGeradoEm;
   return (
     <div style={{ background: naMeta ? "#F6FBF7" : "#FFF9F9", border: `1px solid ${C.prataClaro}`,
       borderLeft: `4px solid ${cor}`, borderRadius: 9, padding: "11px 12px" }}>
@@ -10342,14 +10414,16 @@ function CardOpFeita({ op, c, temFotos, onVerFotos }) {
           ? <><CheckCircle2 size={11} /> Na meta ({hhmm(c.metaHoras)}){c.bonusPago > 0 ? " · com bônus" : ""}</>
           : <><AlertTriangle size={11} /> Fora da meta ({hhmm(c.metaHoras)}) · +{hhmm(dif)}</>}
       </div>
-      {temFotos && (
-        <button onClick={onVerFotos} style={{
+      {/* Botão de romaneio: gestores (não restritos) veem sempre,
+          clientes (isClienteRestrito) veem apenas se o romaneio foi gerado */}
+      {(!isClienteRestrito || romaneioGerado) && onAbrirRomaneio && (
+        <button onClick={onAbrirRomaneio} style={{
           width: "100%", marginTop: 8, padding: "8px 10px", borderRadius: 7,
           border: `1.5px solid ${C.navy2}`, background: C.branco, color: C.navy2,
           fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
           cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
         }}>
-          <Camera size={13} strokeWidth={2.4} /> Ver fotos ({temFotos})
+          <FileText size={13} strokeWidth={2.4} /> Abrir Romaneio
         </button>
       )}
     </div>
@@ -10495,6 +10569,7 @@ const styles = {
   chipOn: { background: C.navy, color: C.branco, borderColor: C.navy },
   clienteChip: { display: "inline-flex", alignItems: "center", gap: 6, background: "#EEF2F8", border: `1.5px solid ${C.prataClaro}`, borderRadius: 100, padding: "7px 8px 7px 13px", fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy },
   chipX: { background: C.prataClaro, color: C.navy, border: "none", borderRadius: "50%", width: 20, height: 20, cursor: "pointer", fontSize: 15, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  chipEdit: { background: "transparent", color: C.navy2, border: "none", borderRadius: "50%", width: 20, height: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
   infoBox: { background: "#EEF2F8", border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "12px 14px", fontSize: 12.5, color: C.texto, lineHeight: 1.5 },
   empty: { textAlign: "center", padding: "40px 20px", color: C.prata, fontSize: 13.5, background: C.branco, border: `1px dashed ${C.prataClaro}`, borderRadius: 10 },
   footer: { background: C.navy, color: C.branco, padding: "18px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, fontFamily: "'Roboto',sans-serif", fontSize: 11.5, marginTop: 30, borderTop: `3px solid ${C.laranja}` }
