@@ -8179,9 +8179,9 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                       const minutos = Math.round((decimal - horas) * 60);
                       return `${String(horas).padStart(2, "0")}h${String(minutos).padStart(2, "0")}m`;
                     };
-                    if (name === "primeiroHora") return [formatarHora(v), "Hora Início"];
-                    if (name === "ultimoHora") return [formatarHora(v), "Hora Fim"];
-                    return [`${v?.toFixed(1)}h`, "Duração"];
+                    if (name === "Hora Início") return [formatarHora(v), "Hora Início"];
+                    if (name === "Hora Fim") return [formatarHora(v), "Hora Fim"];
+                    return [`${v?.toFixed(1)}h`, "Duração Jornada"];
                   }}
                   labelFormatter={(label) => label}
                 />
