@@ -8162,19 +8162,32 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
               <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 20, left: 60 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="diaSemana" tick={{ fontSize: 11 }} />
-                <YAxis yAxisId="left" label={{ value: "Hora do Dia", angle: -90, position: "insideLeft", offset: -10 }} tick={{ fontSize: 11 }} domain={[porDia.minHora, porDia.maxHora]} />
+                <YAxis
+                  yAxisId="left"
+                  label={{ value: "Hora do Dia", angle: -90, position: "insideLeft", offset: -10 }}
+                  tick={{ fontSize: 11 }}
+                  domain={[porDia.minHora, porDia.maxHora]}
+                  ticks={Array.from({length: Math.ceil(porDia.maxHora) - Math.floor(porDia.minHora) + 1}, (_, i) => Math.floor(porDia.minHora) + i)}
+                  tickFormatter={(v) => `${Math.floor(v)}h`}
+                />
                 <YAxis yAxisId="right" orientation="right" label={{ value: "Duração (h)", angle: 90, position: "insideRight", offset: -10 }} tick={{ fontSize: 11 }} />
                 <Tooltip
                   formatter={(v, name) => {
-                    if (name === "primeiroHora") return [`${v?.toFixed(1)}h`, "Início"];
-                    if (name === "ultimoHora") return [`${v?.toFixed(1)}h`, "Término"];
+                    const formatarHora = (decimal) => {
+                      if (decimal == null) return "—";
+                      const horas = Math.floor(decimal);
+                      const minutos = Math.round((decimal - horas) * 60);
+                      return `${String(horas).padStart(2, "0")}h${String(minutos).padStart(2, "0")}m`;
+                    };
+                    if (name === "primeiroHora") return [formatarHora(v), "Hora Início"];
+                    if (name === "ultimoHora") return [formatarHora(v), "Hora Fim"];
                     return [`${v?.toFixed(1)}h`, "Duração"];
                   }}
                   labelFormatter={(label) => label}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line yAxisId="left" type="monotone" dataKey="primeiroHora" stroke={C.supVerde} name="Hora de Início" strokeWidth={2.5} isAnimationActive={false} fill={C.supVerde} fillOpacity={0.2} dot={{ r: 3 }} />
-                <Line yAxisId="left" type="monotone" dataKey="ultimoHora" stroke={C.navy} name="Hora de Término" strokeWidth={2.5} isAnimationActive={false} fill={C.navy} fillOpacity={0.15} dot={{ r: 3 }} />
+                <Line yAxisId="left" type="monotone" dataKey="primeiroHora" stroke={C.supVerde} name="Hora Início" strokeWidth={2.5} isAnimationActive={false} fill={C.supVerde} fillOpacity={0.2} dot={{ r: 3 }} />
+                <Line yAxisId="left" type="monotone" dataKey="ultimoHora" stroke={C.navy} name="Hora Fim" strokeWidth={2.5} isAnimationActive={false} fill={C.navy} fillOpacity={0.15} dot={{ r: 3 }} />
                 <Bar yAxisId="right" dataKey="duracao" name="Duração Jornada" fill={C.laranja} opacity={0.7} />
               </ComposedChart>
             </ResponsiveContainer>
