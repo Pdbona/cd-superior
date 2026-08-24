@@ -5495,10 +5495,12 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                       temFotos={n > 0 ? n : null}
                       onVerFotos={() => setFotoAberta(reg)}
                       isClienteRestrito={isCliente}
-                      onAbrirRomaneio={() => abrirRomaneio(ops.find(o => o.id === op.id), null, {
+                      onAbrirRomaneio={() => abrirRomaneioComFotos(op, {
                         observacao: op?.observacao,
                         avariaTem: op?.avariaTem,
-                        avariaDescricao: op?.avariaDescricao
+                        avariaDescricao: op?.avariaDescricao,
+                        romaneioGeradoEm: op?.romaneioGeradoEm,
+                        romaneioGeradoPor: op?.romaneioGeradoPor
                       })} />
                   );
                 })}
@@ -6212,7 +6214,11 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
         };
         await persistOps(ops.map(o => o.id === op.id ? atualizada : o));
       }
-      abrirRomaneio(reg, pacote, { observacao: obs, avariaTem, avariaDescricao });
+      abrirRomaneio(reg, pacote, {
+        observacao: obs, avariaTem, avariaDescricao,
+        romaneioGeradoEm: op?.romaneioGeradoEm,
+        romaneioGeradoPor: op?.romaneioGeradoPor
+      });
       setModoEdicao(false);
     } catch (e) {
       console.error(e);
@@ -6225,7 +6231,11 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
   /* Reabre o romaneio já gerado, sem regravar nada — é o que o botão faz
      quando o TFA está travado. */
   const reabrirRomaneioSalvo = () => {
-    abrirRomaneio(reg, pacote, { observacao: op?.observacao, avariaTem: op?.avariaTem, avariaDescricao: op?.avariaDescricao });
+    abrirRomaneio(reg, pacote, {
+      observacao: op?.observacao, avariaTem: op?.avariaTem, avariaDescricao: op?.avariaDescricao,
+      romaneioGeradoEm: op?.romaneioGeradoEm,
+      romaneioGeradoPor: op?.romaneioGeradoPor
+    });
   };
 
   return (
@@ -6512,6 +6522,17 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
   );
 }
 
+/* Abre o romaneio buscando fotos automaticamente — usado no Dashboard */
+async function abrirRomaneioComFotos(op, dados) {
+  try {
+    const pacote = await lerFotosDaOperacao(op.id);
+    abrirRomaneio(op, pacote, dados);
+  } catch (e) {
+    console.error("Erro ao carregar fotos:", e);
+    abrirRomaneio(op, null, dados);
+  }
+}
+
 /* Romaneio imprimível — abre uma janela pronta para "Salvar como PDF", já no
    padrão visual SBS/Superior (validado com Pablo em Ago/2026): logo Superior
    em destaque, verde/azul da Superior, rodapé com a logo da SBS pequena
@@ -6519,10 +6540,11 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
    Nome do documento = "Recebimento" ou "Expedição" conforme a direção da
    operação (não é escolhido manualmente). */
 function abrirRomaneio(reg, pacote, dados) {
-  const { observacao, avariaTem, avariaDescricao } = dados || {};
+  const { observacao, avariaTem, avariaDescricao, romaneioGeradoEm, romaneioGeradoPor } = dados || {};
   const expedicao = reg.direcao === "expedicao";
   const tipoLabel = expedicao ? "EXPEDIÇÃO" : "RECEBIMENTO";
   const nomeArquivo = expedicao ? "expedicao" : "recebimento";
+  const dataGeracaoRomaneio = romaneioGeradoEm ? new Date(romaneioGeradoEm).toLocaleString("pt-BR") : null;
 
   const fotosHTML = (lista, legenda) => {
     if (!lista || lista.length === 0) {
@@ -6613,6 +6635,15 @@ function abrirRomaneio(reg, pacote, dados) {
       ${dado("Fim da Operação", reg.tsFim ? new Date(reg.tsFim).toLocaleString("pt-BR") : null)}
     </div>
   </div>
+
+  ${dataGeracaoRomaneio ? `
+  <div class="secao">
+    <div class="secao-titulo">Geração do Romaneio</div>
+    <div class="grid2">
+      ${dado("Gerado em", dataGeracaoRomaneio)}
+      ${romaneioGeradoPor ? dado("Gerado por", romaneioGeradoPor) : ""}
+    </div>
+  </div>` : ""}
 
   <div class="secao">
     <div class="secao-titulo">Registros Fotográficos</div>
