@@ -8199,7 +8199,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   fillOpacity={0.2}
                   dot={(props) => {
                     const { cx, cy, payload } = props;
-                    const ehCritica = payload?.primeiroHora < 8 && payload?.ultimoHora > 18;
+                    const ehCritica = payload?.primeiroHora < 8 || payload?.ultimoHora > 18;
                     return (
                       <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.supVerde} stroke={ehCritica ? C.vermelho : C.supVerde} strokeWidth={1} />
                     );
@@ -8217,7 +8217,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   fillOpacity={0.15}
                   dot={(props) => {
                     const { cx, cy, payload } = props;
-                    const ehCritica = payload?.primeiroHora < 8 && payload?.ultimoHora > 18;
+                    const ehCritica = payload?.primeiroHora < 8 || payload?.ultimoHora > 18;
                     return (
                       <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.navy} stroke={ehCritica ? C.vermelho : C.navy} strokeWidth={1} />
                     );
