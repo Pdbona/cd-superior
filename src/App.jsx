@@ -7606,30 +7606,40 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
     return Object.values(m).sort((a, b) => b.economia - a.economia);
   }, [dados]);
 
-  /* Gráfico de Horários e Tempo Total por Dia — mostra primeira operação,
-     última operação e tempo total acumulado do dia (combinado com Pablo) */
+  /* Gráfico de Horários e Duração por Dia — mostra hora de início (primeira
+     operação), hora de término (última operação) e duração da jornada */
   const porDia = useMemo(() => {
     const m = {};
     dados.forEach(({ op, c }) => {
       const dia = op.fim ? new Date(op.fim).toISOString().slice(0, 10) : null;
       if (!dia) return;
-      if (!m[dia]) m[dia] = { dia, primeiro: null, ultimo: null, tempoTotal: 0, nOps: 0 };
+      if (!m[dia]) m[dia] = { dia, primeiro: null, ultimo: null, nOps: 0 };
       const r = m[dia];
       r.nOps++;
-      r.tempoTotal += c.tempoReal || 0;
       const tsInicio = op.inicio ? parseInt(op.inicio) : (op.tsInicio || null);
       const tsFim = op.fim ? parseInt(op.fim) : (op.tsFim || null);
       if (tsInicio && (!r.primeiro || tsInicio < r.primeiro)) r.primeiro = tsInicio;
       if (tsFim && (!r.ultimo || tsFim > r.ultimo)) r.ultimo = tsFim;
     });
-    return Object.values(m)
+
+    const dados_com_horas = Object.values(m)
       .sort((a, b) => new Date(a.dia) - new Date(b.dia))
       .map(r => ({
         ...r,
         primeiroHora: r.primeiro ? new Date(r.primeiro).getHours() + new Date(r.primeiro).getMinutes() / 60 : null,
         ultimoHora: r.ultimo ? new Date(r.ultimo).getHours() + new Date(r.ultimo).getMinutes() / 60 : null,
+        duracao: (r.primeiro && r.ultimo) ? (r.ultimo - r.primeiro) / (1000 * 3600) : 0,
         diaSemana: new Date(r.dia + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit" })
       }));
+
+    // Calcular domínio do eixo Y dinamicamente
+    let minHora = 6, maxHora = 19;
+    dados_com_horas.forEach(d => {
+      if (d.primeiroHora != null && d.primeiroHora < minHora) minHora = Math.floor(d.primeiroHora);
+      if (d.ultimoHora != null && d.ultimoHora > maxHora) maxHora = Math.ceil(d.ultimoHora);
+    });
+
+    return { dados: dados_com_horas, minHora, maxHora };
   }, [dados]);
 
   /* Média de horas do mês anterior */
@@ -8139,32 +8149,33 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
         </Modal>
       )}
 
-      {/* Gráfico: Horários e Tempo Total por Dia do Mês */}
-      {porDia.length > 0 && (
+      {/* Gráfico: Horários e Duração por Dia do Mês */}
+      {porDia.dados && porDia.dados.length > 0 && (
         <div style={{ marginTop: 28 }}>
           <div style={{ ...styles.chartCard, marginBottom: 0 }}>
-            <div style={styles.chartTitle}>Operações por Dia — Horários e Tempo Total</div>
+            <div style={styles.chartTitle}>Operações por Dia — Horários e Duração</div>
             <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 12px", paddingLeft: 4, lineHeight: 1.4 }}>
-              Linhas: primeira e última operação do dia. Coluna: tempo total de operação acumulado.
-              {mediaMesAnterior > 0 && ` Média do mês anterior: ${mediaMesAnterior.toFixed(1)}h`}
+              Linhas: hora de início (primeira) e hora de término (última) das operações do dia. Coluna: duração total da jornada.
+              {mediaMesAnterior > 0 && ` Média de horas do mês anterior: ${mediaMesAnterior.toFixed(1)}h`}
             </p>
             <ResponsiveContainer width="100%" height={350}>
-              <ComposedChart data={porDia} margin={{ top: 20, right: 80, bottom: 20, left: 60 }}>
+              <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 20, left: 60 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 <XAxis dataKey="diaSemana" tick={{ fontSize: 11 }} />
-                <YAxis yAxisId="left" label={{ value: "Hora do Dia", angle: -90, position: "insideLeft", offset: -10 }} tick={{ fontSize: 11 }} domain={[0, 24]} />
-                <YAxis yAxisId="right" orientation="right" label={{ value: "Horas", angle: 90, position: "insideRight", offset: -10 }} tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="left" label={{ value: "Hora do Dia", angle: -90, position: "insideLeft", offset: -10 }} tick={{ fontSize: 11 }} domain={[porDia.minHora, porDia.maxHora]} />
+                <YAxis yAxisId="right" orientation="right" label={{ value: "Duração (h)", angle: 90, position: "insideRight", offset: -10 }} tick={{ fontSize: 11 }} />
                 <Tooltip
                   formatter={(v, name) => {
-                    if (name === "primeiroHora" || name === "ultimoHora") return [`${v?.toFixed(1)}h`, name];
-                    return [`${v?.toFixed(1)}h`, "Tempo Total"];
+                    if (name === "primeiroHora") return [`${v?.toFixed(1)}h`, "Início"];
+                    if (name === "ultimoHora") return [`${v?.toFixed(1)}h`, "Término"];
+                    return [`${v?.toFixed(1)}h`, "Duração"];
                   }}
                   labelFormatter={(label) => label}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line yAxisId="left" type="monotone" dataKey="primeiroHora" stroke={C.supVerde} name="Primeira Operação" strokeWidth={2.5} isAnimationActive={false} fill={C.supVerde} fillOpacity={0.2} dot={{ r: 3 }} />
-                <Line yAxisId="left" type="monotone" dataKey="ultimoHora" stroke={C.navy} name="Última Operação" strokeWidth={2.5} isAnimationActive={false} fill={C.navy} fillOpacity={0.1} dot={{ r: 3 }} />
-                <Bar yAxisId="right" dataKey="tempoTotal" name="Tempo Total" fill={C.laranja} opacity={0.7} />
+                <Line yAxisId="left" type="monotone" dataKey="primeiroHora" stroke={C.supVerde} name="Hora de Início" strokeWidth={2.5} isAnimationActive={false} fill={C.supVerde} fillOpacity={0.2} dot={{ r: 3 }} />
+                <Line yAxisId="left" type="monotone" dataKey="ultimoHora" stroke={C.navy} name="Hora de Término" strokeWidth={2.5} isAnimationActive={false} fill={C.navy} fillOpacity={0.15} dot={{ r: 3 }} />
+                <Bar yAxisId="right" dataKey="duracao" name="Duração Jornada" fill={C.laranja} opacity={0.7} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
