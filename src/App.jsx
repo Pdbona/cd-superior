@@ -8156,6 +8156,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
             <div style={styles.chartTitle}>Operações por Dia — Horários e Duração</div>
             <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 12px", paddingLeft: 4, lineHeight: 1.4 }}>
               Linhas: hora de início (primeira) e hora de término (última) das operações do dia. Coluna: duração total da jornada.
+              Bolinha vermelha indica jornada que começou antes de 8h e terminou depois de 18h.
               {mediaMesAnterior > 0 && ` Média de horas do mês anterior: ${mediaMesAnterior.toFixed(1)}h`}
             </p>
             <ResponsiveContainer width="100%" height={350}>
@@ -8186,8 +8187,42 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   labelFormatter={(label) => label}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line yAxisId="left" type="monotone" dataKey="primeiroHora" stroke={C.supVerde} name="Hora Início" strokeWidth={2.5} isAnimationActive={false} fill={C.supVerde} fillOpacity={0.2} dot={{ r: 3 }} />
-                <Line yAxisId="left" type="monotone" dataKey="ultimoHora" stroke={C.navy} name="Hora Fim" strokeWidth={2.5} isAnimationActive={false} fill={C.navy} fillOpacity={0.15} dot={{ r: 3 }} />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="primeiroHora"
+                  stroke={C.supVerde}
+                  name="Hora Início"
+                  strokeWidth={2.5}
+                  isAnimationActive={false}
+                  fill={C.supVerde}
+                  fillOpacity={0.2}
+                  dot={(props) => {
+                    const { cx, cy, payload } = props;
+                    const ehCritica = payload?.primeiroHora < 8 && payload?.ultimoHora > 18;
+                    return (
+                      <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.supVerde} stroke={ehCritica ? C.vermelho : C.supVerde} strokeWidth={1} />
+                    );
+                  }}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="ultimoHora"
+                  stroke={C.navy}
+                  name="Hora Fim"
+                  strokeWidth={2.5}
+                  isAnimationActive={false}
+                  fill={C.navy}
+                  fillOpacity={0.15}
+                  dot={(props) => {
+                    const { cx, cy, payload } = props;
+                    const ehCritica = payload?.primeiroHora < 8 && payload?.ultimoHora > 18;
+                    return (
+                      <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.navy} stroke={ehCritica ? C.vermelho : C.navy} strokeWidth={1} />
+                    );
+                  }}
+                />
                 <Bar yAxisId="right" dataKey="duracao" name="Duração Jornada" fill={C.laranja} opacity={0.7} />
               </ComposedChart>
             </ResponsiveContainer>
