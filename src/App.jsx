@@ -185,7 +185,8 @@ const SUBITENS_POR_ABA = {
     { id: "diretoria", label: "Relatório para a Diretoria" },
     { id: "cliente", label: "Relatórios para o Cliente" },
     { id: "prestador", label: "Relatório para o Prestador de Serviço" },
-    { id: "raiox", label: "Raio X da MdO" }
+    { id: "raiox", label: "Raio X da MdO" },
+    { id: "pausas", label: "Relatório de Pausas" }
   ],
   estoque: [
     { id: "importar", label: "Importar Arquivo de Estoque" }
@@ -629,6 +630,12 @@ const DEFAULT_PARAMS = {
   /* Motivos de pausa — livremente editáveis pelo gestor na aba Parâmetros.
      Pausar para de contar o tempo da operação (não conta contra a meta/bônus). */
   motivosPausa: ["Almoço", "Jantar", "Café", "Atendimento Diretoria"],
+  /* limitesPausaMin: tempo máximo (minutos) tolerado por motivo antes do
+     alerta de "atividade não retomada" aparecer pro Gestor — ver
+     AlertaPausaEstourada. Chave é o próprio texto do motivo (mesma chave
+     usada em op.pausas[].motivo); motivo sem entrada aqui, ou com 0/vazio,
+     nunca gera alerta. Vazio por padrão — o gestor liga por motivo. */
+  limitesPausaMin: {},
   tipos: [
     /* Linhas de base informadas pelo Pablo (jul/2026):
        Passeio: 1.500 un · 4 pessoas · 3,5h → 107,1 un/pessoa/hora
@@ -1068,6 +1075,8 @@ export default function App() {
         /* params gravados antes da direção virar cadastro (era só o par fixo
            recebimento/expedição, agora configurável em Parâmetros) */
         if (!Array.isArray(parsed.direcoes) || parsed.direcoes.length === 0) parsed.direcoes = DEFAULT_PARAMS.direcoes;
+        /* params gravados antes do limite de tempo por motivo de pausa */
+        if (!parsed.limitesPausaMin || typeof parsed.limitesPausaMin !== "object") parsed.limitesPausaMin = {};
         if (!parsed.permissoesGestor || typeof parsed.permissoesGestor !== "object") parsed.permissoesGestor = DEFAULT_PARAMS.permissoesGestor;
         setParams(parsed);
       }
@@ -2311,6 +2320,88 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
   );
 }
 
+/* Alerta de pausa não retomada — mostrado no painel do Gestor (e de
+   qualquer perfil próprio com o mesmo acesso, ex.: um perfil "Gestor
+   Geral" cadastrado em Perfis de Acesso) sempre que uma pausa em aberto
+   passar do limite cadastrado em Parâmetros → Motivos de Pausa para aquele
+   motivo (0/vazio = sem limite, nunca alerta). Fica fixo na tela por cima
+   de qualquer aba — não é preciso estar no Dashboard pra ver.
+   Combinado com Pablo em 26/ago/2026: o gestor fecha manualmente (X) ou
+   espera 1 minuto que some sozinho; a mesma pausa (operação + horário em
+   que ela começou) não volta a alertar depois disso — só uma pausa NOVA
+   (retomou e pausou de novo) dispara outro alerta. */
+function AlertaPausaEstourada({ ops, params, now }) {
+  const [vistoEm, setVistoEm] = useState({});
+  const [fechados, setFechados] = useState(() => new Set());
+
+  const estourados = useMemo(() => {
+    const limites = params?.limitesPausaMin || {};
+    return (ops || [])
+      .filter(op => estaPausada(op))
+      .map(op => {
+        const p = pausaAtual(op);
+        const limiteMin = limites[p?.motivo];
+        if (!limiteMin || limiteMin <= 0) return null;
+        const decorridoMs = now - p.inicio;
+        if (decorridoMs <= limiteMin * 60000) return null;
+        return { chave: `${op.id}_${p.inicio}`, op, pausa: p, limiteMin, decorridoMs };
+      })
+      .filter(Boolean);
+  }, [ops, params, now]);
+
+  /* registra a primeira vez que cada pausa foi flagrada estourada — é essa
+     marca (não o tempo total de pausa) que conta os 60s de exibição */
+  const chaves = estourados.map(e => e.chave).join("|");
+  useEffect(() => {
+    const novos = estourados.filter(e => !vistoEm[e.chave]);
+    if (novos.length === 0) return;
+    setVistoEm(v => {
+      const next = { ...v };
+      novos.forEach(e => { next[e.chave] = Date.now(); });
+      return next;
+    });
+  }, [chaves]);
+
+  const fechar = (chave) => setFechados(f => new Set(f).add(chave));
+
+  const visiveis = estourados.filter(e =>
+    !fechados.has(e.chave) && vistoEm[e.chave] && (now - vistoEm[e.chave]) < 60000);
+
+  if (visiveis.length === 0) return null;
+
+  return (
+    <div style={{ position: "fixed", top: 74, right: 16, zIndex: 4000,
+      display: "flex", flexDirection: "column", gap: 10, maxWidth: 340 }}>
+      {visiveis.map(e => (
+        <div key={e.chave} className="piscar" style={{
+          background: "#FFF5F5", border: `1.5px solid ${C.vermelho}`, borderRadius: 10,
+          padding: "12px 14px", boxShadow: "0 6px 20px rgba(0,0,0,.22)"
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+            <AlertTriangle size={18} color={C.vermelho} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.vermelho }}>
+                Pausa não retomada — {e.op.ref}
+              </div>
+              <div style={{ fontSize: 12, color: C.texto, marginTop: 3, lineHeight: 1.5 }}>
+                <strong>{e.pausa.motivo}</strong> desde {hora(e.pausa.inicio)} — limite de {e.limiteMin} min
+                excedido em <strong>{hhmm(Math.max(0, e.decorridoMs - e.limiteMin * 60000) / 3600000)}</strong>.
+              </div>
+              <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>
+                {e.op.cliente}{e.op.idCliente ? ` · ID Cliente ${e.op.idCliente}` : ""}
+              </div>
+            </div>
+            <button onClick={() => fechar(e.chave)} title="Fechar"
+              style={{ background: "transparent", border: "none", cursor: "pointer", color: C.prata, padding: 2, flexShrink: 0 }}>
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ============================================================
    APP DO GESTOR
    ============================================================ */
@@ -2445,6 +2536,8 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
         </div>
       </header>
       <div style={styles.accentBar} />
+      {/* perfil Cliente (anonimizarCliente) não vê alerta operacional interno */}
+      {!anonimizarCliente && <AlertaPausaEstourada ops={ops} params={params} now={now} />}
 
       <div style={styles.sidebarShell}>
         <div className={`sbs-sidebar-backdrop${menuMobileAberto ? " aberta" : ""}`} onClick={() => setMenuMobileAberto(false)} />
@@ -8405,6 +8498,9 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
 
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
       {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
+
+      {/* ===== RELATÓRIO DE PAUSAS — tempo por justificativa (dia/mês) + timeline ===== */}
+      {subOn("pausas") && <RelatorioPausas ops={ops} params={params} />}
     </div>
   );
 }
@@ -8633,6 +8729,275 @@ function RaioXMdO({ ops, params, diasTerc }) {
           </div>
         </Modal>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   RELATÓRIO DE PAUSAS — tempo por justificativa (dia/mês) + timeline
+   Pedido do Pablo (26/ago/2026): quanto tempo cada motivo de pausa (almoço,
+   café etc.) consome, dia a dia numa semana, mais o total do mês corrente
+   pra comparação; e uma visão de linha do tempo de cada operação (início →
+   pausa(s) → retomada → fim). Só conta pausa FECHADA (com fim); pausa em
+   aberto vira alerta em tempo real (ver AlertaPausaEstourada), não entra
+   nesta soma histórica.
+   ============================================================ */
+function RelatorioPausas({ ops, params }) {
+  const hoje = new Date();
+  const toISO = (d) => d.toISOString().slice(0, 10);
+  /* semana corrente (segunda a hoje) como recorte padrão — o gestor ajusta
+     livremente pra ver qualquer janela de até 31 dias */
+  const inicioSemanaPadrao = (() => {
+    const d = new Date(hoje);
+    const diaSemana = d.getDay(); // 0 = domingo
+    d.setDate(d.getDate() - (diaSemana === 0 ? 6 : diaSemana - 1));
+    return toISO(d);
+  })();
+  const [de, setDe] = useState(inicioSemanaPadrao);
+  const [ate, setAte] = useState(toISO(hoje));
+
+  const motivos = params?.motivosPausa || [];
+
+  const diasDoPeriodo = useMemo(() => {
+    const ini = new Date(de + "T00:00:00").getTime();
+    const fim = new Date(ate + "T00:00:00").getTime();
+    if (!(ini <= fim) || (fim - ini) / 86400000 > 31) return [];
+    const arr = [];
+    for (let t = ini; t <= fim; t += 86400000) arr.push(t);
+    return arr;
+  }, [de, ate]);
+
+  /* achata toda pausa FECHADA de toda operação — base única pro período e
+     pro total do mês, sem varrer `ops` duas vezes */
+  const pausasFechadas = useMemo(() => {
+    const lista = [];
+    (ops || []).forEach(op => {
+      (op.pausas || []).forEach(p => {
+        if (!p.fim) return;
+        lista.push({ op, motivo: p.motivo, inicio: p.inicio, duracaoMs: Math.max(0, p.fim - p.inicio) });
+      });
+    });
+    return lista;
+  }, [ops]);
+
+  const pausasNoPeriodo = useMemo(() => {
+    if (diasDoPeriodo.length === 0) return [];
+    const ini = diasDoPeriodo[0], fimJanela = diasDoPeriodo[diasDoPeriodo.length - 1] + 86400000;
+    return pausasFechadas.filter(p => p.inicio >= ini && p.inicio < fimJanela);
+  }, [pausasFechadas, diasDoPeriodo]);
+
+  /* matriz motivo × dia, em ms — vira hh:mm só na hora de exibir */
+  const matriz = useMemo(() => motivos.map(m => {
+    const porDia = {};
+    diasDoPeriodo.forEach(ts => { porDia[ts] = 0; });
+    let total = 0, ocorrencias = 0;
+    pausasNoPeriodo.filter(p => p.motivo === m).forEach(p => {
+      const dia = inicioDoDia(p.inicio);
+      porDia[dia] = (porDia[dia] || 0) + p.duracaoMs;
+      total += p.duracaoMs; ocorrencias++;
+    });
+    return { motivo: m, porDia, total, ocorrencias };
+  }), [motivos, pausasNoPeriodo, diasDoPeriodo]);
+
+  const totalPorDia = useMemo(() => {
+    const t = {};
+    diasDoPeriodo.forEach(ts => { t[ts] = 0; });
+    pausasNoPeriodo.forEach(p => { const dia = inicioDoDia(p.inicio); t[dia] = (t[dia] || 0) + p.duracaoMs; });
+    return t;
+  }, [pausasNoPeriodo, diasDoPeriodo]);
+
+  const totalPeriodoMs = pausasNoPeriodo.reduce((s, p) => s + p.duracaoMs, 0);
+
+  /* total do MÊS CORRENTE — fixo (não segue o período acima de propósito:
+     é a referência de comparação, "essa semana × o mês inteiro até agora") */
+  const totalMes = useMemo(() => {
+    const iniMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).getTime();
+    const porMotivo = {};
+    motivos.forEach(m => { porMotivo[m] = 0; });
+    let geral = 0;
+    pausasFechadas.forEach(p => {
+      if (p.inicio < iniMes || p.inicio > Date.now()) return;
+      porMotivo[p.motivo] = (porMotivo[p.motivo] || 0) + p.duracaoMs;
+      geral += p.duracaoMs;
+    });
+    return { porMotivo, geral };
+  }, [pausasFechadas, motivos]);
+
+  const msFmt = (ms) => ms > 0 ? hhmm(ms / 3600000) : "—";
+
+  /* Timeline: operações iniciadas dentro do período selecionado, mais
+     recente primeiro; teto de 40 pra tela não virar uma lista infinita. */
+  const opsDoPeriodo = useMemo(() => {
+    if (diasDoPeriodo.length === 0) return [];
+    const ini = diasDoPeriodo[0], fimJanela = diasDoPeriodo[diasDoPeriodo.length - 1] + 86400000;
+    return (ops || [])
+      .filter(o => o.inicio && o.inicio >= ini && o.inicio < fimJanela)
+      .sort((a, b) => b.inicio - a.inicio);
+  }, [ops, diasDoPeriodo]);
+  const [mostrarTodasTimeline, setMostrarTodasTimeline] = useState(false);
+  const opsTimelineVisiveis = mostrarTodasTimeline ? opsDoPeriodo : opsDoPeriodo.slice(0, 15);
+
+  const periodoInvalido = diasDoPeriodo.length === 0;
+
+  return (
+    <div>
+      <SectionTitle icon={PauseCircle}>Relatório de Pausas</SectionTitle>
+      <p style={styles.helper}>
+        Tempo parado por justificativa, dia a dia no período escolhido, com o total do <strong>mês corrente</strong>{" "}
+        ao lado pra comparação. Considera só pausas já encerradas — uma pausa em aberto que passar do limite
+        cadastrado em Parâmetros aparece como alerta em tempo real pro Gestor, não entra nesta soma.
+      </p>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <button style={styles.btnGhost} onClick={() => { setDe(inicioSemanaPadrao); setAte(toISO(hoje)); }}>
+          Semana atual
+        </button>
+        <button style={styles.btnGhost} onClick={() => { setDe(toISO(new Date(Date.now() - 6 * 86400000))); setAte(toISO(hoje)); }}>
+          Últimos 7 dias
+        </button>
+        <Field label="De"><input type="date" style={styles.input} value={de} onChange={e => setDe(e.target.value)} /></Field>
+        <Field label="Até"><input type="date" style={styles.input} value={ate} onChange={e => setAte(e.target.value)} /></Field>
+      </div>
+
+      {periodoInvalido ? (
+        <div style={{ ...styles.infoBox, borderColor: C.laranja, background: "#FFF4EB", color: C.laranjaEsc, fontWeight: 600 }}>
+          Escolha um período válido de até 31 dias.
+        </div>
+      ) : motivos.length === 0 ? (
+        <EmptyState text="Nenhum motivo de pausa cadastrado em Parâmetros ainda." />
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div className="scroll-x" onWheel={rolarNaHorizontal}
+              style={{ overflowX: "auto", flex: "3 1 460px", minWidth: 0 }}>
+              <table style={{ ...styles.table, minWidth: 460 }}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Justificativa</th>
+                    {diasDoPeriodo.map(ts => <th key={ts} style={styles.th}>{dataSemana(ts)}</th>)}
+                    <th style={styles.th}>Total período</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {matriz.map((r, i) => (
+                    <tr key={r.motivo} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
+                      <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{r.motivo}</td>
+                      {diasDoPeriodo.map(ts => (
+                        <td key={ts} style={styles.tdMono}>{msFmt(r.porDia[ts])}</td>
+                      ))}
+                      <td style={{ ...styles.tdMono, fontWeight: 700, color: C.navy2 }}>{msFmt(r.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${C.prataClaro}` }}>
+                    <td style={{ ...styles.td, fontWeight: 800, color: C.navy }}>Total do dia</td>
+                    {diasDoPeriodo.map(ts => (
+                      <td key={ts} style={{ ...styles.tdMono, fontWeight: 800 }}>{msFmt(totalPorDia[ts])}</td>
+                    ))}
+                    <td style={{ ...styles.tdMono, fontWeight: 800, color: C.navy }}>{msFmt(totalPeriodoMs)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div style={{ ...styles.card, flex: "1 1 220px", minWidth: 220 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, marginBottom: 10 }}>
+                Total no mês — {hoje.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {motivos.map(m => (
+                  <div key={m} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+                    <span style={{ color: C.texto }}>{m}</span>
+                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy2 }}>{msFmt(totalMes.porMotivo[m])}</strong>
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5,
+                  borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 6, marginTop: 2 }}>
+                  <strong style={{ color: C.navy }}>Total geral</strong>
+                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy }}>{msFmt(totalMes.geral)}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ===== TIMELINE DA OPERAÇÃO — início, pausa(s), retomada e fim ===== */}
+          <div style={{ marginTop: 30 }}>
+            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 6 }}>
+              Timeline das Operações
+            </div>
+            <p style={styles.helper}>
+              Uma barra por operação iniciada no período: verde é tempo trabalhado, laranja é pausa — passe o mouse
+              num trecho pra ver o motivo e o horário.
+            </p>
+            <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: C.prata, marginBottom: 12 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: C.verde, display: "inline-block" }} /> Em operação
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: C.laranja, display: "inline-block" }} /> Pausada
+              </span>
+            </div>
+            {opsDoPeriodo.length === 0 ? (
+              <EmptyState text="Nenhuma operação iniciada neste período." />
+            ) : (
+              <>
+                <div style={{ display: "grid", gap: 14 }}>
+                  {opsTimelineVisiveis.map(op => <TimelineOperacao key={op.id} op={op} />)}
+                </div>
+                {opsDoPeriodo.length > 15 && !mostrarTodasTimeline && (
+                  <button style={{ ...styles.btnGhost, marginTop: 12 }} onClick={() => setMostrarTodasTimeline(true)}>
+                    Mostrar todas ({opsDoPeriodo.length})
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Uma linha da timeline: reconstrói os trechos trabalhado/pausado a partir
+   de op.inicio, op.pausas (ordenadas) e op.fim (ou "agora", se ainda em
+   andamento) — cada trecho vira um segmento colorido proporcional ao
+   tempo total da operação. */
+function TimelineOperacao({ op }) {
+  const fimEfetivo = op.fim || Date.now();
+  const total = fimEfetivo - (op.inicio || fimEfetivo);
+  if (!op.inicio || total <= 0) return null;
+
+  const pausas = (op.pausas || []).slice().sort((a, b) => a.inicio - b.inicio);
+  const segmentos = [];
+  let cursor = op.inicio;
+  pausas.forEach(p => {
+    if (p.inicio > cursor) segmentos.push({ tipo: "trabalho", inicio: cursor, fim: p.inicio });
+    const fimPausa = p.fim || fimEfetivo;
+    segmentos.push({ tipo: "pausa", inicio: p.inicio, fim: fimPausa, motivo: p.motivo });
+    cursor = fimPausa;
+  });
+  if (cursor < fimEfetivo) segmentos.push({ tipo: "trabalho", inicio: cursor, fim: fimEfetivo });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, marginBottom: 5, gap: 8, flexWrap: "wrap" }}>
+        <span>
+          <strong style={{ color: C.navy }}>{op.ref}</strong>
+          <span style={{ color: C.prata }}> · {op.cliente}</span>
+        </span>
+        <span style={{ color: C.prata, fontFamily: "'Roboto Mono',monospace", fontSize: 11 }}>
+          {hora(op.inicio)} → {op.fim ? hora(op.fim) : "em andamento"}
+        </span>
+      </div>
+      <div style={{ display: "flex", height: 20, borderRadius: 5, overflow: "hidden", border: `1px solid ${C.prataClaro}` }}>
+        {segmentos.map((s, i) => (
+          <div key={i}
+            title={s.tipo === "pausa" ? `${s.motivo} · ${hora(s.inicio)}–${hora(s.fim)}` : `Em operação · ${hora(s.inicio)}–${hora(s.fim)}`}
+            style={{ width: `${Math.max(1, ((s.fim - s.inicio) / total) * 100)}%`,
+              background: s.tipo === "pausa" ? C.laranja : C.verde }} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -9536,6 +9901,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
     gestores: params.gestores || [],
     motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa,
+    limitesPausaMin: params.limitesPausaMin || {},
     direcoes: direcoesIniciais,
     fotosMin: direcoesIniciais.reduce((acc, d) => {
       acc[d.id] = {
@@ -9663,6 +10029,22 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
     setDraft(d => ({ ...d, motivosPausa: [...(d.motivosPausa || []), v] }));
     setNovoMotivoPausa(""); setSalvo(false);
   };
+  /* remove o motivo e o limite de tempo associado a ele juntos — evita
+     lixo órfão em limitesPausaMin quando o motivo some da lista */
+  const delMotivoPausa = (m) => {
+    setDraft(d => {
+      const { [m]: _descartado, ...limitesRestantes } = d.limitesPausaMin || {};
+      return { ...d, motivosPausa: (d.motivosPausa || []).filter(x => x !== m), limitesPausaMin: limitesRestantes };
+    });
+    setSalvo(false);
+  };
+  /* limite de tempo (minutos) tolerado antes do alerta de pausa estourada —
+     0 ou vazio desliga o alerta pra esse motivo (ver AlertaPausaEstourada) */
+  const setLimitePausa = (motivo, v) => {
+    const n = Math.max(0, parseInt(v, 10) || 0);
+    setDraft(d => ({ ...d, limitesPausaMin: { ...(d.limitesPausaMin || {}), [motivo]: n } }));
+    setSalvo(false);
+  };
   /* devolve o id para o chamador abrir o modal já no tipo recém-criado */
   const addTipo = () => {
     const id = uid();
@@ -9692,6 +10074,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       const lista = (draft.direcoes || []).map(d => ({ ...d, label: d.label.trim() })).filter(d => d.label);
       return lista.length ? lista : DEFAULT_PARAMS.direcoes;
     })();
+    const motivosPausaLimpo = (draft.motivosPausa || DEFAULT_PARAMS.motivosPausa).map(m => m.trim()).filter(Boolean);
     const clean = {
       ...params,
       custoTerceirizada: Math.max(0, parseFloat(draft.custoTerceirizada) || 0),
@@ -9700,7 +10083,15 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       pinGestor: (draft.pinGestor || "1234").toString().trim() || "1234",
       clientes: (draft.clientes || []).map(c => c.trim()).filter(Boolean),
       equipe: (draft.equipe || params.equipe || []).map(c => c.trim()).filter(Boolean),
-      motivosPausa: (draft.motivosPausa || DEFAULT_PARAMS.motivosPausa).map(m => m.trim()).filter(Boolean),
+      motivosPausa: motivosPausaLimpo,
+      /* só guarda limite pra motivo que ainda existe — sem isso um motivo
+         removido e recriado com o mesmo nome "herdaria" um limite velho
+         que ninguém mais vê nem edita na tela */
+      limitesPausaMin: motivosPausaLimpo.reduce((acc, m) => {
+        const v = Math.max(0, parseInt(draft.limitesPausaMin?.[m], 10) || 0);
+        if (v > 0) acc[m] = v;
+        return acc;
+      }, {}),
       metaDinamica: draft.metaDinamica !== false,
       exigirFotos: draft.exigirFotos !== false,
       direcoes: direcoesLimpo,
@@ -9859,17 +10250,34 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
       {subOn("motivospausa") && (<>
       <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
-      <p style={styles.helper}>Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria etc.). O tempo pausado não conta contra a meta/bônus.</p>
+      <p style={styles.helper}>
+        Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria
+        etc.). O tempo pausado não conta contra a meta/bônus. Cadastre um <strong>limite de tempo (min)</strong> para
+        os motivos que devem gerar alerta — passou do limite sem retomar a operação, o Gestor recebe um aviso na
+        tela. Deixe em branco (ou 0) para o motivo nunca gerar alerta.
+      </p>
       <div style={styles.card}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
           {(draft.motivosPausa || []).length === 0
             ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum motivo cadastrado ainda.</span>
             : draft.motivosPausa.map(m => (
-              <span key={m} style={styles.clienteChip}>
-                <PauseCircle size={13} /> {m}
-                <button style={styles.chipX} title="Remover"
-                  onClick={() => { setDraft(d => ({ ...d, motivosPausa: d.motivosPausa.filter(x => x !== m) })); setSalvo(false); }}>×</button>
-              </span>
+              <div key={m} style={{
+                display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                background: C.bgLeve, border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "8px 12px"
+              }}>
+                <PauseCircle size={14} color={C.navy2} />
+                <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, flex: 1, minWidth: 120 }}>
+                  {m}
+                </span>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.prata }}>
+                  Limite (min)
+                  <input type="number" min="0" step="5" placeholder="Sem limite"
+                    style={{ ...styles.input, width: 90, padding: "6px 8px" }}
+                    value={draft.limitesPausaMin?.[m] || ""}
+                    onChange={e => setLimitePausa(m, e.target.value)} />
+                </label>
+                <button style={styles.chipX} title="Remover" onClick={() => delMotivoPausa(m)}>×</button>
+              </div>
             ))}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
