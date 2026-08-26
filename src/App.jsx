@@ -9,7 +9,7 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark, Pencil
+  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark, Pencil, ArrowLeftRight
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -204,6 +204,7 @@ const SUBITENS_POR_ABA = {
   parametros: [
     { id: "valores", label: "Valores de Mão de Obra" },
     { id: "clientes", label: "Clientes Cadastrados" },
+    { id: "direcoes", label: "Direções de Operação" },
     { id: "motivospausa", label: "Motivos de Pausa" },
     { id: "fotosevidencia", label: "Fotos de Evidência" },
     { id: "tipos", label: "Tipos de Operação e Linha de Base" },
@@ -355,14 +356,32 @@ const FOTOS_FIM_MIN = 1;
    de fábrica, o teto sobe junto (nunca pode ser menor que o mínimo). */
 const FOTOS_TETO_CAPTURA = 6;
 
-/* Mínimo de fotos por direção (recebimento/expedição) x etapa (início/fim),
-   configurável pelo gestor em Parâmetros. Ver DEFAULT_PARAMS.fotosMin. */
+/* Mínimo de fotos por direção (uma entrada por id cadastrado em Parâmetros →
+   Direções de Operação) x etapa (início/fim). Ver DEFAULT_PARAMS.fotosMin.
+   Direção sem configuração própria (ex.: recém-criada, ainda não salva na
+   aba Fotos de Evidência) cai no piso de fábrica abaixo. */
 function minFotosCfg(params, direcao, etapa) {
-  const dir = direcao === "expedicao" ? "expedicao" : "recebimento";
-  const cfg = (params?.fotosMin && params.fotosMin[dir]) || {};
+  const cfg = (params?.fotosMin && params.fotosMin[direcao]) || {};
   const v = cfg[etapa];
   const base = etapa === "inicio" ? FOTOS_INICIO_OBRIGATORIAS : FOTOS_FIM_MIN;
   return Number.isFinite(v) && v >= 0 ? v : base;
+}
+/* Rótulo e cor de uma direção a partir do id — usados por DirTag e por todo
+   texto que hoje mostrava "Recebimento"/"Expedição" na tela ou em
+   exportações. direcoes vem de params.direcoes (cadastro do gestor); os
+   dois primeiros índices mantêm azul/vermelho de fábrica, os seguintes
+   ciclam pela paleta abaixo. */
+const DIR_PALETA = [
+  { bg: "#E3F2FD", c: "#0D47A1" }, { bg: "#FDECEA", c: "#B71C1C" },
+  { bg: "#EAF6EE", c: "#1B5E20" }, { bg: "#FFF3E0", c: "#E65100" },
+  { bg: "#F3E8FD", c: "#6A1B9A" }, { bg: "#E0F7FA", c: "#00695C" }
+];
+function dirLabel(direcoes, id) {
+  return (direcoes || []).find(d => d.id === id)?.label || id || "—";
+}
+function dirEstilo(direcoes, id) {
+  const idx = (direcoes || []).findIndex(d => d.id === id);
+  return DIR_PALETA[Math.max(0, idx) % DIR_PALETA.length];
 }
 function maxFotosCfg(min) {
   return Math.max(FOTOS_TETO_CAPTURA, min);
@@ -592,8 +611,17 @@ const DEFAULT_PARAMS = {
      processo na hora — sem foto — quando o celular/coletor falha em
      campo, sem precisar mexer no código toda vez que isso acontece. */
   exigirFotos: true,
-  /* Mínimo de fotos por direção x etapa. Recebimento e Expedição podem ter
-     exigências diferentes, e início/fim também — ver minFotosCfg(). */
+  /* direcoes: cadastro do "sentido" da operação — Recebimento e Expedição
+     vêm de fábrica, mas o gestor pode acrescentar outras (ex.: Transferência,
+     Devolução) em Parâmetros → Direções de Operação. id é interno e estável
+     (não muda ao renomear o rótulo); é o que fica gravado em op.direcao. */
+  direcoes: [
+    { id: "recebimento", label: "Recebimento" },
+    { id: "expedicao", label: "Expedição" }
+  ],
+  /* Mínimo de fotos por direção x etapa — uma entrada por id de
+     params.direcoes, início/fim podem ter exigências diferentes.
+     Ver minFotosCfg(). */
   fotosMin: {
     recebimento: { inicio: FOTOS_INICIO_OBRIGATORIAS, fim: FOTOS_FIM_MIN },
     expedicao: { inicio: FOTOS_INICIO_OBRIGATORIAS, fim: FOTOS_FIM_MIN }
@@ -1037,6 +1065,9 @@ export default function App() {
            persistParams antigo que não fazia merge) fica sem conferente
            nenhum ou sem nenhuma tela liberada pro Gestor, silenciosamente. */
         if (!Array.isArray(parsed.conferentes)) parsed.conferentes = DEFAULT_PARAMS.conferentes;
+        /* params gravados antes da direção virar cadastro (era só o par fixo
+           recebimento/expedição, agora configurável em Parâmetros) */
+        if (!Array.isArray(parsed.direcoes) || parsed.direcoes.length === 0) parsed.direcoes = DEFAULT_PARAMS.direcoes;
         if (!parsed.permissoesGestor || typeof parsed.permissoesGestor !== "object") parsed.permissoesGestor = DEFAULT_PARAMS.permissoesGestor;
         setParams(parsed);
       }
@@ -1982,7 +2013,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         </div>
                       )}
                     </div>
-                    <DirTag dir={op.direcao} />
+                    <DirTag dir={op.direcao} direcoes={params.direcoes} />
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, fontSize: 12, color: C.prata }}>
@@ -2149,7 +2180,7 @@ function AppConferente({ ops, params, persistOps, now, sair, sync, recarregar, u
                         <div style={{ marginBottom: 4 }}>
                           <label style={styles.fieldLabel}>
                             <Boxes size={12} style={{ verticalAlign: -2 }} />{" "}
-                            Volumes {op.direcao === "expedicao" ? "embarcados" : "recebidos"} *
+                            Volumes {op.direcao === "expedicao" ? "embarcados" : op.direcao === "recebimento" ? "recebidos" : "operados"} *
                           </label>
                           <input type="number" min="1" inputMode="numeric"
                             style={{ ...styles.input, width: "100%", fontFamily: "'Roboto Mono',monospace",
@@ -3461,7 +3492,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
     if (!form.ref.trim()) return setErro("Informe o ID Superior (NF/Pedido/DP).");
     if (!form.cliente.trim()) return setErro("Selecione o cliente.");
     if (!form.tipoId) return setErro("Selecione o tipo de operação.");
-    if (!form.direcao) return setErro("Selecione a direção: recebimento ou expedição.");
+    if (!form.direcao) return setErro("Selecione a direção da operação.");
     const tipoEscolhido = params.tipos.find(t => t.id === form.tipoId);
     const ehPaletizado = tipoEscolhido && tipoEscolhido.modalidade === "paletizado";
     const qt = parseInt(form.qtdTerceirizada || 0, 10), qs = parseInt(form.qtdSuperior || 0, 10);
@@ -3629,13 +3660,16 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
             </select>
           </Field>
           <Field label="Direção" required>
-            <div style={{ display: "flex", gap: 8 }}>
-              {["recebimento", "expedicao"].map(d => (
-                <button key={d} onClick={() => set("direcao", d)} style={{ ...styles.toggle, ...(form.direcao === d ? styles.toggleOn : {}) }}>
-                  {d === "recebimento" ? "Recebimento" : "Expedição"}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {(params.direcoes || DEFAULT_PARAMS.direcoes).map(d => (
+                <button key={d.id} onClick={() => set("direcao", d.id)} style={{ ...styles.toggle, ...(form.direcao === d.id ? styles.toggleOn : {}) }}>
+                  {d.label}
                 </button>
               ))}
             </div>
+            {(params.direcoes || []).length === 0 && (
+              <div style={{ fontSize: 11, color: C.vermelho, marginTop: 4 }}>Cadastre ao menos uma direção em Parâmetros.</div>
+            )}
             {!form.direcao && (
               <div style={{ fontSize: 11, color: C.laranjaEsc, marginTop: 4 }}>Selecione uma das opções.</div>
             )}
@@ -3910,7 +3944,7 @@ function Acompanhamento({ ops, params, now, sub }) {
               ...(prog.atrasada ? { borderLeft: `3px solid ${C.vermelho}`, background: "#FFF5F5" } : {}) }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                 <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13.5, color: C.navy }}>{op.ref}</strong>
-                <DirTag dir={op.direcao} />
+                <DirTag dir={op.direcao} direcoes={params.direcoes} />
               </div>
               <div style={{ fontSize: 12, color: C.texto, marginTop: 3 }}>{op.cliente}</div>
               <div style={{ fontSize: 11, color: C.prata, marginTop: 3 }}>{c.tipo?.label} · {op.qtdTerceirizada}T + {op.qtdSuperior}B · meta {hhmm(c.metaHoras)}</div>
@@ -4586,7 +4620,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
     if (!draft.ref.trim()) return setMsg("Informe o ID Superior (NF/Pedido/DP).");
     if (!draft.cliente.trim()) return setMsg("Selecione o cliente.");
     if (!draft.tipoId) return setMsg("Selecione o tipo de operação.");
-    if (!draft.direcao) return setMsg("Selecione a direção: recebimento ou expedição.");
+    if (!draft.direcao) return setMsg("Selecione a direção da operação.");
     if (draft.volume === "" || Number(draft.volume) <= 0) return setMsg("Informe o volume da operação.");
 
     const antes = { inicio: op.inicio, fim: op.fim, status: op.status };
@@ -4822,11 +4856,11 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
                         </select>
                       </Field>
                       <Field label="Direção">
-                        <div style={{ display: "flex", gap: 8 }}>
-                          {["recebimento", "expedicao"].map(d2 => (
-                            <button key={d2} onClick={() => setDraft(d => ({ ...d, direcao: d2 }))}
-                              style={{ ...styles.toggle, ...(draft.direcao === d2 ? styles.toggleOn : {}) }}>
-                              {d2 === "recebimento" ? "Recebimento" : "Expedição"}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {(params.direcoes || DEFAULT_PARAMS.direcoes).map(d2 => (
+                            <button key={d2.id} onClick={() => setDraft(d => ({ ...d, direcao: d2.id }))}
+                              style={{ ...styles.toggle, ...(draft.direcao === d2.id ? styles.toggleOn : {}) }}>
+                              {d2.label}
                             </button>
                           ))}
                         </div>
@@ -5459,7 +5493,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
             </SectionTitle>
             <div style={styles.opCardGrid}>
               {emAndamento.map(({ op, c, el, st, pausada }) => (
-                <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} />
+                <CardOpAgora key={op.id} op={op} c={c} el={el} st={st} pausada={pausada} direcoes={params.direcoes} />
               ))}
             </div>
           </div>
@@ -5495,13 +5529,14 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                       temFotos={n > 0 ? n : null}
                       onVerFotos={() => setFotoAberta(reg)}
                       isClienteRestrito={isCliente}
+                      direcoes={params.direcoes}
                       onAbrirRomaneio={() => abrirRomaneioComFotos(op, {
                         observacao: op?.observacao,
                         avariaTem: op?.avariaTem,
                         avariaDescricao: op?.avariaDescricao,
                         romaneioGeradoEm: op?.romaneioGeradoEm,
                         romaneioGeradoPor: op?.romaneioGeradoPor
-                      })} />
+                      }, params)} />
                   );
                 })}
               </div>
@@ -5509,7 +5544,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
 
             {fotoAberta && (
               <VisorFotos reg={fotoAberta} op={ops.find(o => o.id === fotoAberta.opId) || null}
-                persistOps={persistOps} ops={ops} sub={subFotos} usuario={usuario}
+                persistOps={persistOps} ops={ops} sub={subFotos} usuario={usuario} params={params}
                 onFechar={() => setFotoAberta(null)} />
             )}
           </div>
@@ -5637,7 +5672,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                   <div key={op.id} style={{ border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "10px 12px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <strong style={{ fontSize: 13, color: C.navy }}>{op.ref}</strong>
-                      <DirTag dir={op.direcao} />
+                      <DirTag dir={op.direcao} direcoes={params.direcoes} />
                     </div>
                     <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>
                       {op.cliente}
@@ -5691,7 +5726,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                             ref e nome do cliente, pra não revelar de quem é cada operação
                             agendada — só a existência/horário/tipo aparece. */}
                         <strong style={{ fontSize: 13, color: C.navy }}>{anonimizarCliente ? "Operação agendada" : o.ref}</strong>
-                        <DirTag dir={o.direcao} />
+                        <DirTag dir={o.direcao} direcoes={params.direcoes} />
                       </div>
                       {!anonimizarCliente && <div style={{ fontSize: 12, color: C.texto, marginTop: 2 }}>{o.cliente}</div>}
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 11.5, color: C.prata }}>
@@ -5856,7 +5891,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
                     <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{op.ref}</td>
                     <td style={styles.td}>{op.cliente}</td>
                     <td style={styles.td}>{c.tipo?.label || "—"}</td>
-                    <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                    <td style={styles.td}><DirTag dir={op.direcao} direcoes={params.direcoes} /></td>
                     <td style={styles.td}>{fmtDT(op.fim)}</td>
                     <td style={{ ...styles.tdMono, fontWeight: 700, color: c.economia >= 0 ? C.verde : C.vermelho }}>{brl(c.economia)}</td>
                     <td style={styles.td}>
@@ -6054,7 +6089,7 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
 
 /* Visualizador de uma operação: baixa as imagens só quando aberto,
    para a lista da galeria continuar leve. */
-function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
+function VisorFotos({ reg, op, persistOps, ops, sub, usuario, params, onFechar }) {
   const subOn = (id) => subLiberado(sub, id);
   const [pacote, setPacote] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -6218,7 +6253,7 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
         observacao: obs, avariaTem, avariaDescricao,
         romaneioGeradoEm: op?.romaneioGeradoEm,
         romaneioGeradoPor: op?.romaneioGeradoPor
-      });
+      }, params);
       setModoEdicao(false);
     } catch (e) {
       console.error(e);
@@ -6235,7 +6270,7 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
       observacao: op?.observacao, avariaTem: op?.avariaTem, avariaDescricao: op?.avariaDescricao,
       romaneioGeradoEm: op?.romaneioGeradoEm,
       romaneioGeradoPor: op?.romaneioGeradoPor
-    });
+    }, params);
   };
 
   return (
@@ -6260,7 +6295,7 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
                   display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap"
                 }}>
                   <Camera size={17} /> {reg.ref}
-                  <DirTag dir={reg.direcao} />
+                  <DirTag dir={reg.direcao} direcoes={params?.direcoes} />
                 </div>
                 <div style={{ fontSize: 12.5, color: C.prataClaro, marginTop: 3 }}>
                   {reg.cliente}
@@ -6417,7 +6452,7 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
                     fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5,
                     color: C.navy, textTransform: "uppercase", letterSpacing: .4, marginBottom: 10
                   }}>
-                    Romaneio de {reg.direcao === "expedicao" ? "Expedição" : "Recebimento"}
+                    Romaneio de {dirLabel(params?.direcoes, reg.direcao)}
                   </div>
 
                   {jaGerado && (
@@ -6523,13 +6558,13 @@ function VisorFotos({ reg, op, persistOps, ops, sub, usuario, onFechar }) {
 }
 
 /* Abre o romaneio buscando fotos automaticamente — usado no Dashboard */
-async function abrirRomaneioComFotos(op, dados) {
+async function abrirRomaneioComFotos(op, dados, params) {
   try {
     const pacote = await lerFotosDaOperacao(op.id);
-    abrirRomaneio(op, pacote, dados);
+    abrirRomaneio(op, pacote, dados, params);
   } catch (e) {
     console.error("Erro ao carregar fotos:", e);
-    abrirRomaneio(op, null, dados);
+    abrirRomaneio(op, null, dados, params);
   }
 }
 
@@ -6537,13 +6572,14 @@ async function abrirRomaneioComFotos(op, dados) {
    padrão visual SBS/Superior (validado com Pablo em Ago/2026): logo Superior
    em destaque, verde/azul da Superior, rodapé com a logo da SBS pequena
    ("Desenvolvido por SBS Solution"), bloco de avaria e fotos reais da operação.
-   Nome do documento = "Recebimento" ou "Expedição" conforme a direção da
-   operação (não é escolhido manualmente). */
-function abrirRomaneio(reg, pacote, dados) {
+   Nome do documento vem da direção cadastrada em Parâmetros (não é escolhido
+   manualmente). expedicao só fica true para o id de fábrica "expedicao" —
+   uma direção customizada usa a redação padrão de recebimento abaixo. */
+function abrirRomaneio(reg, pacote, dados, params) {
   const { observacao, avariaTem, avariaDescricao, romaneioGeradoEm, romaneioGeradoPor } = dados || {};
   const expedicao = reg.direcao === "expedicao";
-  const tipoLabel = expedicao ? "EXPEDIÇÃO" : "RECEBIMENTO";
-  const nomeArquivo = expedicao ? "expedicao" : "recebimento";
+  const tipoLabel = dirLabel(params?.direcoes, reg.direcao).toUpperCase();
+  const nomeArquivo = slugify(dirLabel(params?.direcoes, reg.direcao));
   const dataGeracaoRomaneio = romaneioGeradoEm ? new Date(romaneioGeradoEm).toLocaleString("pt-BR") : null;
 
   const fotosHTML = (lista, legenda) => {
@@ -6902,7 +6938,7 @@ function GaleriaFotos({ ops, params, persistOps, sub, usuario }) {
                           {reg.idCliente && <span style={{ color: C.prata }}> · ID Cliente {reg.idCliente}</span>}
                         </div>
                       </div>
-                      <DirTag dir={reg.direcao} />
+                      <DirTag dir={reg.direcao} direcoes={params.direcoes} />
                     </div>
 
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 9, fontSize: 11, color: C.prata }}>
@@ -6949,6 +6985,7 @@ function GaleriaFotos({ ops, params, persistOps, sub, usuario }) {
           ops={ops}
           sub={sub}
           usuario={usuario}
+          params={params}
           onFechar={() => setAberta(null)}
         />
       )}
@@ -7769,7 +7806,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
          aba Rateio — são documentos para públicos diferentes. */
       d.ops.push({
         ref: o.ref, cliente: o.cliente || "—", tipo: c.tipo?.label || "—",
-        direcao: o.direcao === "recebimento" ? "Recebimento" : "Expedição",
+        direcao: dirLabel(params.direcoes, o.direcao),
         volume: o.volume || 0, status: o.status,
         terc: o.qtdTerceirizada || 0, qtdBonus, valorBonus: c.bonusPago
       });
@@ -7846,7 +7883,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
       "Custo Real (R$)", "Economia (R$)", "Economia (%)", "Observação"]];
     dados.forEach(({ op, c }) => s2.push([
       fmtDT(op.inicio), fmtDT(op.fim), op.ref, op.idCliente || "", op.cliente, c.tipo?.label || "",
-      op.direcao === "recebimento" ? "Recebimento" : "Expedição", op.volume || 0,
+      dirLabel(params.direcoes, op.direcao), op.volume || 0,
       op.volumeReal != null ? op.volumeReal : "",
       c.divergenciaVol != null ? c.divergenciaVol : "",
       c.divergenciaPct != null ? +c.divergenciaPct.toFixed(2) : "",
@@ -7938,7 +7975,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
      seções vazias sempre que o período escolhido era futuro. */
   const htmlCliente = (modo) => montarHTMLCliente({
     modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario,
-    porTipo, planoPorTipo, de, ate, cliFiltro
+    porTipo, planoPorTipo, de, ate, cliFiltro, params
   });
 
   /* ---------- RELATÓRIO AO PRESTADOR DE SERVIÇO ---------- */
@@ -8131,7 +8168,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                     <tr key={op.id} style={{ background: i % 2 ? C.bgLeve : C.branco }}>
                       <td style={{ ...styles.td, fontWeight: 700, color: C.navy }}>{op.ref}</td>
                       <td style={styles.td}>{c.tipo?.label || "—"}</td>
-                      <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                      <td style={styles.td}><DirTag dir={op.direcao} direcoes={params.direcoes} /></td>
                       <td style={styles.tdMono}>{c.volApurado != null ? c.volApurado.toLocaleString("pt-BR") : "—"}</td>
                       <td style={styles.tdMono}>{brl(c.custoReal)}</td>
                       <td style={styles.tdMono}>{brl(c.bonusPago)}</td>
@@ -8580,7 +8617,7 @@ function RaioXMdO({ ops, params, diasTerc }) {
                     <td style={styles.td}>{op.idCliente || "—"}</td>
                     <td style={styles.td}>{op.cliente}</td>
                     <td style={styles.td}>{c.tipo?.label || "—"}</td>
-                    <td style={styles.td}><DirTag dir={op.direcao} /></td>
+                    <td style={styles.td}><DirTag dir={op.direcao} direcoes={params.direcoes} /></td>
                     <td style={styles.tdMono}>{c.volApurado != null ? c.volApurado.toLocaleString("pt-BR") : "—"}</td>
                     <td style={styles.tdMono}>{op.qtdTerceirizada || 0}</td>
                     <td style={styles.tdMono}>{c.cumpriuMeta ? (op.qtdSuperior || 0) : 0}</td>
@@ -9132,7 +9169,7 @@ function montarHTMLPrestador({ linhas, totais, params, de, ate }) {
    relação da Superior com a terceirizada. Ao cliente interessam volume
    movimentado, cumprimento de prazo e o que está programado.
    ============================================================ */
-function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario, porTipo, planoPorTipo, de, ate, cliFiltro }) {
+function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDiario, planoDiario, porTipo, planoPorTipo, de, ate, cliFiltro, params }) {
   const plano = modo === "planejado";
   const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const per = `${de.split("-").reverse().join("/")} a ${ate.split("-").reverse().join("/")}`;
@@ -9194,7 +9231,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
   const linhasOps = dados.slice().reverse().map(({ op, c }) => `<tr>
     <td class="b">${esc(op.ref)}</td>
     <td>${esc(op.idCliente || "—")}</td>
-    <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
+    <td>${esc(dirLabel(params?.direcoes, op.direcao))}</td>
     <td>${esc(c.tipo?.label || "—")}</td>
     <td class="m">${nf(op.volume)}</td>
     <td class="m">${new Date(op.fim).toLocaleDateString("pt-BR")}</td>
@@ -9205,7 +9242,7 @@ function montarHTMLCliente({ modo, dados, planejadas, agg, mediaAnual, volumeDia
     <td class="b">${esc(op.ref)}</td>
     <td>${esc(op.cliente)}</td>
     <td>${esc(op.idCliente || "—")}</td>
-    <td>${esc(op.direcao === "recebimento" ? "Recebimento" : "Expedição")}</td>
+    <td>${esc(dirLabel(params?.direcoes, op.direcao))}</td>
     <td>${esc(c.tipo?.label || "—")}</td>
     <td class="m">${nf(op.volume)}</td>
     <td class="m">${new Date(diaPlanejado(op)).toLocaleDateString("pt-BR")}</td>
@@ -9495,14 +9532,25 @@ ${plano ? `<main>
    ============================================================ */
 function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const subOn = (id) => subLiberado(sub, id);
+  const direcoesIniciais = (params.direcoes && params.direcoes.length) ? params.direcoes : DEFAULT_PARAMS.direcoes;
   const [draft, setDraft] = useState({ ...params, clientes: params.clientes || [],
     gestores: params.gestores || [],
     motivosPausa: params.motivosPausa || DEFAULT_PARAMS.motivosPausa,
-    fotosMin: {
-      recebimento: { ...DEFAULT_PARAMS.fotosMin.recebimento, ...(params.fotosMin?.recebimento || {}) },
-      expedicao: { ...DEFAULT_PARAMS.fotosMin.expedicao, ...(params.fotosMin?.expedicao || {}) }
-    } });
+    direcoes: direcoesIniciais,
+    fotosMin: direcoesIniciais.reduce((acc, d) => {
+      acc[d.id] = {
+        inicio: params.fotosMin?.[d.id]?.inicio ?? FOTOS_INICIO_OBRIGATORIAS,
+        fim: params.fotosMin?.[d.id]?.fim ?? FOTOS_FIM_MIN
+      };
+      return acc;
+    }, {}) });
   const [novoCliente, setNovoCliente] = useState("");
+  /* cadastro/edição de direção — mesmo padrão de "clientes" abaixo, mas sem
+     precisar propagar renomeação para ops: id é estável e é o que fica
+     gravado em op.direcao, só o rótulo exibido muda. */
+  const [novaDirecao, setNovaDirecao] = useState("");
+  const [editandoDirecao, setEditandoDirecao] = useState(null);
+  const [nomeEdicaoDirecao, setNomeEdicaoDirecao] = useState("");
   /* edição de cliente já cadastrado: guarda o nome ORIGINAL em edição e o
      valor digitado — a confirmação propaga o novo nome para as operações
      já registradas (ver renomearCliente), pra não perder rastreabilidade */
@@ -9525,6 +9573,35 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
     setSalvo(false);
   };
   const setTipo = (id, k, v) => { setDraft(d => ({ ...d, tipos: d.tipos.map(t => t.id === id ? { ...t, [k]: v } : t) })); setSalvo(false); };
+  /* --- direções de operação (recebimento/expedição de fábrica + o que o
+     gestor cadastrar) --- */
+  const addDirecao = () => {
+    const v = novaDirecao.trim();
+    if (!v) return;
+    if ((draft.direcoes || []).some(d => d.label.toLowerCase() === v.toLowerCase())) { setNovaDirecao(""); return; }
+    const id = uid();
+    setDraft(d => ({ ...d,
+      direcoes: [...(d.direcoes || []), { id, label: v }],
+      fotosMin: { ...d.fotosMin, [id]: { inicio: FOTOS_INICIO_OBRIGATORIAS, fim: FOTOS_FIM_MIN } }
+    }));
+    setNovaDirecao(""); setSalvo(false);
+  };
+  const iniciarEdicaoDirecao = (dr) => { setEditandoDirecao(dr.id); setNomeEdicaoDirecao(dr.label); };
+  const cancelarEdicaoDirecao = () => { setEditandoDirecao(null); setNomeEdicaoDirecao(""); };
+  const renomearDirecao = (id) => {
+    const v = nomeEdicaoDirecao.trim();
+    if (!v) { cancelarEdicaoDirecao(); return; }
+    setDraft(d => ({ ...d, direcoes: d.direcoes.map(x => x.id === id ? { ...x, label: v } : x) }));
+    setSalvo(false);
+    cancelarEdicaoDirecao();
+  };
+  /* mantém sempre ao menos uma direção — sem isso o campo obrigatório do
+     cadastro de operação fica sem nenhuma opção pra escolher */
+  const delDirecao = (id) => {
+    if ((draft.direcoes || []).length <= 1) return;
+    setDraft(d => ({ ...d, direcoes: d.direcoes.filter(x => x.id !== id) }));
+    setSalvo(false);
+  };
   const addCliente = () => {
     const v = novoCliente.trim();
     if (!v) return;
@@ -9608,6 +9685,13 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
        permissoesGestor, conferentes — seria apagado do banco toda vez que
        alguém clicasse em "Salvar parâmetros". Isso já estava acontecendo
        em produção antes desta correção. */
+    /* direcoesLimpo: rótulos vazios caem fora; sem nenhuma sobrando, volta
+       para o par de fábrica — o formulário de operação exige ao menos uma
+       opção pra funcionar. */
+    const direcoesLimpo = (() => {
+      const lista = (draft.direcoes || []).map(d => ({ ...d, label: d.label.trim() })).filter(d => d.label);
+      return lista.length ? lista : DEFAULT_PARAMS.direcoes;
+    })();
     const clean = {
       ...params,
       custoTerceirizada: Math.max(0, parseFloat(draft.custoTerceirizada) || 0),
@@ -9619,16 +9703,16 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       motivosPausa: (draft.motivosPausa || DEFAULT_PARAMS.motivosPausa).map(m => m.trim()).filter(Boolean),
       metaDinamica: draft.metaDinamica !== false,
       exigirFotos: draft.exigirFotos !== false,
-      fotosMin: {
-        recebimento: {
-          inicio: Math.max(0, parseInt(draft.fotosMin?.recebimento?.inicio, 10) || 0),
-          fim: Math.max(0, parseInt(draft.fotosMin?.recebimento?.fim, 10) || 0)
-        },
-        expedicao: {
-          inicio: Math.max(0, parseInt(draft.fotosMin?.expedicao?.inicio, 10) || 0),
-          fim: Math.max(0, parseInt(draft.fotosMin?.expedicao?.fim, 10) || 0)
-        }
-      },
+      direcoes: direcoesLimpo,
+      /* uma entrada de fotosMin por direção cadastrada acima — direção
+         removida no meio da edição não deixa lixo órfão no documento */
+      fotosMin: direcoesLimpo.reduce((acc, d) => {
+        acc[d.id] = {
+          inicio: Math.max(0, parseInt(draft.fotosMin?.[d.id]?.inicio, 10) || 0),
+          fim: Math.max(0, parseInt(draft.fotosMin?.[d.id]?.fim, 10) || 0)
+        };
+        return acc;
+      }, {}),
       gestores: (draft.gestores || []).filter(g => g.nome && g.pin)
         .map(g => ({ id: g.id || uid(), nome: g.nome.trim(), pin: g.pin.toString().trim() })),
       tipos: draft.tipos.map(t => ({ ...t, label: t.label.trim() || "Operação",
@@ -9726,6 +9810,53 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
       </>)}
 
+      {subOn("direcoes") && (<>
+      <SectionTitle icon={ArrowLeftRight}>Direções de Operação <Badge>{(draft.direcoes || []).length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        O "sentido" de cada operação — aparece no cadastro (Novo Pré-Planejamento), nas tags das telas de
+        acompanhamento e nos relatórios. Recebimento e Expedição vêm de fábrica; cadastre outras aqui se a operação
+        tiver mais demandas (ex.: Transferência, Devolução). Cada uma ganha sua própria exigência mínima de fotos
+        em "Fotos de Evidência", logo abaixo.
+      </p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+          {(draft.direcoes || []).length === 0
+            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhuma direção cadastrada ainda.</span>
+            : draft.direcoes.map(dr => editandoDirecao === dr.id ? (
+              <span key={dr.id} style={{ ...styles.clienteChip, paddingRight: 6 }}>
+                <ArrowLeftRight size={13} />
+                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoDirecao.length * 8) }}
+                  autoFocus value={nomeEdicaoDirecao}
+                  onChange={e => setNomeEdicaoDirecao(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") renomearDirecao(dr.id); if (e.key === "Escape") cancelarEdicaoDirecao(); }} />
+                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearDirecao(dr.id)}>✓</button>
+                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoDirecao}>×</button>
+              </span>
+            ) : (
+              <span key={dr.id} style={styles.clienteChip}>
+                <ArrowLeftRight size={13} /> {dr.label}
+                <button style={styles.chipEdit} title="Editar nome"
+                  onClick={() => iniciarEdicaoDirecao(dr)}><Pencil size={12} /></button>
+                {(draft.direcoes || []).length > 1 && (
+                  <button style={styles.chipX} title="Remover"
+                    onClick={() => delDirecao(dr.id)}>×</button>
+                )}
+              </span>
+            ))}
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={styles.fieldLabel}>Nova direção</label>
+            <input style={styles.input} value={novaDirecao} placeholder="Ex.: Transferência"
+              onChange={e => setNovaDirecao(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { addDirecao(); } }} />
+          </div>
+          <button style={styles.btnGhost} onClick={addDirecao}><Plus size={15} /> Adicionar direção</button>
+        </div>
+      </div>
+
+      </>)}
+
       {subOn("motivospausa") && (<>
       <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria etc.). O tempo pausado não conta contra a meta/bônus.</p>
@@ -9779,50 +9910,35 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}`,
           opacity: draft.exigirFotos === false ? .5 : 1 }}>
           <div style={{ fontSize: 12, color: C.prata, marginBottom: 10, lineHeight: 1.55 }}>
-            Quantidade <strong>mínima</strong> de fotos exigida em cada etapa, separada por tipo de operação —
-            Recebimento e Expedição podem ter exigências diferentes.
+            Quantidade <strong>mínima</strong> de fotos exigida em cada etapa, separada por direção —
+            uma coluna para cada direção cadastrada em "Direções de Operação", acima.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
-            <div>
-              <div style={{
-                fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
-                color: "#0D47A1", textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
-              }}>Recebimento</div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <Field label="Início (mín.)">
-                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                    style={styles.input}
-                    value={draft.fotosMin?.recebimento?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
-                    onChange={e => setFotosMin("recebimento", "inicio", e.target.value)} />
-                </Field>
-                <Field label="Fim (mín.)">
-                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                    style={styles.input}
-                    value={draft.fotosMin?.recebimento?.fim ?? FOTOS_FIM_MIN}
-                    onChange={e => setFotosMin("recebimento", "fim", e.target.value)} />
-                </Field>
-              </div>
-            </div>
-            <div>
-              <div style={{
-                fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
-                color: "#B71C1C", textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
-              }}>Expedição</div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <Field label="Início (mín.)">
-                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                    style={styles.input}
-                    value={draft.fotosMin?.expedicao?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
-                    onChange={e => setFotosMin("expedicao", "inicio", e.target.value)} />
-                </Field>
-                <Field label="Fim (mín.)">
-                  <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                    style={styles.input}
-                    value={draft.fotosMin?.expedicao?.fim ?? FOTOS_FIM_MIN}
-                    onChange={e => setFotosMin("expedicao", "fim", e.target.value)} />
-                </Field>
-              </div>
-            </div>
+            {(draft.direcoes || []).map((dr, i) => {
+              const est = DIR_PALETA[i % DIR_PALETA.length];
+              return (
+                <div key={dr.id}>
+                  <div style={{
+                    fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
+                    color: est.c, textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
+                  }}>{dr.label}</div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <Field label="Início (mín.)">
+                      <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                        style={styles.input}
+                        value={draft.fotosMin?.[dr.id]?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
+                        onChange={e => setFotosMin(dr.id, "inicio", e.target.value)} />
+                    </Field>
+                    <Field label="Fim (mín.)">
+                      <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                        style={styles.input}
+                        value={draft.fotosMin?.[dr.id]?.fim ?? FOTOS_FIM_MIN}
+                        onChange={e => setFotosMin(dr.id, "fim", e.target.value)} />
+                    </Field>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -10469,7 +10585,7 @@ function LinhaPessoas({ op }) {
 }
 
 /* ---------- card compacto: operação em andamento ---------- */
-function CardOpAgora({ op, c, el, st, pausada }) {
+function CardOpAgora({ op, c, el, st, pausada, direcoes }) {
   const cor = corTempo(st);
   const pct = Math.min(100, (el / c.metaHoras) * 100);
   const cls = st === "estourou" ? "critico-meta" : st === "atencao" ? "alerta-meta" : "";
@@ -10486,7 +10602,7 @@ function CardOpAgora({ op, c, el, st, pausada }) {
         </span>
       </div>
       <div style={{ marginTop: 5, display: "flex", gap: 5, flexWrap: "wrap" }}>
-        <DirTag dir={op.direcao} />
+        <DirTag dir={op.direcao} direcoes={direcoes} />
         {pausada && (
           <span style={{ ...styles.pill, background: "#FFF3E0", color: C.laranjaEsc }}>
             <PauseCircle size={11} /> Pausada · {pausaAtual(op)?.motivo}
@@ -10526,7 +10642,7 @@ function CardOpAgora({ op, c, el, st, pausada }) {
 }
 
 /* ---------- card compacto: operação concluída hoje ---------- */
-function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRomaneio }) {
+function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRomaneio, direcoes }) {
   const naMeta = c.cumpriuMeta === true;
   const cor = naMeta ? C.verde : C.vermelho;
   const dif = c.tempoReal != null ? c.tempoReal - c.metaHoras : null;
@@ -10544,7 +10660,7 @@ function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRo
           {hhmm(c.tempoReal)}
         </span>
       </div>
-      <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} /></div>
+      <div style={{ marginTop: 5 }}><DirTag dir={op.direcao} direcoes={direcoes} /></div>
       <div style={{ fontSize: 11, color: C.texto, marginTop: 5, lineHeight: 1.4 }}>
         {op.cliente} · {c.tipo?.label}
         {op.idCliente && <span style={{ color: C.prata }}> · ID Cliente {op.idCliente}</span>}
@@ -10649,9 +10765,10 @@ function StatusTag({ status }) {
   const s = map[status] || map.pendente;
   return <span style={{ ...styles.pill, background: s.bg, color: s.c }}>{s.t}</span>;
 }
-function DirTag({ dir }) {
-  const rec = dir === "recebimento";
-  return <span style={{ ...styles.pill, background: rec ? "#E3F2FD" : "#FDECEA", color: rec ? "#0D47A1" : "#B71C1C" }}>{rec ? "Recebimento" : "Expedição"}</span>;
+function DirTag({ dir, direcoes }) {
+  const dirs = direcoes && direcoes.length ? direcoes : DEFAULT_PARAMS.direcoes;
+  const est = dirEstilo(dirs, dir);
+  return <span style={{ ...styles.pill, background: est.bg, color: est.c }}>{dirLabel(dirs, dir)}</span>;
 }
 function EmptyState({ text }) {
   return <div style={styles.empty}><Package size={30} color={C.prataClaro} /><div style={{ marginTop: 8 }}>{text}</div></div>;
