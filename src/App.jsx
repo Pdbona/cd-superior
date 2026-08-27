@@ -6108,8 +6108,14 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         </Modal>
       )}
 
-      {/* ===== FECHAMENTO DO MÊS — números de apoio ===== */}
-      {subOn("fechamento") && (<>
+      {/* ===== FECHAMENTO DO MÊS + ECONOMIA NO MÊS — lado a lado =====
+         Os dois são "resumo do mês" (um por operação concluída, outro por
+         terceirizado efetivamente contratado no dia — bases diferentes de
+         propósito, ver helper de cada um), ficam juntos pra aproveitar a
+         largura em vez de empilhados. */}
+      {(subOn("fechamento") || subOn("economiadia")) && (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(380px,1fr))", gap: 16, alignItems: "start" }}>
+      {subOn("fechamento") && (<div>
       <SectionTitle icon={ClipboardList}>Fechamento do Mês <Badge>{nomeMes(mAtual)}</Badge></SectionTitle>
       <div style={styles.kpiGrid}>
         <KpiComparativo label="Operações Concluídas" valor={aggMes.n} variacao={variacao(aggMes.n, aggMesAnt.n)}
@@ -6122,7 +6128,56 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
         <Kpi label="Bônus Não Pago (mês)" valor={brl(aggMes.bonusPerdido)} nota={`${plOp(foraMeta.length)} fora da meta`}
           icon={AlertTriangle} color={aggMes.bonusPerdido > 0 ? C.vermelho : C.prata} />
       </div>
-      </>)}
+      </div>)}
+
+      {/* A evolução do saving subiu para a seção "Evolução Diária", ao lado
+         da performance — ver as duas curvas juntas é o que mostra se a
+         economia veio de produtividade ou de corte de headcount. */}
+
+      {/* ===== VISÃO POR DIA ===== */}
+      {subOn("economiadia") && (<div>
+      <SectionTitle icon={Calendar}>Economia no Mês — {nomeMes(mAtual)}</SectionTitle>
+      <p style={styles.helper}>
+        Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
+        Planejamento/Ajustes), não a soma do que cada operação pediu — porque a mesma pessoa pode ter trabalhado
+        em mais de uma operação no mesmo dia.
+      </p>
+      <div style={styles.kpiGrid}>
+        <Kpi label="Referência do mês" valor={brl(aggPorDia.referencia)} nota="Cenário 100% terceirizado" icon={TrendingDown} color={C.navy} />
+        <Kpi label="Custo real do mês" valor={brl(aggPorDia.custoReal)} nota="Terceirizado contratado + bônus" icon={DollarSign} color={C.navy2} />
+        <Kpi label="Economia do mês" valor={brl(aggPorDia.economia)} nota="Por dia, não por operação" icon={Award} highlight color={C.supVerde} />
+      </div>
+      {porDiaMes.length === 0 ? (
+        <EmptyState text="Nenhum dia com operação ou terceirizado cadastrado neste mês." />
+      ) : (
+        <>
+          <button style={{ ...styles.btnSecondary, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}
+            onClick={() => setExpandEconomia(!expandEconomia)}>
+            <span style={{ fontSize: 14 }}>{expandEconomia ? "▼" : "▶"}</span>
+            {expandEconomia ? "Recolher" : "Expandir"} detalhes diários
+          </button>
+          {expandEconomia && (
+            <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
+              {porDiaMes.slice().reverse().map(d => (
+                <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
+                  opacity: d.futuro ? .55 : 1 }}>
+                  <div style={{ minWidth: 80, fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 13, color: C.navy }}>{d.rotulo}</div>
+                  <div style={{ fontSize: 11.5, color: C.prata }}>{d.ops.length} operaç{d.ops.length !== 1 ? "ões" : "ão"}</div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Ref. <strong>{brl(d.referenciaDia)}</strong></div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Terc. contratado <strong>{d.qtdTercDia}</strong> ({brl(d.custoTercDia)})</div>
+                  <div style={{ fontSize: 11.5, color: C.texto }}>Bônus <strong>{brl(d.bonusDia)}</strong></div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginLeft: "auto", color: d.economiaDia >= 0 ? C.supVerde : C.vermelho }}>
+                    {brl(d.economiaDia)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      </div>)}
+      </div>
+      )}
 
       {/* ===== CANCELAMENTOS POR CLIENTE + FORA DA META — sanfonas lado a lado ===== */}
       {((cancelamentosCliente.length > 0 && subOn("cancelamentos")) || (foraMeta.length > 0 && subOn("forameta"))) && (
@@ -6186,53 +6241,6 @@ function Dashboard({ ops, opsForecast, anonimizarCliente, params, now, diasTerc,
           )}
         </div>
       )}
-
-      {/* A evolução do saving subiu para a seção "Evolução Diária", ao lado
-         da performance — ver as duas curvas juntas é o que mostra se a
-         economia veio de produtividade ou de corte de headcount. */}
-
-      {/* ===== VISÃO POR DIA ===== */}
-      {subOn("economiadia") && (<>
-      <SectionTitle icon={Calendar}>Economia no Mês — {nomeMes(mAtual)}</SectionTitle>
-      <p style={styles.helper}>
-        Aqui o custo real usa os terceirizados <strong>efetivamente contratados no dia</strong> (cadastro em
-        Planejamento/Ajustes), não a soma do que cada operação pediu — porque a mesma pessoa pode ter trabalhado
-        em mais de uma operação no mesmo dia.
-      </p>
-      <div style={styles.kpiGrid}>
-        <Kpi label="Referência do mês" valor={brl(aggPorDia.referencia)} nota="Cenário 100% terceirizado" icon={TrendingDown} color={C.navy} />
-        <Kpi label="Custo real do mês" valor={brl(aggPorDia.custoReal)} nota="Terceirizado contratado + bônus" icon={DollarSign} color={C.navy2} />
-        <Kpi label="Economia do mês" valor={brl(aggPorDia.economia)} nota="Por dia, não por operação" icon={Award} highlight color={C.supVerde} />
-      </div>
-      {porDiaMes.length === 0 ? (
-        <EmptyState text="Nenhum dia com operação ou terceirizado cadastrado neste mês." />
-      ) : (
-        <>
-          <button style={{ ...styles.btnSecondary, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}
-            onClick={() => setExpandEconomia(!expandEconomia)}>
-            <span style={{ fontSize: 14 }}>{expandEconomia ? "▼" : "▶"}</span>
-            {expandEconomia ? "Recolher" : "Expandir"} detalhes diários
-          </button>
-          {expandEconomia && (
-            <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
-              {porDiaMes.slice().reverse().map(d => (
-                <div key={d.diaTs} style={{ ...styles.card, padding: "10px 14px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap",
-                  opacity: d.futuro ? .55 : 1 }}>
-                  <div style={{ minWidth: 80, fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 13, color: C.navy }}>{d.rotulo}</div>
-                  <div style={{ fontSize: 11.5, color: C.prata }}>{d.ops.length} operaç{d.ops.length !== 1 ? "ões" : "ão"}</div>
-                  <div style={{ fontSize: 11.5, color: C.texto }}>Ref. <strong>{brl(d.referenciaDia)}</strong></div>
-                  <div style={{ fontSize: 11.5, color: C.texto }}>Terc. contratado <strong>{d.qtdTercDia}</strong> ({brl(d.custoTercDia)})</div>
-                  <div style={{ fontSize: 11.5, color: C.texto }}>Bônus <strong>{brl(d.bonusDia)}</strong></div>
-                  <div style={{ fontSize: 12, fontWeight: 700, marginLeft: "auto", color: d.economiaDia >= 0 ? C.supVerde : C.vermelho }}>
-                    {brl(d.economiaDia)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      </>)}
 
       {/* ===== MÃO DE OBRA — PLANEJADO x REALIZADO ===== */}
       {subOn("maodeobra") && (<>
@@ -8555,8 +8563,11 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
 
       </>)}
 
-      {/* ===== RELATÓRIO PARA O PRESTADOR DE SERVIÇO ===== */}
-      {subOn("prestador") && (<>
+      {/* ===== PRESTADOR DE SERVIÇO + RAIO X DA MDO ===== lado a lado —
+          os dois comparam MdO contratada x realizada, só que em recortes
+          diferentes (diária/bônus vs referência do tipo). */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: 16, alignItems: "start" }}>
+      {subOn("prestador") && (<div>
       <SectionTitle icon={HardHat}>Relatório para o Prestador de Serviço</SectionTitle>
       <p style={styles.helper}>
         Fechamento diário para conferência com a prestadora: quantas pessoas foram demandadas em cada dia,
@@ -8595,7 +8606,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
         </div>
       </div>
 
-      </>)}
+      </div>)}
 
       {/* Subitem "Consolidado por Cliente" removido (combinado com Pablo em
          17/ago/2026) — a tabela tinha Referência/Custo Real/Economia, dado
@@ -8606,6 +8617,7 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
 
       {/* ===== RAIO X DA MDO — referência × realizado, dia e período ===== */}
       {subOn("raiox") && <RaioXMdO ops={ops} params={params} diasTerc={diasTerc} />}
+      </div>
 
       {/* ===== RELATÓRIO DE PAUSAS — tempo por justificativa (dia/mês) + timeline ===== */}
       {subOn("pausas") && <RelatorioPausas ops={ops} params={params} />}
@@ -8980,9 +8992,13 @@ function RelatorioPausas({ ops, params }) {
         <EmptyState text="Nenhum motivo de pausa cadastrado em Parâmetros ainda." />
       ) : (
         <>
+          {/* Relatório de Pausas (tabela + total do mês) e Timeline lado a
+             lado — dois blocos, em vez de um empilhado sob o outro. */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: 18, alignItems: "start" }}>
+          <div>
           <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
             <div className="scroll-x" onWheel={rolarNaHorizontal}
-              style={{ overflowX: "auto", flex: "3 1 460px", minWidth: 0 }}>
+              style={{ overflowX: "auto", flex: "3 1 300px", minWidth: 0 }}>
               <table style={{ ...styles.table, minWidth: 460 }}>
                 <thead>
                   <tr>
@@ -9033,12 +9049,13 @@ function RelatorioPausas({ ops, params }) {
               </div>
             </div>
           </div>
+          </div>
 
           {/* ===== TIMELINE DA OPERAÇÃO — início, pausa(s), retomada e fim =====
              Recolhida por padrão (Sanfona) — com muitas operações no período
              ela sozinha tomava a tela toda; agora é um card compacto que abre
              sob demanda, em grade de colunas em vez de empilhada. */}
-          <div style={{ marginTop: 30 }}>
+          <div>
             <Sanfona titulo="Timeline das Operações" icone={Clock} cor={C.navy2}
               contagem={opsDoPeriodo.length}
               sub="Uma barra por operação: verde é tempo trabalhado, laranja é pausa"
@@ -9066,6 +9083,7 @@ function RelatorioPausas({ ops, params }) {
                 </>
               )}
             </Sanfona>
+          </div>
           </div>
         </>
       )}
@@ -10044,6 +10062,10 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const [addingCliente, setAddingCliente] = useState(false);
   const [addingDirecao, setAddingDirecao] = useState(false);
   const [addingMotivoPausa, setAddingMotivoPausa] = useState(false);
+  /* Calibragem de Metas: recolhida por padrão (28/08/2026) — é consulta
+     esporádica (revisão de linha de base), não precisa ficar sempre aberta
+     ocupando a tela. */
+  const [calibragemAberta, setCalibragemAberta] = useState(false);
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
   const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
   /* recalibragem: além de aceitar a sugestão do app, o gestor pode digitar
@@ -10455,15 +10477,22 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       {/* ===== CALIBRAGEM DE METAS ===== */}
       </>)}
 
-      {subOn("calibragem") && (<>
-      <SectionTitle icon={Gauge}>Calibragem de Metas</SectionTitle>
+      {subOn("calibragem") && (
+      <div style={{ marginBottom: 22 }}>
+        <Sanfona titulo="Calibragem de Metas" icone={Gauge} cor={C.navy2}
+          contagem={calibragem.length}
+          sub={(() => {
+            const n = calibragem.filter(a => a.suficiente && a.precisaAjuste).length;
+            return n > 0 ? `${n} tipo${n !== 1 ? "s" : ""} com sugestão de ajuste` : "Linhas de base coerentes com o realizado";
+          })()}
+          aberto={calibragemAberta} onToggle={() => setCalibragemAberta(a => !a)}>
       <p style={styles.helper}>
         O app compara a produtividade realizada com a linha de base de cada tipo. A meta de cada operação
         já é proporcional ao volume e à equipe — aqui você vê se a própria linha de base, cadastrada acima,
         precisa ser revista. Nada é alterado automaticamente. Depois de aplicar uma calibragem, o app só
         sugere de novo após mais {MIN_AMOSTRA} registros novos — e só se o desvio passar de {TOLERANCIA_PCT}%.
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14 }}>
         {calibragem.map(a => {
           const semDados = a.n === 0;
           const cor = semDados ? C.prata : !a.suficiente ? C.navy2 : a.precisaAjuste ? C.laranja : C.verde;
@@ -10587,8 +10616,9 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
           );
         })}
       </div>
-
-      </>)}
+        </Sanfona>
+      </div>
+      )}
 
       {/* ===== CLIENTES + DIREÇÕES ===== lado a lado — os dois são cadastros
           de apoio do mesmo porte, ficam juntos pra aproveitar a largura. */}
@@ -10597,50 +10627,67 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       <SectionTitle icon={Building2}>Cadastro de Clientes <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>Os clientes aqui aparecem como opção no cadastro de operações e viram base da consolidação por cliente nos relatórios.</p>
       <div style={styles.card}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          {(draft.clientes || []).length === 0
-            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum cliente cadastrado ainda.</span>
-            : draft.clientes.map(cl => editandoCliente === cl ? (
-              <span key={cl} style={{ ...styles.clienteChip, paddingRight: 6 }}>
-                <Building2 size={13} />
-                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoCliente.length * 8) }}
-                  autoFocus value={nomeEdicaoCliente}
-                  onChange={e => setNomeEdicaoCliente(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") renomearCliente(cl); if (e.key === "Escape") cancelarEdicaoCliente(); }} />
-                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearCliente(cl)}>✓</button>
-                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoCliente}>×</button>
-              </span>
-            ) : (
-              <span key={cl} style={styles.clienteChip}>
-                <Building2 size={13} /> {cl}
-                <button style={styles.chipEdit} title="Editar nome"
-                  onClick={() => iniciarEdicaoCliente(cl)}><Pencil size={12} /></button>
-                <button style={styles.chipX} title="Remover"
-                  onClick={() => { setDraft(d => ({ ...d, clientes: d.clientes.filter(x => x !== cl) })); setSalvo(false); }}>×</button>
-              </span>
-            ))}
+        {(() => {
+          /* Dois bloquinhos em ordem alfabética (28/08/2026) — lista corrida
+             de chips virava uma parede única; dividida ao meio (A→M / N→Z na
+             prática) fica mais fácil de escanear. */
+          const ordenados = (draft.clientes || []).slice().sort((a, b) => a.localeCompare(b, "pt-BR"));
+          const meio = Math.ceil(ordenados.length / 2);
+          const blocos = [ordenados.slice(0, meio), ordenados.slice(meio)].filter(b => b.length > 0);
+          const renderChip = (cl) => editandoCliente === cl ? (
+            <span key={cl} style={{ ...styles.clienteChip, paddingRight: 6 }}>
+              <Building2 size={13} />
+              <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoCliente.length * 8) }}
+                autoFocus value={nomeEdicaoCliente}
+                onChange={e => setNomeEdicaoCliente(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") renomearCliente(cl); if (e.key === "Escape") cancelarEdicaoCliente(); }} />
+              <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearCliente(cl)}>✓</button>
+              <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoCliente}>×</button>
+            </span>
+          ) : (
+            <span key={cl} style={styles.clienteChip}>
+              <Building2 size={13} /> {cl}
+              <button style={styles.chipEdit} title="Editar nome"
+                onClick={() => iniciarEdicaoCliente(cl)}><Pencil size={12} /></button>
+              <button style={styles.chipX} title="Remover"
+                onClick={() => { setDraft(d => ({ ...d, clientes: d.clientes.filter(x => x !== cl) })); setSalvo(false); }}>×</button>
+            </span>
+          );
+          return ordenados.length === 0 ? (
+            <span style={{ color: C.prata, fontSize: 13 }}>Nenhum cliente cadastrado ainda.</span>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 16 }}>
+              {blocos.map((bloco, i) => (
+                <div key={i} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignContent: "flex-start" }}>
+                  {bloco.map(renderChip)}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+        <div style={{ marginTop: 14 }}>
           {!addingCliente && (
             <button style={{ ...styles.btnGhost, padding: "7px 14px", fontSize: 12.5 }}
               onClick={() => setAddingCliente(true)}>
               <Plus size={14} /> Novo cliente
             </button>
           )}
-        </div>
-        {addingCliente && (
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
-            marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <label style={styles.fieldLabel}>Novo cliente</label>
-              <input style={styles.input} value={novoCliente} placeholder="Ex.: GWT Global" autoFocus
-                onChange={e => setNovoCliente(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") addCliente(); if (e.key === "Escape") setAddingCliente(false); }} />
+          {addingCliente && (
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+              paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <label style={styles.fieldLabel}>Novo cliente</label>
+                <input style={styles.input} value={novoCliente} placeholder="Ex.: GWT Global" autoFocus
+                  onChange={e => setNovoCliente(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") addCliente(); if (e.key === "Escape") setAddingCliente(false); }} />
+              </div>
+              <button style={styles.btnGhost} onClick={addCliente}><Plus size={15} /> Adicionar</button>
+              <button style={styles.btnGhost} onClick={() => { setAddingCliente(false); setNovoCliente(""); }}>
+                <X size={15} /> Fechar
+              </button>
             </div>
-            <button style={styles.btnGhost} onClick={addCliente}><Plus size={15} /> Adicionar</button>
-            <button style={styles.btnGhost} onClick={() => { setAddingCliente(false); setNovoCliente(""); }}>
-              <X size={15} /> Fechar
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       </div>)}
