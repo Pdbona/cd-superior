@@ -3840,7 +3840,21 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
             )}
           </Field>
           <Field label="Tipo de Operação" required>
-            <select style={styles.input} value={form.tipoId} onChange={e => set("tipoId", e.target.value)}>
+            <select style={styles.input} value={form.tipoId}
+              onChange={e => {
+                const novoTipo = params.tipos.find(t => t.id === e.target.value);
+                /* Tipo sem padrão de meta: pré-preenche MdO Terceirizada/Superior
+                   e tempo com o padrão cadastrado no tipo — só como ponto de
+                   partida, o planejamento ajusta pra esta operação se precisar. */
+                if (novoTipo?.semPadraoMeta) {
+                  setForm(f => ({ ...f, tipoId: e.target.value,
+                    qtdTerceirizada: f.qtdTerceirizada || (novoTipo.pessoas || ""),
+                    qtdPessoasSuperior: f.qtdPessoasSuperior || (novoTipo.pessoasSuperior || ""),
+                    metaHorasPretendida: f.metaHorasPretendida || (novoTipo.metaHoras || "") }));
+                } else {
+                  set("tipoId", e.target.value);
+                }
+              }}>
               <option value="">Selecione o tipo…</option>
               {params.tipos.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
@@ -3870,9 +3884,11 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
               <div style={{ fontSize: 11, color: C.laranjaEsc, marginTop: 4 }}>Selecione uma das opções.</div>
             )}
           </Field>
-          <Field label="Volume previsto (unidades)" required>
-            <input style={styles.input} type="number" min="0" value={form.volume} onChange={e => set("volume", e.target.value)} placeholder="Ex.: 1500" />
-          </Field>
+          {!tipoSel?.semPadraoMeta && (
+            <Field label="Volume previsto (unidades)" required>
+              <input style={styles.input} type="number" min="0" value={form.volume} onChange={e => set("volume", e.target.value)} placeholder="Ex.: 1500" />
+            </Field>
+          )}
           <Field label="Variedade de SKU (nº de referências)">
             <input style={styles.input} type="number" min="0" value={form.skus} onChange={e => set("skus", e.target.value)} placeholder="Ex.: 18" />
             <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
@@ -4823,7 +4839,12 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
     if (!draft.cliente.trim()) return setMsg("Selecione o cliente.");
     if (!draft.tipoId) return setMsg("Selecione o tipo de operação.");
     if (!draft.direcao) return setMsg("Selecione a direção da operação.");
-    if (draft.volume === "" || Number(draft.volume) <= 0) return setMsg("Informe o volume da operação.");
+    const tipoDoAjuste = params.tipos.find(tp => tp.id === draft.tipoId);
+    /* Tipo sem padrão de meta não trabalha com volume — a meta vem do
+       tempo pretendido (metaHorasPretendida), ver Novo Pré-Planejamento. */
+    if (!tipoDoAjuste?.semPadraoMeta && (draft.volume === "" || Number(draft.volume) <= 0)) {
+      return setMsg("Informe o volume da operação.");
+    }
 
     const antes = { inicio: op.inicio, fim: op.fim, status: op.status };
     const novaData = inputParaData(draft.dataPlanejada);
@@ -5126,6 +5147,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
                           ))}
                         </div>
                       </Field>
+                      {!params.tipos.find(tp => tp.id === draft.tipoId)?.semPadraoMeta && (<>
                       <Field label="Volume PROGRAMADO (unidades)">
                         <input type="number" min="0" style={styles.input} value={draft.volume}
                           onChange={e => setDraft(d => ({ ...d, volume: e.target.value }))} />
@@ -5155,6 +5177,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
                           );
                         })()}
                       </Field>
+                      </>)}
                       {params.tipos.find(tp => tp.id === draft.tipoId)?.semPadraoMeta && (
                         <Field label="Tempo pretendido (horas)">
                           <input type="number" min="0.1" step="0.25" style={styles.input} value={draft.metaHorasPretendida}
@@ -10326,6 +10349,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       tipos: draft.tipos.map(t => ({ ...t, label: t.label.trim() || "Operação",
         modalidade: t.modalidade === "paletizado" ? "paletizado" : "manual",
         pessoas: Math.max(0, parseInt(t.pessoas, 10) || 0),
+        pessoasSuperior: Math.max(0, parseInt(t.pessoasSuperior, 10) || 0),
         metaHoras: Math.max(0.1, parseFloat(t.metaHoras) || 0.1),
         baseVolume: Math.max(0, parseInt(t.baseVolume, 10) || 0),
         basePessoas: Math.max(0, parseInt(t.basePessoas, 10) || 0),
@@ -10393,11 +10417,17 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
               {t.semPadraoMeta ? (
                 <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 8, display: "grid", gap: 4 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
-                    <span style={{ color: C.prata }}>Meta atual</span>
+                    <span style={{ color: C.prata }}>Tempo da operação</span>
                     <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>{hhmm(parseFloat(t.metaHoras))}</strong>
                   </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                    <span style={{ color: C.prata }}>MdO padrão</span>
+                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>
+                      {t.pessoas || 0}T · {t.pessoasSuperior || 0}S
+                    </strong>
+                  </div>
                   <div style={{ fontSize: 10.5, color: C.prata, lineHeight: 1.4 }}>
-                    Cada operação informa o tempo pretendido — a meta vira fixa depois de 5 registros reais.
+                    Cada operação informa quantidade e tempo — a meta vira fixa depois de 5 registros reais.
                   </div>
                 </div>
               ) : (
@@ -10494,25 +10524,12 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginTop: 14 }}>
-              {!pal && (
-                <Field label="MdO terceirizada padrão">
-                  <input style={styles.input} type="number" min="1" value={t.pessoas}
-                    onChange={e => setTipo(t.id, "pessoas", e.target.value)} />
-                </Field>
-              )}
-              <Field label={t.semPadraoMeta ? "Meta atual (até calibrar)" : "Meta fixa (horas)"}>
-                <input style={styles.input} type="number" min="0.1" step="0.5" value={t.metaHoras}
-                  onChange={e => setTipo(t.id, "metaHoras", e.target.value)} />
-              </Field>
-            </div>
-
             {/* Padrão de meta (28/08/2026): pra tipo novo (ex.: uma tarefa
                esporádica tipo "Limpeza do Galpão") ninguém tem confiança pra
                chutar uma linha de base ainda — melhor deixar cada operação
                informar o tempo pretendido e só formar a meta depois de
                registros reais (ver metaDaOperacao/analisarProdutividade). */}
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
               <label style={styles.fieldLabel}>Já tem um padrão de meta (linha de base) pra este tipo?</label>
               <div style={{ display: "flex", gap: 8, maxWidth: 260 }}>
                 <button type="button" onClick={() => setTipo(t.id, "semPadraoMeta", false)}
@@ -10520,46 +10537,89 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                 <button type="button" onClick={() => setTipo(t.id, "semPadraoMeta", true)}
                   style={{ ...styles.toggle, ...(t.semPadraoMeta ? styles.toggleOn : {}) }}>Ainda não</button>
               </div>
-              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.45 }}>
-                {!t.semPadraoMeta
-                  ? "Cadastre a operação de referência abaixo (volume × pessoas × tempo) — o app calcula a produtividade e a meta de cada operação."
-                  : "Sem chutar linha de base: no cadastro da operação, quem planeja informa o tempo pretendido direto. Depois de 5 registros reais, a Calibragem de Metas (abaixo) sugere estabelecer uma meta."}
-              </div>
             </div>
 
-            {!t.semPadraoMeta && (
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>
-                Linha de base — operação de referência
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12 }}>
-                <Field label="Volume (unidades)">
-                  <input style={styles.input} type="number" min="0" value={t.baseVolume ?? ""}
-                    onChange={e => setTipo(t.id, "baseVolume", e.target.value)} placeholder="Ex.: 1500" />
-                </Field>
-                {!pal && (
-                  <Field label="Pessoas">
-                    <input style={styles.input} type="number" min="1" value={t.basePessoas ?? ""}
-                      onChange={e => setTipo(t.id, "basePessoas", e.target.value)} placeholder="Ex.: 4" />
+            {!t.semPadraoMeta ? (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginTop: 14 }}>
+                  {!pal && (
+                    <Field label="MdO terceirizada padrão">
+                      <input style={styles.input} type="number" min="1" value={t.pessoas}
+                        onChange={e => setTipo(t.id, "pessoas", e.target.value)} />
+                    </Field>
+                  )}
+                  <Field label="Meta fixa (horas)">
+                    <input style={styles.input} type="number" min="0.1" step="0.5" value={t.metaHoras}
+                      onChange={e => setTipo(t.id, "metaHoras", e.target.value)} />
                   </Field>
-                )}
-                <Field label="Tempo (horas)">
-                  <input style={styles.input} type="number" min="0.1" step="0.25" value={t.baseHoras ?? ""}
-                    onChange={e => setTipo(t.id, "baseHoras", e.target.value)} placeholder="Ex.: 3.5" />
-                </Field>
+                </div>
+                <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.45 }}>
+                  Cadastre a operação de referência abaixo (volume × pessoas × tempo) — o app calcula a
+                  produtividade e a meta de cada operação.
+                </div>
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>
+                    Linha de base — operação de referência
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12 }}>
+                    <Field label="Volume (unidades)">
+                      <input style={styles.input} type="number" min="0" value={t.baseVolume ?? ""}
+                        onChange={e => setTipo(t.id, "baseVolume", e.target.value)} placeholder="Ex.: 1500" />
+                    </Field>
+                    {!pal && (
+                      <Field label="Pessoas">
+                        <input style={styles.input} type="number" min="1" value={t.basePessoas ?? ""}
+                          onChange={e => setTipo(t.id, "basePessoas", e.target.value)} placeholder="Ex.: 4" />
+                      </Field>
+                    )}
+                    <Field label="Tempo (horas)">
+                      <input style={styles.input} type="number" min="0.1" step="0.25" value={t.baseHoras ?? ""}
+                        onChange={e => setTipo(t.id, "baseHoras", e.target.value)} placeholder="Ex.: 3.5" />
+                    </Field>
+                  </div>
+                  {prod ? (
+                    <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12.5 }}>
+                      Produtividade: <strong style={{ color: C.navy }}>{prod.toFixed(1)} un/{pal ? "hora" : "pessoa/hora"}</strong>{" "}
+                      ({minPorUnidade(prod).toFixed(2)} min por unidade).
+                      {!pal && <> Uma operação de 800 un com 3 pessoas teria meta de <strong>{hhmm(800 / (3 * prod))}</strong>.</>}
+                    </div>
+                  ) : (
+                    <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12, color: C.laranjaEsc }}>
+                      Preencha os campos acima para o app calcular a produtividade deste tipo.
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              /* Sem padrão de meta: nada de volume aqui — só quanto de MdO
+                 (terceirizada e Superior) e quanto tempo essa operação
+                 costuma levar. Vira o padrão pré-preenchido no cadastro da
+                 operação; o Gestor ajusta por operação se precisar. */
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>
+                  Enquanto não tem padrão de meta
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12 }}>
+                  <Field label="Qtd. MdO Terceirizada">
+                    <input style={styles.input} type="number" min="0" value={t.pessoas ?? ""}
+                      onChange={e => setTipo(t.id, "pessoas", e.target.value)} placeholder="Ex.: 2" />
+                  </Field>
+                  <Field label="Qtd. MdO Superior">
+                    <input style={styles.input} type="number" min="0" value={t.pessoasSuperior ?? ""}
+                      onChange={e => setTipo(t.id, "pessoasSuperior", e.target.value)} placeholder="Ex.: 2" />
+                  </Field>
+                  <Field label="Tempo da operação (horas)">
+                    <input style={styles.input} type="number" min="0.1" step="0.25" value={t.metaHoras}
+                      onChange={e => setTipo(t.id, "metaHoras", e.target.value)} />
+                  </Field>
+                </div>
+                <div style={{ fontSize: 11.5, color: C.prata, marginTop: 10, lineHeight: 1.45 }}>
+                  Esses valores só entram como <strong>padrão pré-preenchido</strong> no cadastro da operação —
+                  quem planeja pode ajustar a quantidade e o tempo pra cada operação específica. Sem volume aqui:
+                  a meta desta operação é o próprio tempo informado. Depois de 5 registros reais, a Calibragem
+                  de Metas (abaixo) sugere estabelecer uma meta fixa.
+                </div>
               </div>
-              {prod ? (
-                <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12.5 }}>
-                  Produtividade: <strong style={{ color: C.navy }}>{prod.toFixed(1)} un/{pal ? "hora" : "pessoa/hora"}</strong>{" "}
-                  ({minPorUnidade(prod).toFixed(2)} min por unidade).
-                  {!pal && <> Uma operação de 800 un com 3 pessoas teria meta de <strong>{hhmm(800 / (3 * prod))}</strong>.</>}
-                </div>
-              ) : (
-                <div style={{ ...styles.infoBox, marginTop: 10, fontSize: 12, color: C.laranjaEsc }}>
-                  Preencha os campos acima para o app calcular a produtividade deste tipo.
-                </div>
-              )}
-            </div>
             )}
 
             {!pal && (
