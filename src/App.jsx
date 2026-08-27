@@ -203,13 +203,13 @@ const SUBITENS_POR_ABA = {
     { id: "equipe", label: "Cadastro da Equipe Superior" }
   ],
   parametros: [
-    { id: "valores", label: "Valores de Mão de Obra" },
+    { id: "tipos", label: "Tipos de Operação e Linha de Base" },
+    { id: "calibragem", label: "Calibragem de Metas" },
     { id: "clientes", label: "Clientes Cadastrados" },
     { id: "direcoes", label: "Direções de Operação" },
-    { id: "motivospausa", label: "Motivos de Pausa" },
     { id: "fotosevidencia", label: "Fotos de Evidência" },
-    { id: "tipos", label: "Tipos de Operação e Linha de Base" },
-    { id: "calibragem", label: "Calibragem de Metas" }
+    { id: "motivospausa", label: "Motivos de Pausa" },
+    { id: "valores", label: "Valores de Mão de Obra" }
   ],
   perfis: [
     { id: "perfisacesso", label: "Perfis de Acesso" },
@@ -867,7 +867,14 @@ function calcDia(diaTs, ops, params, diasTerc) {
 /* ---------- recalibração de metas ----------
    Compara a produtividade realizada com a linha de base de cada tipo e
    sugere um novo número quando há evidência suficiente. Nunca altera nada
-   sozinho: apenas apresenta a sugestão para o gestor decidir. */
+   sozinho: apenas apresenta a sugestão para o gestor decidir.
+   tipo.calibradoEm (timestamp, gravado ao aplicar uma sugestão/valor próprio
+   na aba Parâmetros) reinicia a amostra: só conta registros concluídos DEPOIS
+   dele. Sem isso, uma calibragem recém-aceita seria "readjustada" na hora
+   pelo mesmo lote antigo de registros que já embasou a mudança. Combinado
+   com TOLERANCIA_PCT, o resultado é: só sugere de novo depois de mais
+   MIN_AMOSTRA registros novos E se o desvio nesses novos passar de 10% —
+   dentro da margem, a base recém-calibrada é mantida sem novo aviso. */
 const MIN_AMOSTRA = 5;        // registros mínimos para sugerir algo
 const TOLERANCIA_PCT = 10;    // abaixo disso a base é considerada boa
 
@@ -875,7 +882,8 @@ function analisarProdutividade(ops, params) {
   return params.tipos.map(tipo => {
     const base = produtividadeBase(tipo);
     const validas = ops
-      .filter(o => o.tipoId === tipo.id && o.status === "concluida" && o.inicio && o.fim && o.volume > 0)
+      .filter(o => o.tipoId === tipo.id && o.status === "concluida" && o.inicio && o.fim && o.volume > 0
+        && (!tipo.calibradoEm || o.fim > tipo.calibradoEm))
       .map(o => {
         const c = calcOp(o, params);
         return { op: o, c, prod: c.prodReal };
@@ -2809,6 +2817,9 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      paredão de checkbox */
   const [perfilAberto, setPerfilAberto] = useState(null);
   const [usuarioAberto, setUsuarioAberto] = useState(null);
+  /* busca por nome/perfil — a tabela de usuários só cresce, sem filtro
+     vira rolagem infinita pra achar uma pessoa */
+  const [buscaUsuario, setBuscaUsuario] = useState("");
 
   /* formulários de inclusão só aparecem quando o botão é clicado */
   const [formPerfil, setFormPerfil] = useState(null);   // null | { nome, telas, sub }
@@ -3447,13 +3458,31 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
         {draftPessoas.length === 0 ? (
           <div style={styles.empty}>Nenhum usuário cadastrado ainda.</div>
         ) : (
+          <>
+          {draftPessoas.length > 6 && (
+            <div style={{ ...styles.searchRow, marginBottom: 10 }}>
+              <Search size={16} color={C.prata} />
+              <input style={styles.searchInput} value={buscaUsuario} onChange={e => setBuscaUsuario(e.target.value)}
+                placeholder="Buscar por nome ou perfil…" />
+              {buscaUsuario && (
+                <button style={{ ...styles.chipX, width: 24, height: 24 }} onClick={() => setBuscaUsuario("")} title="Limpar busca">×</button>
+              )}
+            </div>
+          )}
           <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%", marginBottom: 8 }}>
             <table style={{ ...styles.table, minWidth: 640 }}>
               <thead>
                 <tr>{["Nome", "Perfil", "PIN", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
               </thead>
               <tbody>
-                {draftPessoas.slice().sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR")).map((pessoa, i) => {
+                {draftPessoas.slice().sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
+                  .filter(pessoa => {
+                    const q = buscaUsuario.trim().toLowerCase();
+                    if (!q) return true;
+                    const perfilNome = perfilPorId(pessoa.perfilId)?.nome || "";
+                    return pessoa.nome.toLowerCase().includes(q) || perfilNome.toLowerCase().includes(q);
+                  })
+                  .map((pessoa, i) => {
                   const aberto = usuarioAberto === pessoa.id;
                   const perfil = perfilPorId(pessoa.perfilId);
                   const ef = permissoesEfetivas(pessoa, perfil);
@@ -3554,6 +3583,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
               </tbody>
             </table>
           </div>
+          </>
         )}
       </>)}
 
@@ -4663,6 +4693,11 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
   const [editId, setEditId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busca, setBusca] = useState("");
+  /* busca por período — some com a busca por texto (referência/cliente):
+     informando De/Até, filtra por data da operação em vez de mostrar só
+     Hoje/Ontem/Próximo dia útil. Os dois campos podem combinar com o texto. */
+  const [dataDe, setDataDe] = useState("");
+  const [dataAte, setDataAte] = useState("");
   const [msg, setMsg] = useState("");
 
   /* datetime-local <-> timestamp */
@@ -4800,10 +4835,11 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
     fechar();
   };
 
-  /* Por padrão mostra as últimas 72h e tudo que está planejado daqui pra frente
-     — são justamente as operações que o gestor pode precisar replanejar.
-     Digitando na busca, procura em todo o histórico. */
-  const buscando = busca.trim().length > 0;
+  /* Por padrão a tela vem organizada em 3 blocos fixos — Hoje, Ontem e
+     Próximo dia útil — que cobrem o que o gestor mais precisa corrigir no
+     dia a dia. Qualquer outro dia é achado pela busca (texto ou período),
+     que passa a valer sobre TODO o histórico, sem limite de data. */
+  const buscando = busca.trim().length > 0 || !!dataDe || !!dataAte;
   /* Ordena pela data DA OPERAÇÃO — realizada quando existe, prevista quando
      ainda não rodou. Não usa a data de cadastro nem a de replanejamento:
      o gestor procura o registro pelo dia em que a carga andou.
@@ -4818,15 +4854,51 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
     if (fa !== fb) return fa ? 1 : -1;
     return fa ? refData(a) - refData(b) : refData(b) - refData(a);
   });
-  const relevante = (o) => dentro72h(refData(o)) || diaPlanejado(o) >= inicioDoDia(Date.now());
-  const recentes = todas.filter(relevante);
-  const lista = buscando
-    ? todas.filter(o =>
-        o.ref.toLowerCase().includes(busca.toLowerCase()) ||
-        (o.idCliente || "").toLowerCase().includes(busca.toLowerCase()) ||
-        o.cliente.toLowerCase().includes(busca.toLowerCase()))
-    : recentes;
-  const anteriores = todas.length - recentes.length;
+
+  /* --- blocos fixos (só quando não está buscando) --- */
+  const hojeTs = inicioDoDia(Date.now());
+  const ontemTs = hojeTs - 86400000;
+  /* próximo dia ÚTIL — pula sábado (6) e domingo (0), não é simplesmente "amanhã" */
+  const proximoDiaUtilTs = (() => {
+    let d = hojeTs + 86400000;
+    while ([0, 6].includes(new Date(d).getDay())) d += 86400000;
+    return d;
+  })();
+  const diaDoRegistro = (o) => inicioDoDia(refData(o));
+  const opsHoje = todas.filter(o => diaDoRegistro(o) === hojeTs);
+  const opsOntem = todas.filter(o => diaDoRegistro(o) === ontemTs);
+  const opsProximoDiaUtil = todas.filter(o => diaDoRegistro(o) === proximoDiaUtilTs);
+
+  /* --- busca (texto e/ou período), sobre TODO o histórico --- */
+  const deTs = dataDe ? inputParaData(dataDe) : null;
+  const ateTs = dataAte ? inputParaData(dataAte) + 86399999 : null; // até o fim daquele dia
+  const textoBusca = busca.trim().toLowerCase();
+  const resultadosBusca = buscando
+    ? todas.filter(o => {
+        if (deTs != null && refData(o) < deTs) return false;
+        if (ateTs != null && refData(o) > ateTs) return false;
+        if (textoBusca && !(
+          o.ref.toLowerCase().includes(textoBusca) ||
+          (o.idCliente || "").toLowerCase().includes(textoBusca) ||
+          o.cliente.toLowerCase().includes(textoBusca)
+        )) return false;
+        return true;
+      })
+    : [];
+
+  /* grupos exibidos na tela: buscando vira 1 grupo só (resultado da busca);
+     sem busca, os 3 blocos fixos, sempre nesta ordem, mesmo quando algum
+     vem vazio — assim o gestor sempre sabe onde olhar. */
+  const rotuloProximoDiaUtil = dataProgramada(proximoDiaUtilTs).texto;
+  const gruposParaExibir = buscando
+    ? [{ titulo: "Resultados da busca", ops: resultadosBusca,
+         vazio: `Nenhuma operação encontrada${busca ? ` para "${busca}"` : ""}${(deTs || ateTs) ? " no período informado" : ""}.` }]
+    : [
+        { titulo: "Hoje", ops: opsHoje, vazio: "Nenhuma operação hoje." },
+        { titulo: "Ontem", ops: opsOntem, vazio: "Nenhuma operação ontem." },
+        { titulo: `Próximo dia útil — ${rotuloProximoDiaUtil}`, ops: opsProximoDiaUtil,
+          vazio: "Nada programado para o próximo dia útil ainda." }
+      ];
 
   if (!subOn("ajustemanual")) return <EmptyState text="Sem permissão para ver esta tela." />;
 
@@ -4838,34 +4910,55 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
         e fica gravado no histórico da operação — o cálculo de meta, bônus e economia é refeito automaticamente.
       </p>
 
-      <div style={styles.searchRow}>
-        <Search size={16} color={C.prata} />
-        <input style={styles.searchInput} value={busca} onChange={e => setBusca(e.target.value)}
-          placeholder="Buscar operação anterior a 72h — digite a referência ou o cliente…" />
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ ...styles.searchRow, flex: 2, minWidth: 240, marginBottom: 0 }}>
+          <Search size={16} color={C.prata} />
+          <input style={styles.searchInput} value={busca} onChange={e => setBusca(e.target.value)}
+            placeholder="Buscar por operação — referência ou cliente…" />
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.prata }}>
+          De
+          <input type="date" style={{ ...styles.input, padding: "8px 10px", width: 145 }}
+            value={dataDe} onChange={e => setDataDe(e.target.value)} />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.prata }}>
+          Até
+          <input type="date" style={{ ...styles.input, padding: "8px 10px", width: 145 }}
+            value={dataAte} onChange={e => setDataAte(e.target.value)} />
+        </label>
         {buscando && (
-          <button style={{ ...styles.chipX, width: 24, height: 24 }} onClick={() => setBusca("")} title="Limpar busca">×</button>
+          <button style={{ ...styles.btnGhost, padding: "7px 14px", fontSize: 12.5 }}
+            onClick={() => { setBusca(""); setDataDe(""); setDataAte(""); }}>
+            <X size={14} /> Limpar busca
+          </button>
         )}
       </div>
 
       <div style={{ ...styles.infoBox, marginBottom: 16, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Clock size={14} color={C.navy2} />
         {buscando ? (
-          <span>Buscando em <strong>todo o histórico</strong> — {lista.length} resultado{lista.length !== 1 ? "s" : ""} para "{busca}".</span>
+          <span>Buscando em <strong>todo o histórico</strong> — {resultadosBusca.length} resultado{resultadosBusca.length !== 1 ? "s" : ""}.</span>
         ) : (
           <span>
-            Exibindo as <strong>últimas 72h</strong> e o <strong>que está programado</strong> ({plOp(recentes.length)}).
-            {anteriores > 0 && <> Há {plOp(anteriores)} mais antiga{anteriores !== 1 ? "s" : ""} — use a busca acima para localizá-la{anteriores !== 1 ? "s" : ""}.</>}
+            Organizado em <strong>Hoje</strong>, <strong>Ontem</strong> e <strong>Próximo dia útil</strong>.
+            Pra outro dia, busque por referência/cliente ou informe um período acima.
           </span>
         )}
       </div>
 
-      {lista.length === 0 ? (
-        <EmptyState text={buscando
-          ? `Nenhuma operação encontrada para "${busca}".`
-          : "Nenhuma operação nas últimas 72h. Use a busca para localizar registros anteriores."} />
-      ) : (
+      {gruposParaExibir.map(grupo => (
+        <div key={grupo.titulo} style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy }}>
+              {grupo.titulo}
+            </span>
+            <Badge>{grupo.ops.length}</Badge>
+          </div>
+          {grupo.ops.length === 0 ? (
+            <div style={{ ...styles.infoBox, fontSize: 12.5 }}>{grupo.vazio}</div>
+          ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10, alignItems: "start" }}>
-          {lista.map(op => {
+          {grupo.ops.map(op => {
             const c = calcOp(op, params);
             const emEdicao = editId === op.id;
             const temAjuste = (op.ajustes || []).length > 0;
@@ -5130,7 +5223,9 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
             );
           })}
         </div>
-      )}
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -8836,6 +8931,11 @@ function RelatorioPausas({ ops, params }) {
   }, [ops, diasDoPeriodo]);
   const [mostrarTodasTimeline, setMostrarTodasTimeline] = useState(false);
   const opsTimelineVisiveis = mostrarTodasTimeline ? opsDoPeriodo : opsDoPeriodo.slice(0, 15);
+  /* Timeline vinha sempre aberta, empilhada em 1 coluna — com muitas
+     operações no período ela sozinha tomava a tela toda. Agora é uma
+     Sanfona recolhida por padrão (mesmo padrão de Cancelamentos/Fora da
+     Meta no Dashboard) e, quando aberta, usa grade de 2+ colunas. */
+  const [timelineAberta, setTimelineAberta] = useState(false);
 
   const periodoInvalido = diasDoPeriodo.length === 0;
 
@@ -8921,37 +9021,38 @@ function RelatorioPausas({ ops, params }) {
             </div>
           </div>
 
-          {/* ===== TIMELINE DA OPERAÇÃO — início, pausa(s), retomada e fim ===== */}
+          {/* ===== TIMELINE DA OPERAÇÃO — início, pausa(s), retomada e fim =====
+             Recolhida por padrão (Sanfona) — com muitas operações no período
+             ela sozinha tomava a tela toda; agora é um card compacto que abre
+             sob demanda, em grade de colunas em vez de empilhada. */}
           <div style={{ marginTop: 30 }}>
-            <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 6 }}>
-              Timeline das Operações
-            </div>
-            <p style={styles.helper}>
-              Uma barra por operação iniciada no período: verde é tempo trabalhado, laranja é pausa — passe o mouse
-              num trecho pra ver o motivo e o horário.
-            </p>
-            <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: C.prata, marginBottom: 12 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 3, background: C.verde, display: "inline-block" }} /> Em operação
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 3, background: C.laranja, display: "inline-block" }} /> Pausada
-              </span>
-            </div>
-            {opsDoPeriodo.length === 0 ? (
-              <EmptyState text="Nenhuma operação iniciada neste período." />
-            ) : (
-              <>
-                <div style={{ display: "grid", gap: 14 }}>
-                  {opsTimelineVisiveis.map(op => <TimelineOperacao key={op.id} op={op} />)}
-                </div>
-                {opsDoPeriodo.length > 15 && !mostrarTodasTimeline && (
-                  <button style={{ ...styles.btnGhost, marginTop: 12 }} onClick={() => setMostrarTodasTimeline(true)}>
-                    Mostrar todas ({opsDoPeriodo.length})
-                  </button>
-                )}
-              </>
-            )}
+            <Sanfona titulo="Timeline das Operações" icone={Clock} cor={C.navy2}
+              contagem={opsDoPeriodo.length}
+              sub="Uma barra por operação: verde é tempo trabalhado, laranja é pausa"
+              aberto={timelineAberta} onToggle={() => setTimelineAberta(a => !a)}>
+              <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: C.prata, marginBottom: 12 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 3, background: C.verde, display: "inline-block" }} /> Em operação
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 3, background: C.laranja, display: "inline-block" }} /> Pausada — passe o mouse pra ver motivo e horário
+                </span>
+              </div>
+              {opsDoPeriodo.length === 0 ? (
+                <EmptyState text="Nenhuma operação iniciada neste período." />
+              ) : (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 14, alignItems: "start" }}>
+                    {opsTimelineVisiveis.map(op => <TimelineOperacao key={op.id} op={op} />)}
+                  </div>
+                  {opsDoPeriodo.length > 15 && !mostrarTodasTimeline && (
+                    <button style={{ ...styles.btnGhost, marginTop: 12 }} onClick={() => setMostrarTodasTimeline(true)}>
+                      Mostrar todas ({opsDoPeriodo.length})
+                    </button>
+                  )}
+                </>
+              )}
+            </Sanfona>
           </div>
         </>
       )}
@@ -9924,6 +10025,12 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   const [nomeEdicaoCliente, setNomeEdicaoCliente] = useState("");
   const [novoMotivoPausa, setNovoMotivoPausa] = useState("");
   const [salvo, setSalvo] = useState(false);
+  /* Clientes/Direções/Motivos de Pausa vivem em caixa recolhida — a linha de
+     "novo registro" só aparece depois de clicar no botão, pra caixa não
+     ocupar tela à toa quando não há nada pra cadastrar. */
+  const [addingCliente, setAddingCliente] = useState(false);
+  const [addingDirecao, setAddingDirecao] = useState(false);
+  const [addingMotivoPausa, setAddingMotivoPausa] = useState(false);
   /* cadastro/edição de tipo acontece em modal, não empilhado na tela */
   const [tipoModal, setTipoModal] = useState(null);   // null | id do tipo | "novo"
   /* recalibragem: além de aceitar a sugestão do app, o gestor pode digitar
@@ -10119,240 +10226,6 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
   return (
     <div>
-      {subOn("valores") && (<>
-      <SectionTitle icon={Settings}>Valores de Mão de Obra</SectionTitle>
-      <p style={styles.helper}>Todos os valores e metas são livres para ajuste — negocie com a terceirizada ou refine metas conforme o histórico.</p>
-      <div style={styles.card}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 16 }}>
-          <Field label="Custo por diária — TERCEIRIZADA (R$)">
-            <input style={styles.input} type="number" min="0" step="10" value={draft.custoTerceirizada} onChange={e => setV("custoTerceirizada", e.target.value)} />
-          </Field>
-          <Field label="Bônus — CUSTO por diária (R$)">
-            <input style={styles.input} type="number" min="0" step="10" value={draft.bonusSuperior} onChange={e => setV("bonusSuperior", e.target.value)} />
-          </Field>
-          <Field label="Bônus — VALOR DISTRIBUÍDO por diária (R$)">
-            <input style={styles.input} type="number" min="0" step="10"
-              value={draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior}
-              onChange={e => setV("bonusRateio", e.target.value)} />
-          </Field>
-        </div>
-        <div style={{ ...styles.infoBox, marginTop: 14 }}>
-          A <strong>referência de comparação</strong> é sempre o cenário 100% terceirizada, usando o nº padrão de
-          pessoas de cada tipo. O <strong>bônus</strong> da Superior só é considerado quando a operação cumpre a meta.
-          <div style={{ marginTop: 8 }}>
-            Os dois valores de bônus são propositalmente diferentes: o <strong>custo</strong> é o que a Superior
-            desembolsa e entra no cálculo de economia; o <strong>valor distribuído</strong> é o que a equipe recebe
-            e é dividido entre os nomeados na aba Rateio.
-            {(() => {
-              const custo = parseFloat(draft.bonusSuperior) || 0;
-              const dist = parseFloat(draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior) || 0;
-              if (dist > custo) return <div style={{ marginTop: 6, color: C.laranjaEsc, fontWeight: 600 }}>
-                Atenção: o valor distribuído está maior que o custo. Confira os campos.
-              </div>;
-              if (dist < custo) return <div style={{ marginTop: 6 }}>
-                Hoje: custo <strong>{brl(custo)}</strong> por bônus, dos quais <strong>{brl(dist)}</strong> vão para
-                a equipe — diferença de <strong>{brl(custo - dist)}</strong> retida pela empresa.
-              </div>;
-              return null;
-            })()}
-          </div>
-        </div>
-      </div>
-
-      </>)}
-
-      {subOn("clientes") && (<>
-      <SectionTitle icon={Building2}>Clientes Cadastrados <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
-      <p style={styles.helper}>Os clientes aqui aparecem como opção no cadastro de operações e viram base da consolidação por cliente nos relatórios.</p>
-      <div style={styles.card}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          {(draft.clientes || []).length === 0
-            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum cliente cadastrado ainda.</span>
-            : draft.clientes.map(cl => editandoCliente === cl ? (
-              <span key={cl} style={{ ...styles.clienteChip, paddingRight: 6 }}>
-                <Building2 size={13} />
-                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoCliente.length * 8) }}
-                  autoFocus value={nomeEdicaoCliente}
-                  onChange={e => setNomeEdicaoCliente(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") renomearCliente(cl); if (e.key === "Escape") cancelarEdicaoCliente(); }} />
-                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearCliente(cl)}>✓</button>
-                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoCliente}>×</button>
-              </span>
-            ) : (
-              <span key={cl} style={styles.clienteChip}>
-                <Building2 size={13} /> {cl}
-                <button style={styles.chipEdit} title="Editar nome"
-                  onClick={() => iniciarEdicaoCliente(cl)}><Pencil size={12} /></button>
-                <button style={styles.chipX} title="Remover"
-                  onClick={() => { setDraft(d => ({ ...d, clientes: d.clientes.filter(x => x !== cl) })); setSalvo(false); }}>×</button>
-              </span>
-            ))}
-        </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <label style={styles.fieldLabel}>Novo cliente</label>
-            <input style={styles.input} value={novoCliente} placeholder="Ex.: GWT Global"
-              onChange={e => setNovoCliente(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { addCliente(); } }} />
-          </div>
-          <button style={styles.btnGhost} onClick={addCliente}><Plus size={15} /> Adicionar cliente</button>
-        </div>
-      </div>
-
-      </>)}
-
-      {subOn("direcoes") && (<>
-      <SectionTitle icon={ArrowLeftRight}>Direções de Operação <Badge>{(draft.direcoes || []).length}</Badge></SectionTitle>
-      <p style={styles.helper}>
-        O "sentido" de cada operação — aparece no cadastro (Novo Pré-Planejamento), nas tags das telas de
-        acompanhamento e nos relatórios. Recebimento e Expedição vêm de fábrica; cadastre outras aqui se a operação
-        tiver mais demandas (ex.: Transferência, Devolução). Cada uma ganha sua própria exigência mínima de fotos
-        em "Fotos de Evidência", logo abaixo.
-      </p>
-      <div style={styles.card}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-          {(draft.direcoes || []).length === 0
-            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhuma direção cadastrada ainda.</span>
-            : draft.direcoes.map(dr => editandoDirecao === dr.id ? (
-              <span key={dr.id} style={{ ...styles.clienteChip, paddingRight: 6 }}>
-                <ArrowLeftRight size={13} />
-                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoDirecao.length * 8) }}
-                  autoFocus value={nomeEdicaoDirecao}
-                  onChange={e => setNomeEdicaoDirecao(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") renomearDirecao(dr.id); if (e.key === "Escape") cancelarEdicaoDirecao(); }} />
-                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearDirecao(dr.id)}>✓</button>
-                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoDirecao}>×</button>
-              </span>
-            ) : (
-              <span key={dr.id} style={styles.clienteChip}>
-                <ArrowLeftRight size={13} /> {dr.label}
-                <button style={styles.chipEdit} title="Editar nome"
-                  onClick={() => iniciarEdicaoDirecao(dr)}><Pencil size={12} /></button>
-                {(draft.direcoes || []).length > 1 && (
-                  <button style={styles.chipX} title="Remover"
-                    onClick={() => delDirecao(dr.id)}>×</button>
-                )}
-              </span>
-            ))}
-        </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <label style={styles.fieldLabel}>Nova direção</label>
-            <input style={styles.input} value={novaDirecao} placeholder="Ex.: Transferência"
-              onChange={e => setNovaDirecao(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { addDirecao(); } }} />
-          </div>
-          <button style={styles.btnGhost} onClick={addDirecao}><Plus size={15} /> Adicionar direção</button>
-        </div>
-      </div>
-
-      </>)}
-
-      {subOn("motivospausa") && (<>
-      <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
-      <p style={styles.helper}>
-        Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria
-        etc.). O tempo pausado não conta contra a meta/bônus. Cadastre um <strong>limite de tempo (min)</strong> para
-        os motivos que devem gerar alerta — passou do limite sem retomar a operação, o Gestor recebe um aviso na
-        tela. Deixe em branco (ou 0) para o motivo nunca gerar alerta.
-      </p>
-      <div style={styles.card}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-          {(draft.motivosPausa || []).length === 0
-            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum motivo cadastrado ainda.</span>
-            : draft.motivosPausa.map(m => (
-              <div key={m} style={{
-                display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-                background: C.bgLeve, border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "8px 12px"
-              }}>
-                <PauseCircle size={14} color={C.navy2} />
-                <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, flex: 1, minWidth: 120 }}>
-                  {m}
-                </span>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.prata }}>
-                  Limite (min)
-                  <input type="number" min="0" step="5" placeholder="Sem limite"
-                    style={{ ...styles.input, width: 90, padding: "6px 8px" }}
-                    value={draft.limitesPausaMin?.[m] || ""}
-                    onChange={e => setLimitePausa(m, e.target.value)} />
-                </label>
-                <button style={styles.chipX} title="Remover" onClick={() => delMotivoPausa(m)}>×</button>
-              </div>
-            ))}
-        </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <label style={styles.fieldLabel}>Novo motivo</label>
-            <input style={styles.input} value={novoMotivoPausa} placeholder="Ex.: Troca de turno"
-              onChange={e => setNovoMotivoPausa(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { addMotivoPausa(); } }} />
-          </div>
-          <button style={styles.btnGhost} onClick={addMotivoPausa}><Plus size={15} /> Adicionar motivo</button>
-        </div>
-      </div>
-
-      </>)}
-
-      {subOn("fotosevidencia") && (<>
-      <SectionTitle icon={Camera}>Fotos de Evidência</SectionTitle>
-      <p style={styles.helper}>
-        Controla se o app do conferente trava sem as fotos obrigatórias. Desligue temporariamente quando o
-        celular ou coletor da doca estiver com problema, para o processo não parar — e religue assim que resolver.
-      </p>
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
-          <input type="checkbox" checked={draft.exigirFotos !== false}
-            onChange={e => setV("exigirFotos", e.target.checked)}
-            style={{ width: 18, height: 18, marginTop: 2, accentColor: C.navy2, cursor: "pointer" }} />
-          <span>
-            <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13.5, color: C.navy }}>
-              Exigir fotos do conferente
-            </strong>
-            <div style={{ fontSize: 12, color: C.prata, marginTop: 3, lineHeight: 1.55 }}>
-              Ligada (padrão), o conferente só inicia e finaliza com as fotos mínimas configuradas abaixo.
-              Desligada, as fotos ficam opcionais e a operação segue mesmo sem tirá-las.
-            </div>
-          </span>
-        </label>
-
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}`,
-          opacity: draft.exigirFotos === false ? .5 : 1 }}>
-          <div style={{ fontSize: 12, color: C.prata, marginBottom: 10, lineHeight: 1.55 }}>
-            Quantidade <strong>mínima</strong> de fotos exigida em cada etapa, separada por direção —
-            uma coluna para cada direção cadastrada em "Direções de Operação", acima.
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
-            {(draft.direcoes || []).map((dr, i) => {
-              const est = DIR_PALETA[i % DIR_PALETA.length];
-              return (
-                <div key={dr.id}>
-                  <div style={{
-                    fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
-                    color: est.c, textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
-                  }}>{dr.label}</div>
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <Field label="Início (mín.)">
-                      <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                        style={styles.input}
-                        value={draft.fotosMin?.[dr.id]?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
-                        onChange={e => setFotosMin(dr.id, "inicio", e.target.value)} />
-                    </Field>
-                    <Field label="Fim (mín.)">
-                      <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
-                        style={styles.input}
-                        value={draft.fotosMin?.[dr.id]?.fim ?? FOTOS_FIM_MIN}
-                        onChange={e => setFotosMin(dr.id, "fim", e.target.value)} />
-                    </Field>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      </>)}
-
       {subOn("tipos") && (<>
       <SectionTitle icon={Truck}>Tipos de Operação e Linha de Base</SectionTitle>
       <p style={styles.helper}>
@@ -10574,7 +10447,8 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
       <p style={styles.helper}>
         O app compara a produtividade realizada com a linha de base de cada tipo. A meta de cada operação
         já é proporcional ao volume e à equipe — aqui você vê se a própria linha de base, cadastrada acima,
-        precisa ser revista. Nada é alterado automaticamente.
+        precisa ser revista. Nada é alterado automaticamente. Depois de aplicar uma calibragem, o app só
+        sugere de novo após mais {MIN_AMOSTRA} registros novos — e só se o desvio passar de {TOLERANCIA_PCT}%.
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 24 }}>
         {calibragem.map(a => {
@@ -10638,7 +10512,10 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                       <strong>{hhmm(a.horasSugeridas)}</strong>.
                       <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                         <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
-                          onClick={() => { setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2)); }}>
+                          onClick={() => {
+                            setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2));
+                            setTipo(a.tipo.id, "calibradoEm", Date.now());
+                          }}>
                           <CheckCircle2 size={14} /> Aplicar sugestão do app
                         </button>
                       </div>
@@ -10654,6 +10531,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                             disabled={!(parseFloat(horasCustom[a.tipo.id]) > 0)}
                             onClick={() => {
                               setTipo(a.tipo.id, "baseHoras", horasCustom[a.tipo.id]);
+                              setTipo(a.tipo.id, "calibradoEm", Date.now());
                               setHorasCustom(h => ({ ...h, [a.tipo.id]: "" }));
                             }}>
                             <CheckCircle2 size={14} /> Aplicar meu valor
@@ -10695,6 +10573,279 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
             </div>
           );
         })}
+      </div>
+
+      </>)}
+
+      {/* ===== CLIENTES ===== caixa recolhida: chips + botão que abre o cadastro */}
+      {subOn("clientes") && (<>
+      <SectionTitle icon={Building2}>Clientes Cadastrados <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
+      <p style={styles.helper}>Os clientes aqui aparecem como opção no cadastro de operações e viram base da consolidação por cliente nos relatórios.</p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {(draft.clientes || []).length === 0
+            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum cliente cadastrado ainda.</span>
+            : draft.clientes.map(cl => editandoCliente === cl ? (
+              <span key={cl} style={{ ...styles.clienteChip, paddingRight: 6 }}>
+                <Building2 size={13} />
+                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoCliente.length * 8) }}
+                  autoFocus value={nomeEdicaoCliente}
+                  onChange={e => setNomeEdicaoCliente(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") renomearCliente(cl); if (e.key === "Escape") cancelarEdicaoCliente(); }} />
+                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearCliente(cl)}>✓</button>
+                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoCliente}>×</button>
+              </span>
+            ) : (
+              <span key={cl} style={styles.clienteChip}>
+                <Building2 size={13} /> {cl}
+                <button style={styles.chipEdit} title="Editar nome"
+                  onClick={() => iniciarEdicaoCliente(cl)}><Pencil size={12} /></button>
+                <button style={styles.chipX} title="Remover"
+                  onClick={() => { setDraft(d => ({ ...d, clientes: d.clientes.filter(x => x !== cl) })); setSalvo(false); }}>×</button>
+              </span>
+            ))}
+          {!addingCliente && (
+            <button style={{ ...styles.btnGhost, padding: "7px 14px", fontSize: 12.5 }}
+              onClick={() => setAddingCliente(true)}>
+              <Plus size={14} /> Novo cliente
+            </button>
+          )}
+        </div>
+        {addingCliente && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+            marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label style={styles.fieldLabel}>Novo cliente</label>
+              <input style={styles.input} value={novoCliente} placeholder="Ex.: GWT Global" autoFocus
+                onChange={e => setNovoCliente(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addCliente(); if (e.key === "Escape") setAddingCliente(false); }} />
+            </div>
+            <button style={styles.btnGhost} onClick={addCliente}><Plus size={15} /> Adicionar</button>
+            <button style={styles.btnGhost} onClick={() => { setAddingCliente(false); setNovoCliente(""); }}>
+              <X size={15} /> Fechar
+            </button>
+          </div>
+        )}
+      </div>
+
+      </>)}
+
+      {/* ===== DIREÇÕES DE OPERAÇÃO ===== caixa mais compacta; Fotos de Evidência
+          (4.1) mora dentro dela — mesma exigência padrão pra todas as direções,
+          desobrigar uma específica é só zerar a quantidade mínima dela abaixo. */}
+      {subOn("direcoes") && (<>
+      <SectionTitle icon={ArrowLeftRight}>Direções de Operação <Badge>{(draft.direcoes || []).length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        O "sentido" de cada operação — aparece no cadastro (Novo Pré-Planejamento), nas tags das telas de
+        acompanhamento e nos relatórios. Recebimento e Expedição vêm de fábrica; cadastre outras aqui se a operação
+        tiver mais demandas (ex.: Transferência, Devolução). Cada uma ganha sua própria exigência de fotos, logo abaixo.
+      </p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {(draft.direcoes || []).length === 0
+            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhuma direção cadastrada ainda.</span>
+            : draft.direcoes.map(dr => editandoDirecao === dr.id ? (
+              <span key={dr.id} style={{ ...styles.clienteChip, paddingRight: 6 }}>
+                <ArrowLeftRight size={13} />
+                <input style={{ border: "none", outline: "none", background: "transparent", font: "inherit", color: "inherit", width: Math.max(80, nomeEdicaoDirecao.length * 8) }}
+                  autoFocus value={nomeEdicaoDirecao}
+                  onChange={e => setNomeEdicaoDirecao(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") renomearDirecao(dr.id); if (e.key === "Escape") cancelarEdicaoDirecao(); }} />
+                <button style={{ ...styles.chipEdit, color: C.verde }} title="Confirmar" onClick={() => renomearDirecao(dr.id)}>✓</button>
+                <button style={styles.chipX} title="Cancelar" onClick={cancelarEdicaoDirecao}>×</button>
+              </span>
+            ) : (
+              <span key={dr.id} style={styles.clienteChip}>
+                <ArrowLeftRight size={13} /> {dr.label}
+                <button style={styles.chipEdit} title="Editar nome"
+                  onClick={() => iniciarEdicaoDirecao(dr)}><Pencil size={12} /></button>
+                {(draft.direcoes || []).length > 1 && (
+                  <button style={styles.chipX} title="Remover"
+                    onClick={() => delDirecao(dr.id)}>×</button>
+                )}
+              </span>
+            ))}
+          {!addingDirecao && (
+            <button style={{ ...styles.btnGhost, padding: "7px 14px", fontSize: 12.5 }}
+              onClick={() => setAddingDirecao(true)}>
+              <Plus size={14} /> Nova direção
+            </button>
+          )}
+        </div>
+        {addingDirecao && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+            marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label style={styles.fieldLabel}>Nova direção</label>
+              <input style={styles.input} value={novaDirecao} placeholder="Ex.: Transferência" autoFocus
+                onChange={e => setNovaDirecao(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addDirecao(); if (e.key === "Escape") setAddingDirecao(false); }} />
+            </div>
+            <button style={styles.btnGhost} onClick={addDirecao}><Plus size={15} /> Adicionar</button>
+            <button style={styles.btnGhost} onClick={() => { setAddingDirecao(false); setNovaDirecao(""); }}>
+              <X size={15} /> Fechar
+            </button>
+          </div>
+        )}
+
+        {/* 4.1 — Fotos de Evidência, dentro da caixa de Direção */}
+        {subOn("fotosevidencia") && (
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <Camera size={15} color={C.navy2} />
+              <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy }}>
+                Fotos de Evidência
+              </span>
+            </div>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={draft.exigirFotos !== false}
+                onChange={e => setV("exigirFotos", e.target.checked)}
+                style={{ width: 18, height: 18, marginTop: 2, accentColor: C.navy2, cursor: "pointer" }} />
+              <span>
+                <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: C.navy }}>
+                  Exigir fotos do conferente
+                </strong>
+                <div style={{ fontSize: 12, color: C.prata, marginTop: 3, lineHeight: 1.55 }}>
+                  Ligada (padrão), a exigência abaixo vale igual para todas as direções — pra desobrigar só uma
+                  específica (sem mexer nas demais), zere o mínimo de Início/Fim dela. Desligada por completo,
+                  as fotos ficam opcionais em todas de uma vez (útil quando o celular/coletor da doca falha em
+                  campo) — religue assim que resolver.
+                </div>
+              </span>
+            </label>
+
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px dashed ${C.prataClaro}`,
+              opacity: draft.exigirFotos === false ? .5 : 1 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+                {(draft.direcoes || []).map((dr, i) => {
+                  const est = DIR_PALETA[i % DIR_PALETA.length];
+                  return (
+                    <div key={dr.id}>
+                      <div style={{
+                        fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12,
+                        color: est.c, textTransform: "uppercase", letterSpacing: .4, marginBottom: 8
+                      }}>{dr.label}</div>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <Field label="Início (mín.)">
+                          <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                            style={styles.input}
+                            value={draft.fotosMin?.[dr.id]?.inicio ?? FOTOS_INICIO_OBRIGATORIAS}
+                            onChange={e => setFotosMin(dr.id, "inicio", e.target.value)} />
+                        </Field>
+                        <Field label="Fim (mín.)">
+                          <input type="number" min="0" max="10" disabled={draft.exigirFotos === false}
+                            style={styles.input}
+                            value={draft.fotosMin?.[dr.id]?.fim ?? FOTOS_FIM_MIN}
+                            onChange={e => setFotosMin(dr.id, "fim", e.target.value)} />
+                        </Field>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      </>)}
+
+      {/* ===== MOTIVOS DE PAUSA ===== caixa otimizada + botão que abre a inclusão */}
+      {subOn("motivospausa") && (<>
+      <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria
+        etc.). O tempo pausado não conta contra a meta/bônus. Cadastre um <strong>limite de tempo (min)</strong> para
+        os motivos que devem gerar alerta — passou do limite sem retomar a operação, o Gestor recebe um aviso na
+        tela. Deixe em branco (ou 0) para o motivo nunca gerar alerta.
+      </p>
+      <div style={styles.card}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {(draft.motivosPausa || []).length === 0
+            ? <span style={{ color: C.prata, fontSize: 13 }}>Nenhum motivo cadastrado ainda.</span>
+            : draft.motivosPausa.map(m => (
+              <div key={m} style={{
+                display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                background: C.bgLeve, border: `1px solid ${C.prataClaro}`, borderRadius: 8, padding: "8px 12px"
+              }}>
+                <PauseCircle size={14} color={C.navy2} />
+                <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy, flex: 1, minWidth: 120 }}>
+                  {m}
+                </span>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.prata }}>
+                  Limite (min)
+                  <input type="number" min="0" step="5" placeholder="Sem limite"
+                    style={{ ...styles.input, width: 90, padding: "6px 8px" }}
+                    value={draft.limitesPausaMin?.[m] || ""}
+                    onChange={e => setLimitePausa(m, e.target.value)} />
+                </label>
+                <button style={styles.chipX} title="Remover" onClick={() => delMotivoPausa(m)}>×</button>
+              </div>
+            ))}
+        </div>
+        {addingMotivoPausa ? (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+            marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <label style={styles.fieldLabel}>Novo motivo</label>
+              <input style={styles.input} value={novoMotivoPausa} placeholder="Ex.: Troca de turno" autoFocus
+                onChange={e => setNovoMotivoPausa(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addMotivoPausa(); if (e.key === "Escape") setAddingMotivoPausa(false); }} />
+            </div>
+            <button style={styles.btnGhost} onClick={addMotivoPausa}><Plus size={15} /> Adicionar</button>
+            <button style={styles.btnGhost} onClick={() => { setAddingMotivoPausa(false); setNovoMotivoPausa(""); }}>
+              <X size={15} /> Fechar
+            </button>
+          </div>
+        ) : (
+          <button style={{ ...styles.btnGhost, marginTop: 12, padding: "7px 14px", fontSize: 12.5 }}
+            onClick={() => setAddingMotivoPausa(true)}>
+            <Plus size={14} /> Novo motivo
+          </button>
+        )}
+      </div>
+
+      </>)}
+
+      {/* ===== VALORES ===== 6.1 MdO terceirizada · 6.2 Bônus custo · 6.3 Bônus distribuição */}
+      {subOn("valores") && (<>
+      <SectionTitle icon={Settings}>Valores de Mão de Obra</SectionTitle>
+      <p style={styles.helper}>Todos os valores e metas são livres para ajuste — negocie com a terceirizada ou refine metas conforme o histórico.</p>
+      <div style={styles.card}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 16 }}>
+          <Field label="Custo por diária — TERCEIRIZADA (R$)">
+            <input style={styles.input} type="number" min="0" step="10" value={draft.custoTerceirizada} onChange={e => setV("custoTerceirizada", e.target.value)} />
+          </Field>
+          <Field label="Bônus — CUSTO por diária (R$)">
+            <input style={styles.input} type="number" min="0" step="10" value={draft.bonusSuperior} onChange={e => setV("bonusSuperior", e.target.value)} />
+          </Field>
+          <Field label="Bônus — VALOR DISTRIBUÍDO por diária (R$)">
+            <input style={styles.input} type="number" min="0" step="10"
+              value={draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior}
+              onChange={e => setV("bonusRateio", e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ ...styles.infoBox, marginTop: 14 }}>
+          A <strong>referência de comparação</strong> é sempre o cenário 100% terceirizada, usando o nº padrão de
+          pessoas de cada tipo. O <strong>bônus</strong> da Superior só é considerado quando a operação cumpre a meta.
+          <div style={{ marginTop: 8 }}>
+            Os dois valores de bônus são propositalmente diferentes: o <strong>custo</strong> é o que a Superior
+            desembolsa e entra no cálculo de economia; o <strong>valor distribuído</strong> é o que a equipe recebe
+            e é dividido entre os nomeados na aba Rateio.
+            {(() => {
+              const custo = parseFloat(draft.bonusSuperior) || 0;
+              const dist = parseFloat(draft.bonusRateio != null ? draft.bonusRateio : draft.bonusSuperior) || 0;
+              if (dist > custo) return <div style={{ marginTop: 6, color: C.laranjaEsc, fontWeight: 600 }}>
+                Atenção: o valor distribuído está maior que o custo. Confira os campos.
+              </div>;
+              if (dist < custo) return <div style={{ marginTop: 6 }}>
+                Hoje: custo <strong>{brl(custo)}</strong> por bônus, dos quais <strong>{brl(dist)}</strong> vão para
+                a equipe — diferença de <strong>{brl(custo - dist)}</strong> retida pela empresa.
+              </div>;
+              return null;
+            })()}
+          </div>
+        </div>
       </div>
 
       </>)}
