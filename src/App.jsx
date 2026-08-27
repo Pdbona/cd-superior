@@ -132,9 +132,11 @@ const URL_APP_ADMINISTRATIVO = "https://Pdbona.github.io/gestao-adm-superior/";
 const TELA_ADMINISTRATIVO = { id: "administrativo", label: "App Gestão ADM (link externo)", icon: Landmark };
 
 /* Mesma ideia de urlComercial: manda só o que essa pessoa NÃO tem
-   (?ocultar=id1,id2 — ids batem com SUBITENS_POR_ABA.administrativo /
-   Layout.ABAS lá no App Gestão ADM), mais ?usuario= (nome de quem já
-   logou aqui) pra ele pular a própria tela de identificação. */
+   (?ocultar=id1,id2 — ids batem com SUBITENS_POR_ABA.administrativo lá no
+   App Gestão ADM; a maioria bate 1:1 com Layout.ABAS, exceto "cadastro",
+   que é o grupo Importação+Fornecedores+Centro de Custo — Layout.jsx trata
+   esse id à parte pra esconder os 3 juntos), mais ?usuario= (nome de quem
+   já logou aqui) pra ele pular a própria tela de identificação. */
 const urlAdministrativo = (usuario, subAdministrativo) => {
   const ocultos = (SUBITENS_POR_ABA.administrativo || [])
     .filter(s => subAdministrativo?.[s.id] === false).map(s => s.id);
@@ -237,13 +239,17 @@ const SUBITENS_POR_ABA = {
   /* Igual ao Comercial: outro app/repo, sem RBAC próprio — a URL manda o
      que esconder (?ocultar=, ver urlAdministrativo). Ids batem com
      Layout.ABAS no App Gestão ADM; mantenha as duas listas em sincronia
-     manualmente (combinado com Pablo em 20/ago/2026). */
+     manualmente (combinado com Pablo em 20/ago/2026).
+     "cadastro" (28/ago/2026) representa de uma vez só o grupo "Cadastro"
+     da barra lateral do App Gestão ADM (Importação + Fornecedores +
+     Centro de Custo, ver Layout.NAV_ITENS lá) — desmarcar aqui esconde os
+     3 juntos. Também fecha a lacuna do Centro de Custo, que ainda não
+     tinha controle nenhum por aqui. */
   administrativo: [
-    { id: "importacao", label: "Importação" },
+    { id: "resultado", label: "Resultado" },
     { id: "faturamento", label: "Faturamento" },
     { id: "despesas", label: "Despesas" },
-    { id: "fornecedores", label: "Fornecedores" },
-    { id: "resultado", label: "Resultado" }
+    { id: "cadastro", label: "Cadastro (Importação, Fornecedores, Centro de Custo)" }
   ]
 };
 
