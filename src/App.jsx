@@ -2813,12 +2813,19 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   const [draftPessoas, setDraftPessoas] = useState(params.pessoasPerfil || []);
   const [salvo, setSalvo] = useState(false);
 
-  /* qual linha está expandida — só uma por vez, senão a tela vira um
-     paredão de checkbox */
-  const [perfilAberto, setPerfilAberto] = useState(null);
-  const [usuarioAberto, setUsuarioAberto] = useState(null);
-  /* busca por nome/perfil — a tabela de usuários só cresce, sem filtro
-     vira rolagem infinita pra achar uma pessoa */
+  /* Layout mestre-detalhe (28/08/2026): perfilSelecionado é a ÚNICA fonte de
+     verdade de qual "linha" está aberta — substitui os antigos perfilAberto/
+     conferenteAberto/gestorAberto (um por tipo de perfil). Vale
+     "conferente" | "gestor" | id de um perfil próprio | null. Clicar num
+     perfil, no bloco da direita, seleciona (expande a edição do perfil ali
+     mesmo) E troca quem aparece no bloco da esquerda (usuários daquele
+     perfil). Usuário virou modal (usuarioModal) em vez de expandir na
+     própria linha da tabela — a tabela em si saiu, cada perfil mostra só
+     os usuários dele. */
+  const [perfilSelecionado, setPerfilSelecionado] = useState(null);
+  const [usuarioModal, setUsuarioModal] = useState(null);
+  /* busca por nome — só aparece quando o perfil selecionado tem uma lista
+     longa de usuários, sem filtro vira rolagem infinita pra achar alguém */
   const [buscaUsuario, setBuscaUsuario] = useState("");
 
   /* formulários de inclusão só aparecem quando o botão é clicado */
@@ -2832,7 +2839,6 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      acesso dele é sempre só a tela do coletor, não tem o que escolher —
      por isso o cadastro aqui é só nome+PIN, igual já era em Parâmetros. */
   const [draftConferentes, setDraftConferentes] = useState(params.conferentes || []);
-  const [conferenteAberto, setConferenteAberto] = useState(false);
   const [novoConf, setNovoConf] = useState({ nome: "", pin: "" });
   const [erroConf, setErroConf] = useState("");
 
@@ -2851,7 +2857,6 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      Comercial ainda não tem enforcement nenhum (ver comentário em
      SUBITENS_POR_ABA.comercial), fica só de referência por hora. */
   const [draftPermissoesGestorSub, setDraftPermissoesGestorSub] = useState({ ...(params.permissoesGestorSub || {}) });
-  const [gestorAberto, setGestorAberto] = useState(false);
 
   /* Tela do Coletor entra pra qualquer perfil poder pedir — não é
      restringível pelo Gestor (não está em TELAS_RESTRITAS_ADMIN, não faz
@@ -2923,7 +2928,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
     setDraftPerfis(d => d.filter(p => p.id !== perfilId));
     /* pessoa sem perfil ficaria com PIN órfão e sem tela nenhuma */
     setDraftPessoas(d => d.filter(pp => pp.perfilId !== perfilId));
-    setPerfilAberto(null); mudou();
+    setPerfilSelecionado(s => s === perfilId ? null : s); mudou();
   };
 
   const criarPerfil = () => {
@@ -2955,7 +2960,9 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   };
 
   /* ---------------- usuários ---------------- */
-  const abrirFormUsuario = () => { setFormUsuario({ perfilId: "", nome: "", pin: "" }); setErroUsuario(""); };
+  /* perfilIdPreset: quando aberto a partir do bloco de um perfil já
+     selecionado, o formulário nasce com o perfil daquele bloco preenchido */
+  const abrirFormUsuario = (perfilIdPreset = "") => { setFormUsuario({ perfilId: perfilIdPreset, nome: "", pin: "" }); setErroUsuario(""); };
 
   const criarUsuario = () => {
     const { perfilId } = formUsuario;
@@ -2982,7 +2989,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
   };
   const removerPessoa = (id) => {
     setDraftPessoas(d => d.filter(p => p.id !== id));
-    setUsuarioAberto(null); mudou();
+    setUsuarioModal(null); mudou();
   };
   const alternarBloqueio = (id) => {
     setDraftPessoas(d => d.map(p => p.id === id ? { ...p, bloqueado: !p.bloqueado } : p));
@@ -3102,93 +3109,35 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
 
   return (
     <div>
-      {/* ============ PERFIS ============ */}
-      {subOn("perfisacesso") && (<>
-        <SectionTitle icon={Lock}>Perfis de Acesso <Badge>{draftPerfis.length}</Badge></SectionTitle>
-        <p style={styles.helper}>
-          Um <strong>perfil</strong> é o papel: nome + quais abas e quais itens dentro de cada aba ele enxerga.
-          Clique num perfil para ver e alterar os acessos. Sem PIN — quem tem PIN é o usuário, na lista abaixo.
-        </p>
+      {/* ============ PERFIS + USUÁRIOS — mestre-detalhe (28/08/2026) ============
+         Direita: lista de perfis (Conferente/Gestor fixos + próprios), clicável.
+         Esquerda: espelha a seleção — quem tem aquele perfil. Usuário virou
+         modal (clique na linha) em vez de expandir dentro de uma tabela. */}
+      {(subOn("perfisacesso") || subOn("usuarios")) && (<>
+      <SectionTitle icon={Lock}>Perfis e Usuários <Badge>{draftPerfis.length + 2}</Badge></SectionTitle>
+      <p style={styles.helper}>
+        Clique num <strong>perfil</strong>, no bloco da direita, para ver e alterar os acessos dele — os
+        usuários que têm esse perfil aparecem no bloco da esquerda. Clique num usuário para trocar o PIN,
+        ajustar os acessos só dele, bloquear ou excluir.
+      </p>
 
-        <div style={{ marginBottom: 12 }}>
-          {!formPerfil ? (
-            <button style={styles.btnPrimary} onClick={abrirFormPerfil}><Plus size={15} /> Incluir perfil</button>
-          ) : (
-            <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
-                Novo perfil
-              </div>
-              <div style={{ maxWidth: 340, marginBottom: 14 }}>
-                <Field label="Nome do perfil">
-                  <input style={styles.input} value={formPerfil.nome} autoFocus
-                    onChange={e => { setFormPerfil(f => ({ ...f, nome: e.target.value })); setErroPerfil(""); }}
-                    placeholder="Ex.: Cliente" />
-                </Field>
-              </div>
-              <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer", maxWidth: 460 }}>
-                <input type="checkbox" checked={!!formPerfil.linkProprio} style={{ marginTop: 2 }}
-                  onChange={() => setFormPerfil(f => ({ ...f, linkProprio: !f.linkProprio }))} />
-                <span>
-                  <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
-                    Link de acesso próprio
-                  </span>
-                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
-                    Em vez de entrar pela porta padrão com PIN numérico, cada usuário deste perfil recebe um link
-                    à parte, com tela própria: seleciona o nome e digita uma senha (4 a 6, pode ter letras).
-                  </div>
-                </span>
-              </label>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
-                textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
-                Acessos
-              </div>
-              <EditorAcessos
-                telas={formPerfil.telas} subMapa={formPerfil.sub}
-                onTela={id => setFormPerfil(f => ({ ...f, telas: { ...f.telas, [id]: !f.telas[id] } }))}
-                onSub={(abaId, subId) => setFormPerfil(f => ({ ...f,
-                  sub: { ...f.sub, [abaId]: { ...f.sub?.[abaId], [subId]: !subEfetivo(subId, f.sub?.[abaId]?.[subId]) } } }))} />
-              {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
-              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-                <button style={styles.btnGhost} onClick={() => { setFormPerfil(null); setErroPerfil(""); }}>Cancelar</button>
-                <button style={styles.btnPrimary} onClick={criarPerfil}><Plus size={15} /> Criar perfil</button>
-              </div>
-            </div>
-          )}
-        </div>
+      <div style={{ display: "grid",
+        gridTemplateColumns: (subOn("perfisacesso") && subOn("usuarios")) ? "1.3fr 1fr" : "1fr",
+        gap: 16, alignItems: "start", marginBottom: 22 }}>
 
-        {/* ---- CONFERENTE e GESTOR — perfis fixos do app, trazidos pra cá
-           (combinado com Pablo em 16/ago/2026) pra aparecer junto de tudo
-           mais. Ficam antes dos perfis próprios, sempre nesta ordem. Grade
-           de 2 colunas (melhor aproveitamento de tela, combinado em
-           17/ago/2026); o card expandido toma a linha inteira pra não
-           espremer o formulário/checklist numa coluna estreita. ---- */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 14, alignItems: "start" }}>
-          {/* CONFERENTE — acesso fixo: só a tela do coletor. O cadastro de
-             nome+PIN, que morava em Parâmetros → Acessos ao App, vive aqui. */}
-          <div style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: conferenteAberto ? "1 / -1" : "auto",
-            borderLeft: `4px solid ${conferenteAberto ? C.laranja : C.supVerde}` }}>
-            <button onClick={() => setConferenteAberto(a => !a)}
-              style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
-                padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
-                flexWrap: "wrap", font: "inherit" }}>
-              <HardHat size={17} color={C.supVerde} strokeWidth={2.3} />
-              <div style={{ flex: 1, minWidth: 160 }}>
-                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
-                  Conferente <Badge>{draftConferentes.length} usuário{draftConferentes.length !== 1 ? "s" : ""}</Badge>
-                  <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+        {/* ===== ESQUERDA — usuários do perfil selecionado ===== */}
+        {subOn("usuarios") && (
+          <div>
+            {perfilSelecionado === "conferente" ? (
+              <div style={styles.card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <HardHat size={17} color={C.supVerde} strokeWidth={2.3} />
+                  <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>Conferente</span>
+                  <Badge>{draftConferentes.length}</Badge>
                 </div>
-                {!conferenteAberto && (
-                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>Tela do Coletor (Conferente)</div>
-                )}
-              </div>
-              <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{conferenteAberto ? "▲" : "▼"}</span>
-            </button>
-            {conferenteAberto && (
-              <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
-                <div style={{ ...styles.infoBox, margin: "14px 0" }}>
-                  Acesso fixo — Conferente sempre enxerga só a <strong>Tela do Coletor</strong>, para registrar
-                  início e fim das operações no celular. Não tem outras telas para escolher.
-                </div>
+                <p style={{ fontSize: 11.5, color: C.prata, margin: "4px 0 14px", lineHeight: 1.5 }}>
+                  Acesso fixo — sempre só a Tela do Coletor, sem acessos pra escolher.
+                </p>
                 <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 10, alignItems: "end", marginBottom: 14 }}>
                   <Field label="Nome do conferente">
                     <input style={styles.input} value={novoConf.nome}
@@ -3211,7 +3160,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                     Nenhum conferente cadastrado — qualquer pessoa entra no app do conferente sem senha.
                   </div>
                 ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 8 }}>
+                  <div style={{ display: "grid", gap: 8 }}>
                     {draftConferentes.map(c => (
                       <div key={c.id} style={{ ...styles.opRow, padding: "9px 10px", gap: 8, opacity: c.bloqueado ? .6 : 1 }}>
                         <div style={{ ...styles.portaIcon, width: 30, height: 30, background: "#EAF6EE", flexShrink: 0 }}>
@@ -3237,355 +3186,419 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                   </div>
                 )}
               </div>
-            )}
-          </div>
-
-          {/* GESTOR — acesso a tudo por padrão, escopo editável só pelo
-             Administrador. O cadastro de PIN dos gestores continua na tela
-             do Administrador (fora daqui). */}
-          <div style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: gestorAberto ? "1 / -1" : "auto",
-            borderLeft: `4px solid ${gestorAberto ? C.laranja : C.navy2}` }}>
-            <button onClick={() => setGestorAberto(a => !a)}
-              style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
-                padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
-                flexWrap: "wrap", font: "inherit" }}>
-              <Briefcase size={17} color={C.navy2} strokeWidth={2.3} />
-              <div style={{ flex: 1, minWidth: 160 }}>
-                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
-                  Gestor
-                  <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+            ) : perfilSelecionado === "gestor" ? (
+              <div style={styles.card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Briefcase size={17} color={C.navy2} strokeWidth={2.3} />
+                  <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>Gestor</span>
                 </div>
-                {!gestorAberto && (
-                  <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
-                    {[...TABS_GESTOR, TELA_COLETOR, TELA_COMERCIAL, TELA_ADMINISTRATIVO].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
-                  </div>
-                )}
-              </div>
-              <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{gestorAberto ? "▲" : "▼"}</span>
-            </button>
-            {gestorAberto && (
-              <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
-                <div style={{ ...styles.infoBox, margin: "14px 0" }}>
-                  {souAdministrador
-                    ? <>Acesso total por padrão — inclusive a <strong>Tela do Coletor</strong>. Desmarque só o que não fizer sentido.</>
-                    : <>Somente o Administrador altera o acesso do Gestor. O PIN de cada gestor também é cadastrado só por ele.</>}
+                <div style={styles.infoBox}>
+                  O PIN de cada Gestor é cadastrado direto na tela do Administrador — este perfil fixo não
+                  tem lista de usuários aqui, só o escopo de acesso, no bloco à direita.
                 </div>
-                <EditorAcessos
-                  telas={draftPermissoesGestor} subMapa={draftPermissoesGestorSub}
-                  somenteLeitura={!souAdministrador}
-                  onTela={souAdministrador ? toggleGestorTela : () => {}}
-                  onSub={souAdministrador ? toggleGestorSub : () => {}} />
               </div>
-            )}
-          </div>
-        </div>
-
-        {draftPerfis.length === 0 ? (
-          <div style={styles.empty}>Nenhum perfil cadastrado ainda.</div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 8, marginBottom: 22, alignItems: "start" }}>
-            {draftPerfis.map(perfil => {
-              const aberto = perfilAberto === perfil.id;
-              const nUsuarios = draftPessoas.filter(p => p.perfilId === perfil.id).length;
+            ) : perfilSelecionado ? (() => {
+              const perfil = perfilPorId(perfilSelecionado);
+              if (!perfil) return <div style={styles.empty}>Este perfil foi removido.</div>;
+              const q = buscaUsuario.trim().toLowerCase();
+              const todosDoPerfil = draftPessoas.filter(p => p.perfilId === perfilSelecionado);
+              const usuariosDoPerfil = todosDoPerfil
+                .filter(p => !q || p.nome.toLowerCase().includes(q))
+                .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
               return (
-                <div key={perfil.id} style={{ ...styles.card, padding: 0, overflow: "hidden", gridColumn: aberto ? "1 / -1" : "auto",
-                  borderLeft: `4px solid ${aberto ? C.laranja : C.verde}` }}>
-                  <button onClick={() => setPerfilAberto(a => a === perfil.id ? null : perfil.id)}
-                    style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
-                      padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
-                      flexWrap: "wrap", font: "inherit" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
                     <Lock size={17} color={C.verde} strokeWidth={2.3} />
-                    <div style={{ flex: 1, minWidth: 160 }}>
-                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
-                        {perfil.nome} <Badge>{nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""}</Badge>
-                        {perfil.linkProprio && (
-                          <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Link próprio</span>
-                        )}
+                    <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>{perfil.nome}</span>
+                    <Badge>{todosDoPerfil.length}</Badge>
+                    {!formUsuario && (
+                      <button style={{ ...styles.btnGhost, marginLeft: "auto", padding: "7px 14px", fontSize: 12.5 }}
+                        onClick={() => abrirFormUsuario(perfilSelecionado)}>
+                        <Plus size={14} /> Incluir usuário
+                      </button>
+                    )}
+                  </div>
+
+                  {formUsuario && (
+                    <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}`, marginBottom: 14 }}>
+                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
+                        Novo usuário
                       </div>
-                      {!aberto && (
-                        <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>{resumoTelas(perfil.telas)}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.8fr 1fr", gap: 10, alignItems: "end" }}>
+                        <Field label="Perfil">
+                          <select style={styles.input} value={formUsuario.perfilId}
+                            onChange={e => { setFormUsuario(f => ({ ...f, perfilId: e.target.value })); setErroUsuario(""); }}>
+                            <option value="">Selecione…</option>
+                            {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                          </select>
+                        </Field>
+                        {/* Perfil com link próprio (ver linkProprio): o "nome" do usuário É o
+                            nome do cliente — vira o dropdown já cadastrado em Parâmetros →
+                            Clientes, pra não dar erro de digitação e deixar de bater com
+                            o cliente das operações (usado depois pra filtrar os dados). */}
+                        {perfilPorId(formUsuario.perfilId)?.linkProprio ? (
+                          <Field label="Nome do cliente">
+                            {(params.clientes || []).length === 0 ? (
+                              <div style={{ fontSize: 11.5, color: C.laranjaEsc, padding: "8px 0" }}>
+                                Cadastre clientes em Parâmetros primeiro.
+                              </div>
+                            ) : (
+                              <select style={styles.input} value={formUsuario.nome}
+                                onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}>
+                                <option value="">Selecione…</option>
+                                {params.clientes.map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                              </select>
+                            )}
+                          </Field>
+                        ) : (
+                          <Field label="Nome completo">
+                            <input style={styles.input} value={formUsuario.nome} autoFocus
+                              onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}
+                              onKeyDown={e => e.key === "Enter" && criarUsuario()}
+                              placeholder="Ex.: Maria Silva" />
+                          </Field>
+                        )}
+                        <Field label={perfilPorId(formUsuario.perfilId)?.linkProprio ? "Senha (4 a 6, letras/números)" : "PIN (4 a 6 dígitos)"}>
+                          <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                            inputMode={perfilPorId(formUsuario.perfilId)?.linkProprio ? "text" : "numeric"} maxLength={6} value={formUsuario.pin}
+                            onChange={e => {
+                              const bruto = e.target.value;
+                              const v = perfilPorId(formUsuario.perfilId)?.linkProprio ? bruto.replace(/[^A-Za-z0-9]/g, "") : bruto.replace(/\D/g, "");
+                              setFormUsuario(f => ({ ...f, pin: v })); setErroUsuario("");
+                            }}
+                            onKeyDown={e => e.key === "Enter" && criarUsuario()}
+                            placeholder="0000" />
+                        </Field>
+                      </div>
+                      {erroUsuario && <div style={styles.erro}><AlertTriangle size={15} /> {erroUsuario}</div>}
+                      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                        <button style={styles.btnGhost} onClick={() => { setFormUsuario(null); setErroUsuario(""); }}>Cancelar</button>
+                        <button style={styles.btnPrimary} onClick={criarUsuario}><Plus size={15} /> Criar usuário</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {todosDoPerfil.length > 6 && (
+                    <div style={{ ...styles.searchRow, marginBottom: 10 }}>
+                      <Search size={16} color={C.prata} />
+                      <input style={styles.searchInput} value={buscaUsuario} onChange={e => setBuscaUsuario(e.target.value)}
+                        placeholder="Buscar por nome…" />
+                      {buscaUsuario && (
+                        <button style={{ ...styles.chipX, width: 24, height: 24 }} onClick={() => setBuscaUsuario("")} title="Limpar busca">×</button>
                       )}
                     </div>
-                    <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{aberto ? "▲" : "▼"}</span>
-                  </button>
-                  {aberto && (
-                    <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
-                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", margin: "14px 0" }}>
-                        <div style={{ flex: 1, minWidth: 180 }}>
-                          <label style={styles.fieldLabel}>Nome do perfil</label>
-                          <input style={styles.input} value={perfil.nome}
-                            onChange={e => setPerfilNome(perfil.id, e.target.value)} />
-                        </div>
-                        <button style={styles.iconBtnDanger} title="Remover perfil"
-                          onClick={() => removerPerfil(perfil.id)}><Trash2 size={14} /></button>
-                      </div>
-                      <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer", maxWidth: 460 }}>
-                        <input type="checkbox" checked={!!perfil.linkProprio} style={{ marginTop: 2 }}
-                          onChange={() => togglePerfilLinkProprio(perfil.id)} />
-                        <span>
-                          <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
-                            Link de acesso próprio
-                          </span>
-                          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
-                            Entrada por nome + senha (4 a 6, pode ter letras), fora da porta padrão de PIN.
-                          </div>
-                        </span>
-                      </label>
-                      {perfil.linkProprio && perfil.slug && (
-                        <div style={{ ...styles.infoBox, marginBottom: 14 }}>
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Link para compartilhar:</div>
-                          <BotaoCopiarLink link={`${window.location.origin}${window.location.pathname}?portal=${perfil.slug}`} />
-                        </div>
-                      )}
-                      {!perfil.linkProprio && (
-                        <div style={{ marginBottom: 14 }}>
-                          <label style={styles.fieldLabel}>Coluna na tela "Como você vai acessar?"</label>
-                          <div style={{ display: "flex", gap: 8, maxWidth: 300, marginBottom: 4 }}>
-                            <button type="button" onClick={() => setPerfilColuna(perfil.id, 1)}
-                              style={(perfil.coluna || 1) === 1 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
-                              Coluna 1
-                            </button>
-                            <button type="button" onClick={() => setPerfilColuna(perfil.id, 2)}
-                              style={perfil.coluna === 2 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
-                              Coluna 2
-                            </button>
-                          </div>
-                          <div style={{ fontSize: 11, color: C.prata, lineHeight: 1.4 }}>
-                            Coluna 1 = acesso do dia a dia (Gestor, Conferente ficam aqui). Coluna 2 = uso menos
-                            frequente. Todo perfil novo nasce na coluna 1.
-                          </div>
-                        </div>
-                      )}
-                      <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
-                        textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
-                        Acessos
-                      </div>
-                      <EditorAcessos
-                        telas={perfil.telas} subMapa={perfil.sub}
-                        onTela={telaId => togglePerfilTela(perfil.id, telaId)}
-                        onSub={(abaId, subId) => togglePerfilSub(perfil.id, abaId, subId)} />
-                      {nUsuarios > 0 && (
-                        <div style={{ ...styles.infoBox, marginTop: 12 }}>
-                          Vale para {nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""} — menos quem tiver ajuste
-                          individual, que aparece marcado na lista de usuários.
-                        </div>
-                      )}
+                  )}
+
+                  {usuariosDoPerfil.length === 0 ? (
+                    <div style={styles.empty}>
+                      {q ? `Nenhum usuário encontrado para "${buscaUsuario}".` : "Nenhum usuário cadastrado neste perfil ainda."}
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {usuariosDoPerfil.map(pessoa => {
+                        const custom = !!(pessoa.telasCustom || pessoa.subCustom);
+                        return (
+                          <button key={pessoa.id} onClick={() => setUsuarioModal(pessoa.id)}
+                            style={{ ...styles.opRow, width: "100%", textAlign: "left", cursor: "pointer", font: "inherit",
+                              opacity: pessoa.bloqueado ? .6 : 1 }}>
+                            <HardHat size={14} color={pessoa.bloqueado ? C.vermelho : C.navy2} strokeWidth={2.3} />
+                            <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                              <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13, color: C.navy }}>{pessoa.nome}</span>
+                              {pessoa.bloqueado && <span style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho }}>Bloqueado</span>}
+                              {custom && !pessoa.bloqueado && <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Acesso ajustado</span>}
+                            </div>
+                            <span style={{ fontFamily: "'Roboto Mono',monospace", color: C.prata, fontSize: 12.5 }}>{pessoa.pin}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
               );
-            })}
+            })() : (
+              <div style={styles.empty}>Selecione um perfil à direita para ver os usuários.</div>
+            )}
           </div>
         )}
-      </>)}
 
-      {/* ============ USUÁRIOS ============ */}
-      {subOn("usuarios") && (<>
-        <SectionTitle icon={HardHat}>Usuários Cadastrados <Badge>{draftPessoas.length}</Badge></SectionTitle>
-        <p style={styles.helper}>
-          Cada usuário entra com o próprio PIN. Clique num nome para trocar o PIN, ajustar os acessos só dele,
-          bloquear ou excluir.
-        </p>
-
-        <div style={{ marginBottom: 12 }}>
-          {!formUsuario ? (
-            <button style={styles.btnPrimary} onClick={abrirFormUsuario} disabled={draftPerfis.length === 0}>
-              <Plus size={15} /> Incluir usuário
-            </button>
-          ) : (
-            <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
-                Novo usuário
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.8fr 1fr", gap: 10, alignItems: "end" }}>
-                <Field label="Perfil">
-                  <select style={styles.input} value={formUsuario.perfilId}
-                    onChange={e => { setFormUsuario(f => ({ ...f, perfilId: e.target.value })); setErroUsuario(""); }}>
-                    <option value="">Selecione…</option>
-                    {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-                  </select>
-                </Field>
-                {/* Perfil com link próprio (ver linkProprio): o "nome" do usuário É o
-                    nome do cliente — vira o dropdown já cadastrado em Parâmetros →
-                    Clientes, pra não dar erro de digitação e deixar de bater com
-                    o cliente das operações (usado depois pra filtrar os dados). */}
-                {perfilPorId(formUsuario.perfilId)?.linkProprio ? (
-                  <Field label="Nome do cliente">
-                    {(params.clientes || []).length === 0 ? (
-                      <div style={{ fontSize: 11.5, color: C.laranjaEsc, padding: "8px 0" }}>
-                        Cadastre clientes em Parâmetros primeiro.
+        {/* ===== DIREITA — lista de perfis (clique seleciona e edita) ===== */}
+        {subOn("perfisacesso") && (
+          <div>
+            <div style={{ marginBottom: 12 }}>
+              {!formPerfil ? (
+                <button style={{ ...styles.btnPrimary, width: "100%", justifyContent: "center" }} onClick={abrirFormPerfil}>
+                  <Plus size={15} /> Incluir perfil
+                </button>
+              ) : (
+                <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13.5, color: C.navy, marginBottom: 12 }}>
+                    Novo perfil
+                  </div>
+                  <div style={{ marginBottom: 14 }}>
+                    <Field label="Nome do perfil">
+                      <input style={styles.input} value={formPerfil.nome} autoFocus
+                        onChange={e => { setFormPerfil(f => ({ ...f, nome: e.target.value })); setErroPerfil(""); }}
+                        placeholder="Ex.: Cliente" />
+                    </Field>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!formPerfil.linkProprio} style={{ marginTop: 2 }}
+                      onChange={() => setFormPerfil(f => ({ ...f, linkProprio: !f.linkProprio }))} />
+                    <span>
+                      <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
+                        Link de acesso próprio
+                      </span>
+                      <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
+                        Em vez de entrar pela porta padrão com PIN numérico, cada usuário deste perfil recebe um link
+                        à parte, com tela própria: seleciona o nome e digita uma senha (4 a 6, pode ter letras).
                       </div>
-                    ) : (
-                      <select style={styles.input} value={formUsuario.nome}
-                        onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}>
-                        <option value="">Selecione…</option>
-                        {params.clientes.map(cl => <option key={cl} value={cl}>{cl}</option>)}
-                      </select>
-                    )}
-                  </Field>
-                ) : (
-                  <Field label="Nome completo">
-                    <input style={styles.input} value={formUsuario.nome}
-                      onChange={e => { setFormUsuario(f => ({ ...f, nome: e.target.value })); setErroUsuario(""); }}
-                      onKeyDown={e => e.key === "Enter" && criarUsuario()}
-                      placeholder="Ex.: Maria Silva" />
-                  </Field>
-                )}
-                <Field label={perfilPorId(formUsuario.perfilId)?.linkProprio ? "Senha (4 a 6, letras/números)" : "PIN (4 a 6 dígitos)"}>
-                  <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                    inputMode={perfilPorId(formUsuario.perfilId)?.linkProprio ? "text" : "numeric"} maxLength={6} value={formUsuario.pin}
-                    onChange={e => {
-                      const bruto = e.target.value;
-                      const v = perfilPorId(formUsuario.perfilId)?.linkProprio ? bruto.replace(/[^A-Za-z0-9]/g, "") : bruto.replace(/\D/g, "");
-                      setFormUsuario(f => ({ ...f, pin: v })); setErroUsuario("");
-                    }}
-                    onKeyDown={e => e.key === "Enter" && criarUsuario()}
-                    placeholder="0000" />
-                </Field>
-              </div>
-              {erroUsuario && <div style={styles.erro}><AlertTriangle size={15} /> {erroUsuario}</div>}
-              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-                <button style={styles.btnGhost} onClick={() => { setFormUsuario(null); setErroUsuario(""); }}>Cancelar</button>
-                <button style={styles.btnPrimary} onClick={criarUsuario}><Plus size={15} /> Criar usuário</button>
-              </div>
-            </div>
-          )}
-          {draftPerfis.length === 0 && (
-            <div style={{ ...styles.infoBox, marginTop: 10 }}>Crie um perfil antes de cadastrar usuários.</div>
-          )}
-        </div>
-
-        {draftPessoas.length === 0 ? (
-          <div style={styles.empty}>Nenhum usuário cadastrado ainda.</div>
-        ) : (
-          <>
-          {draftPessoas.length > 6 && (
-            <div style={{ ...styles.searchRow, marginBottom: 10 }}>
-              <Search size={16} color={C.prata} />
-              <input style={styles.searchInput} value={buscaUsuario} onChange={e => setBuscaUsuario(e.target.value)}
-                placeholder="Buscar por nome ou perfil…" />
-              {buscaUsuario && (
-                <button style={{ ...styles.chipX, width: 24, height: 24 }} onClick={() => setBuscaUsuario("")} title="Limpar busca">×</button>
+                    </span>
+                  </label>
+                  <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                    textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
+                    Acessos
+                  </div>
+                  <EditorAcessos
+                    telas={formPerfil.telas} subMapa={formPerfil.sub}
+                    onTela={id => setFormPerfil(f => ({ ...f, telas: { ...f.telas, [id]: !f.telas[id] } }))}
+                    onSub={(abaId, subId) => setFormPerfil(f => ({ ...f,
+                      sub: { ...f.sub, [abaId]: { ...f.sub?.[abaId], [subId]: !subEfetivo(subId, f.sub?.[abaId]?.[subId]) } } }))} />
+                  {erroPerfil && <div style={styles.erro}><AlertTriangle size={15} /> {erroPerfil}</div>}
+                  <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                    <button style={styles.btnGhost} onClick={() => { setFormPerfil(null); setErroPerfil(""); }}>Cancelar</button>
+                    <button style={styles.btnPrimary} onClick={criarPerfil}><Plus size={15} /> Criar perfil</button>
+                  </div>
+                </div>
               )}
             </div>
-          )}
-          <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto", display: "block", width: "100%", marginBottom: 8 }}>
-            <table style={{ ...styles.table, minWidth: 640 }}>
-              <thead>
-                <tr>{["Nome", "Perfil", "PIN", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {draftPessoas.slice().sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
-                  .filter(pessoa => {
-                    const q = buscaUsuario.trim().toLowerCase();
-                    if (!q) return true;
-                    const perfilNome = perfilPorId(pessoa.perfilId)?.nome || "";
-                    return pessoa.nome.toLowerCase().includes(q) || perfilNome.toLowerCase().includes(q);
-                  })
-                  .map((pessoa, i) => {
-                  const aberto = usuarioAberto === pessoa.id;
-                  const perfil = perfilPorId(pessoa.perfilId);
-                  const ef = permissoesEfetivas(pessoa, perfil);
-                  const custom = !!(pessoa.telasCustom || pessoa.subCustom);
-                  return (
-                    <React.Fragment key={pessoa.id}>
-                      {/* Linha da tabela: clique em qualquer célula abre o detalhe
-                          logo abaixo (telas, PIN, bloquear/excluir) — combinado
-                          com Pablo em 17/ago/2026, substitui a grade de cartões. */}
-                      <tr onClick={() => setUsuarioAberto(a => a === pessoa.id ? null : pessoa.id)}
-                        style={{ background: aberto ? "#FFF4EB" : i % 2 ? C.bgLeve : C.branco, cursor: "pointer",
-                          opacity: pessoa.bloqueado ? .6 : 1 }}>
-                        <td style={{ ...styles.td, fontWeight: 700, color: C.navy, whiteSpace: "normal" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-                            <HardHat size={14} color={pessoa.bloqueado ? C.vermelho : C.navy2} strokeWidth={2.3} />
-                            {pessoa.nome}
-                            {pessoa.bloqueado && (
-                              <span style={{ ...styles.pill, background: "#FFEBEE", color: C.vermelho }}>Bloqueado</span>
-                            )}
-                            {custom && !pessoa.bloqueado && (
-                              <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Acesso ajustado</span>
-                            )}
+
+            <div style={{ display: "grid", gap: 8 }}>
+              {/* CONFERENTE — acesso fixo: só a tela do coletor. Cadastro de
+                 usuário (nome+PIN) fica no bloco à esquerda quando selecionado. */}
+              <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+                borderLeft: `4px solid ${perfilSelecionado === "conferente" ? C.laranja : C.supVerde}` }}>
+                <button onClick={() => setPerfilSelecionado(s => s === "conferente" ? null : "conferente")}
+                  style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                    padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                    flexWrap: "wrap", font: "inherit" }}>
+                  <HardHat size={17} color={C.supVerde} strokeWidth={2.3} />
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                      Conferente <Badge>{draftConferentes.length}</Badge>
+                      <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>Tela do Coletor (Conferente)</div>
+                  </div>
+                  <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{perfilSelecionado === "conferente" ? "▲" : "▼"}</span>
+                </button>
+              </div>
+
+              {/* GESTOR — acesso a tudo por padrão, escopo editável só pelo
+                 Administrador. O cadastro de PIN dos gestores continua na tela
+                 do Administrador (fora daqui). */}
+              <div style={{ ...styles.card, padding: 0, overflow: "hidden",
+                borderLeft: `4px solid ${perfilSelecionado === "gestor" ? C.laranja : C.navy2}` }}>
+                <button onClick={() => setPerfilSelecionado(s => s === "gestor" ? null : "gestor")}
+                  style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                    padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                    flexWrap: "wrap", font: "inherit" }}>
+                  <Briefcase size={17} color={C.navy2} strokeWidth={2.3} />
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                      Gestor
+                      <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Perfil fixo</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>
+                      {[...TABS_GESTOR, TELA_COLETOR, TELA_COMERCIAL, TELA_ADMINISTRATIVO].filter(t => draftPermissoesGestor[t.id] !== false).map(t => t.label).join(" · ")}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{perfilSelecionado === "gestor" ? "▲" : "▼"}</span>
+                </button>
+                {perfilSelecionado === "gestor" && (
+                  <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                    <div style={{ ...styles.infoBox, margin: "14px 0" }}>
+                      {souAdministrador
+                        ? <>Acesso total por padrão — inclusive a <strong>Tela do Coletor</strong>. Desmarque só o que não fizer sentido.</>
+                        : <>Somente o Administrador altera o acesso do Gestor. O PIN de cada gestor também é cadastrado só por ele.</>}
+                    </div>
+                    <EditorAcessos
+                      telas={draftPermissoesGestor} subMapa={draftPermissoesGestorSub}
+                      somenteLeitura={!souAdministrador}
+                      onTela={souAdministrador ? toggleGestorTela : () => {}}
+                      onSub={souAdministrador ? toggleGestorSub : () => {}} />
+                  </div>
+                )}
+              </div>
+
+              {draftPerfis.length === 0 ? (
+                <div style={styles.empty}>Nenhum perfil próprio cadastrado ainda.</div>
+              ) : draftPerfis.map(perfil => {
+                const selecionado = perfilSelecionado === perfil.id;
+                const nUsuarios = draftPessoas.filter(p => p.perfilId === perfil.id).length;
+                return (
+                  <div key={perfil.id} style={{ ...styles.card, padding: 0, overflow: "hidden",
+                    borderLeft: `4px solid ${selecionado ? C.laranja : C.verde}` }}>
+                    <button onClick={() => setPerfilSelecionado(s => s === perfil.id ? null : perfil.id)}
+                      style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                        padding: "13px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                        flexWrap: "wrap", font: "inherit" }}>
+                      <Lock size={17} color={C.verde} strokeWidth={2.3} />
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy }}>
+                          {perfil.nome} <Badge>{nUsuarios}</Badge>
+                          {perfil.linkProprio && (
+                            <span style={{ ...styles.pill, background: "#EEF2F8", color: C.navy2, marginLeft: 6 }}>Link próprio</span>
+                          )}
+                        </div>
+                        {!selecionado && (
+                          <div style={{ fontSize: 11.5, color: C.prata, marginTop: 3 }}>{resumoTelas(perfil.telas)}</div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 17, color: C.prata, lineHeight: 1 }}>{selecionado ? "▲" : "▼"}</span>
+                    </button>
+                    {selecionado && (
+                      <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.prataClaro}` }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", margin: "14px 0" }}>
+                          <div style={{ flex: 1, minWidth: 180 }}>
+                            <label style={styles.fieldLabel}>Nome do perfil</label>
+                            <input style={styles.input} value={perfil.nome}
+                              onChange={e => setPerfilNome(perfil.id, e.target.value)} />
                           </div>
-                        </td>
-                        <td style={styles.td}>{perfil ? perfil.nome : "Perfil removido"}</td>
-                        <td style={styles.tdMono}>{pessoa.pin}</td>
-                        <td style={{ ...styles.td, textAlign: "right", color: C.prata }}>{aberto ? "▲" : "▼"}</td>
-                      </tr>
-                      {aberto && (
-                        <tr>
-                          <td colSpan={4} style={{ padding: 0, borderBottom: `1px solid ${C.prataClaro}` }}>
-                            <div style={{ padding: "16px 16px 18px", background: C.bgLeve }}>
-                              <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10,
-                                alignItems: "end", marginBottom: 14 }}>
-                                {perfil?.linkProprio ? (
-                                  <Field label="Nome do cliente">
-                                    <select style={styles.input} value={pessoa.nome}
-                                      onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)}>
-                                      <option value="">Selecione…</option>
-                                      {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
-                                    </select>
-                                  </Field>
-                                ) : (
-                                  <Field label="Nome completo">
-                                    <input style={styles.input} value={pessoa.nome}
-                                      onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
-                                  </Field>
-                                )}
-                                <Field label="Perfil">
-                                  <select style={styles.input} value={pessoa.perfilId}
-                                    onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
-                                    {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-                                  </select>
-                                </Field>
-                                <Field label={perfil?.linkProprio ? "Senha" : "PIN"}>
-                                  <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
-                                    inputMode={perfil?.linkProprio ? "text" : "numeric"} maxLength={6} value={pessoa.pin}
-                                    onChange={e => setPessoaCampo(pessoa.id, "pin",
-                                      perfil?.linkProprio ? e.target.value.replace(/[^A-Za-z0-9]/g, "") : e.target.value.replace(/\D/g, ""))} />
-                                </Field>
-                              </div>
-
-                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                                <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => alternarBloqueio(pessoa.id)}>
-                                  {pessoa.bloqueado ? <><CheckCircle2 size={14} /> Desbloquear</> : <><Lock size={14} /> Bloquear acesso</>}
-                                </button>
-                                {custom && (
-                                  <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => voltarAoPerfil(pessoa.id)}>
-                                    <RefreshCw size={14} /> Voltar ao padrão do perfil
-                                  </button>
-                                )}
-                                <button style={{ ...styles.btnGhost, fontSize: 12.5, color: C.vermelho, borderColor: C.vermelho }}
-                                  onClick={() => removerPessoa(pessoa.id)}>
-                                  <Trash2 size={14} /> Excluir usuário
-                                </button>
-                              </div>
-
-                              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
-                                textTransform: "uppercase", color: C.navy2, marginBottom: 6, letterSpacing: .2 }}>
-                                Acessos deste usuário
-                              </div>
-                              <div style={{ fontSize: 11.5, color: C.prata, marginBottom: 10, lineHeight: 1.5 }}>
-                                {custom
-                                  ? "Ajuste individual — vale só para esta pessoa, não afeta os outros do mesmo perfil."
-                                  : `Herdado do perfil ${perfil?.nome || ""}. Ao alterar algo aqui, vira um ajuste individual desta pessoa.`}
-                              </div>
-                              <EditorAcessos
-                                telas={ef.telas} subMapa={ef.sub}
-                                onTela={telaId => togglePessoaTela(pessoa.id, telaId)}
-                                onSub={(abaId, subId) => togglePessoaSub(pessoa.id, abaId, subId)} />
+                          <button style={styles.iconBtnDanger} title="Remover perfil"
+                            onClick={() => removerPerfil(perfil.id)}><Trash2 size={14} /></button>
+                        </div>
+                        <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 14, cursor: "pointer" }}>
+                          <input type="checkbox" checked={!!perfil.linkProprio} style={{ marginTop: 2 }}
+                            onChange={() => togglePerfilLinkProprio(perfil.id)} />
+                          <span>
+                            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12.5, color: C.navy }}>
+                              Link de acesso próprio
+                            </span>
+                            <div style={{ fontSize: 11.5, color: C.prata, marginTop: 2, lineHeight: 1.4 }}>
+                              Entrada por nome + senha (4 a 6, pode ter letras), fora da porta padrão de PIN.
                             </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                          </span>
+                        </label>
+                        {perfil.linkProprio && perfil.slug && (
+                          <div style={{ ...styles.infoBox, marginBottom: 14 }}>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Link para compartilhar:</div>
+                            <BotaoCopiarLink link={`${window.location.origin}${window.location.pathname}?portal=${perfil.slug}`} />
+                          </div>
+                        )}
+                        {!perfil.linkProprio && (
+                          <div style={{ marginBottom: 14 }}>
+                            <label style={styles.fieldLabel}>Coluna na tela "Como você vai acessar?"</label>
+                            <div style={{ display: "flex", gap: 8, maxWidth: 300, marginBottom: 4 }}>
+                              <button type="button" onClick={() => setPerfilColuna(perfil.id, 1)}
+                                style={(perfil.coluna || 1) === 1 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
+                                Coluna 1
+                              </button>
+                              <button type="button" onClick={() => setPerfilColuna(perfil.id, 2)}
+                                style={perfil.coluna === 2 ? { ...styles.toggle, ...styles.toggleOn } : styles.toggle}>
+                                Coluna 2
+                              </button>
+                            </div>
+                            <div style={{ fontSize: 11, color: C.prata, lineHeight: 1.4 }}>
+                              Coluna 1 = acesso do dia a dia (Gestor, Conferente ficam aqui). Coluna 2 = uso menos
+                              frequente. Todo perfil novo nasce na coluna 1.
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+                          textTransform: "uppercase", color: C.navy2, marginBottom: 8, letterSpacing: .2 }}>
+                          Acessos
+                        </div>
+                        <EditorAcessos
+                          telas={perfil.telas} subMapa={perfil.sub}
+                          onTela={telaId => togglePerfilTela(perfil.id, telaId)}
+                          onSub={(abaId, subId) => togglePerfilSub(perfil.id, abaId, subId)} />
+                        {subOn("usuarios") && (
+                          <div style={{ ...styles.infoBox, marginTop: 12 }}>
+                            {nUsuarios > 0
+                              ? <>Os {nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""} deste perfil aparecem no bloco à esquerda.</>
+                              : "Ainda sem usuário — inclua um no bloco à esquerda."}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          </>
         )}
+      </div>
       </>)}
+
+      {/* ===== MODAL DO USUÁRIO ===== */}
+      {usuarioModal && (() => {
+        const pessoa = draftPessoas.find(p => p.id === usuarioModal);
+        if (!pessoa) return null;
+        const perfil = perfilPorId(pessoa.perfilId);
+        const ef = permissoesEfetivas(pessoa, perfil);
+        const custom = !!(pessoa.telasCustom || pessoa.subCustom);
+        return (
+          <Modal titulo={pessoa.nome || "Usuário"} onFechar={() => setUsuarioModal(null)} largura={620}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.1fr 1fr", gap: 10, alignItems: "end", marginBottom: 14 }}>
+              {perfil?.linkProprio ? (
+                <Field label="Nome do cliente">
+                  <select style={styles.input} value={pessoa.nome}
+                    onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)}>
+                    <option value="">Selecione…</option>
+                    {(params.clientes || []).map(cl => <option key={cl} value={cl}>{cl}</option>)}
+                  </select>
+                </Field>
+              ) : (
+                <Field label="Nome completo">
+                  <input style={styles.input} value={pessoa.nome}
+                    onChange={e => setPessoaCampo(pessoa.id, "nome", e.target.value)} />
+                </Field>
+              )}
+              <Field label="Perfil">
+                <select style={styles.input} value={pessoa.perfilId}
+                  onChange={e => setPessoaCampo(pessoa.id, "perfilId", e.target.value)}>
+                  {draftPerfis.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                </select>
+              </Field>
+              <Field label={perfil?.linkProprio ? "Senha" : "PIN"}>
+                <input style={{ ...styles.input, fontFamily: "'Roboto Mono',monospace", letterSpacing: 2 }}
+                  inputMode={perfil?.linkProprio ? "text" : "numeric"} maxLength={6} value={pessoa.pin}
+                  onChange={e => setPessoaCampo(pessoa.id, "pin",
+                    perfil?.linkProprio ? e.target.value.replace(/[^A-Za-z0-9]/g, "") : e.target.value.replace(/\D/g, ""))} />
+              </Field>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+              <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => alternarBloqueio(pessoa.id)}>
+                {pessoa.bloqueado ? <><CheckCircle2 size={14} /> Desbloquear</> : <><Lock size={14} /> Bloquear acesso</>}
+              </button>
+              {custom && (
+                <button style={{ ...styles.btnGhost, fontSize: 12.5 }} onClick={() => voltarAoPerfil(pessoa.id)}>
+                  <RefreshCw size={14} /> Voltar ao padrão do perfil
+                </button>
+              )}
+              <button style={{ ...styles.btnGhost, fontSize: 12.5, color: C.vermelho, borderColor: C.vermelho }}
+                onClick={() => removerPessoa(pessoa.id)}>
+                <Trash2 size={14} /> Excluir usuário
+              </button>
+            </div>
+
+            <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 11.5, fontWeight: 700,
+              textTransform: "uppercase", color: C.navy2, marginBottom: 6, letterSpacing: .2 }}>
+              Acessos deste usuário
+            </div>
+            <div style={{ fontSize: 11.5, color: C.prata, marginBottom: 10, lineHeight: 1.5 }}>
+              {custom
+                ? "Ajuste individual — vale só para esta pessoa, não afeta os outros do mesmo perfil."
+                : `Herdado do perfil ${perfil?.nome || ""}. Ao alterar algo aqui, vira um ajuste individual desta pessoa.`}
+            </div>
+            <EditorAcessos
+              telas={ef.telas} subMapa={ef.sub}
+              onTela={telaId => togglePessoaTela(pessoa.id, telaId)}
+              onSub={(abaId, subId) => togglePessoaSub(pessoa.id, abaId, subId)} />
+          </Modal>
+        );
+      })()}
 
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8 }}>
         {salvo && <span style={{ ...styles.pill, background: "#EAF6EE", color: C.verde }}><CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 3 }} /> Salvo</span>}
@@ -10577,9 +10590,11 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
       </>)}
 
-      {/* ===== CLIENTES ===== caixa recolhida: chips + botão que abre o cadastro */}
-      {subOn("clientes") && (<>
-      <SectionTitle icon={Building2}>Clientes Cadastrados <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
+      {/* ===== CLIENTES + DIREÇÕES ===== lado a lado — os dois são cadastros
+          de apoio do mesmo porte, ficam juntos pra aproveitar a largura. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(380px,1fr))", gap: 16, alignItems: "start" }}>
+      {subOn("clientes") && (<div>
+      <SectionTitle icon={Building2}>Cadastro de Clientes <Badge>{(draft.clientes || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>Os clientes aqui aparecem como opção no cadastro de operações e viram base da consolidação por cliente nos relatórios.</p>
       <div style={styles.card}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -10628,12 +10643,12 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         )}
       </div>
 
-      </>)}
+      </div>)}
 
       {/* ===== DIREÇÕES DE OPERAÇÃO ===== caixa mais compacta; Fotos de Evidência
           (4.1) mora dentro dela — mesma exigência padrão pra todas as direções,
           desobrigar uma específica é só zerar a quantidade mínima dela abaixo. */}
-      {subOn("direcoes") && (<>
+      {subOn("direcoes") && (<div>
       <SectionTitle icon={ArrowLeftRight}>Direções de Operação <Badge>{(draft.direcoes || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>
         O "sentido" de cada operação — aparece no cadastro (Novo Pré-Planejamento), nas tags das telas de
@@ -10748,10 +10763,12 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         )}
       </div>
 
-      </>)}
+      </div>)}
+      </div>
 
-      {/* ===== MOTIVOS DE PAUSA ===== caixa otimizada + botão que abre a inclusão */}
-      {subOn("motivospausa") && (<>
+      {/* ===== MOTIVOS DE PAUSA + VALORES ===== lado a lado */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(380px,1fr))", gap: 16, alignItems: "start" }}>
+      {subOn("motivospausa") && (<div>
       <SectionTitle icon={PauseCircle}>Motivos de Pausa <Badge>{(draft.motivosPausa || []).length}</Badge></SectionTitle>
       <p style={styles.helper}>
         Aparecem para o conferente escolher ao pausar uma operação (almoço, jantar, café, atendimento à diretoria
@@ -10805,10 +10822,10 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         )}
       </div>
 
-      </>)}
+      </div>)}
 
       {/* ===== VALORES ===== 6.1 MdO terceirizada · 6.2 Bônus custo · 6.3 Bônus distribuição */}
-      {subOn("valores") && (<>
+      {subOn("valores") && (<div>
       <SectionTitle icon={Settings}>Valores de Mão de Obra</SectionTitle>
       <p style={styles.helper}>Todos os valores e metas são livres para ajuste — negocie com a terceirizada ou refine metas conforme o histórico.</p>
       <div style={styles.card}>
@@ -10848,7 +10865,8 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
         </div>
       </div>
 
-      </>)}
+      </div>)}
+      </div>
 
       <div style={{ marginTop: 22, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button style={styles.btnPrimary} onClick={salvar}><CheckCircle2 size={17} /> Salvar parâmetros</button>
