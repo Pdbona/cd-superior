@@ -2859,9 +2859,10 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
      verdade de qual "linha" está aberta — substitui os antigos perfilAberto/
      conferenteAberto/gestorAberto (um por tipo de perfil). Vale
      "conferente" | "gestor" | id de um perfil próprio | null. Clicar num
-     perfil, no bloco da direita, seleciona (expande a edição do perfil ali
-     mesmo) E troca quem aparece no bloco da esquerda (usuários daquele
-     perfil). Usuário virou modal (usuarioModal) em vez de expandir na
+     perfil, no bloco da esquerda, seleciona (expande a edição do perfil ali
+     mesmo) E troca quem aparece no bloco da direita (usuários daquele
+     perfil) — lados trocados em 28/08/2026 via CSS `order`, sem mexer na
+     ordem no JSX. Usuário virou modal (usuarioModal) em vez de expandir na
      própria linha da tabela — a tabela em si saiu, cada perfil mostra só
      os usuários dele. */
   const [perfilSelecionado, setPerfilSelecionado] = useState(null);
@@ -3158,18 +3159,18 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
       {(subOn("perfisacesso") || subOn("usuarios")) && (<>
       <SectionTitle icon={Lock}>Perfis e Usuários <Badge>{draftPerfis.length + 2}</Badge></SectionTitle>
       <p style={styles.helper}>
-        Clique num <strong>perfil</strong>, no bloco da direita, para ver e alterar os acessos dele — os
-        usuários que têm esse perfil aparecem no bloco da esquerda. Clique num usuário para trocar o PIN,
+        Clique num <strong>perfil</strong>, no bloco da esquerda, para ver e alterar os acessos dele — os
+        usuários que têm esse perfil aparecem no bloco da direita. Clique num usuário para trocar o PIN,
         ajustar os acessos só dele, bloquear ou excluir.
       </p>
 
       <div style={{ display: "grid",
-        gridTemplateColumns: (subOn("perfisacesso") && subOn("usuarios")) ? "1.3fr 1fr" : "1fr",
+        gridTemplateColumns: (subOn("perfisacesso") && subOn("usuarios")) ? "1fr 1.3fr" : "1fr",
         gap: 16, alignItems: "start", marginBottom: 22 }}>
 
-        {/* ===== ESQUERDA — usuários do perfil selecionado ===== */}
+        {/* ===== USUÁRIOS do perfil selecionado — fica à direita ===== */}
         {subOn("usuarios") && (
-          <div>
+          <div style={{ order: 2 }}>
             {perfilSelecionado === "conferente" ? (
               <div style={styles.card}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
@@ -3236,7 +3237,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 </div>
                 <div style={styles.infoBox}>
                   O PIN de cada Gestor é cadastrado direto na tela do Administrador — este perfil fixo não
-                  tem lista de usuários aqui, só o escopo de acesso, no bloco à direita.
+                  tem lista de usuários aqui, só o escopo de acesso, no bloco à esquerda.
                 </div>
               </div>
             ) : perfilSelecionado ? (() => {
@@ -3358,18 +3359,18 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                 </div>
               );
             })() : (
-              <div style={styles.empty}>Selecione um perfil à direita para ver os usuários.</div>
+              <div style={styles.empty}>Selecione um perfil à esquerda para ver os usuários.</div>
             )}
           </div>
         )}
 
-        {/* ===== DIREITA — lista de perfis (clique seleciona e edita) ===== */}
+        {/* ===== PERFIS — lista clicável, fica à esquerda ===== */}
         {subOn("perfisacesso") && (
-          <div>
+          <div style={{ order: 1 }}>
             <div style={{ marginBottom: 12 }}>
               {!formPerfil ? (
-                <button style={{ ...styles.btnPrimary, width: "100%", justifyContent: "center" }} onClick={abrirFormPerfil}>
-                  <Plus size={15} /> Incluir perfil
+                <button style={{ ...styles.btnPrimary, background: C.verde, boxShadow: "0 2px 8px rgba(46,125,50,.25)", padding: "8px 16px", fontSize: 13 }} onClick={abrirFormPerfil}>
+                  <Plus size={14} /> Incluir perfil
                 </button>
               ) : (
                 <div style={{ ...styles.card, borderLeft: `4px solid ${C.laranja}` }}>
@@ -3416,7 +3417,7 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
 
             <div style={{ display: "grid", gap: 8 }}>
               {/* CONFERENTE — acesso fixo: só a tela do coletor. Cadastro de
-                 usuário (nome+PIN) fica no bloco à esquerda quando selecionado. */}
+                 usuário (nome+PIN) fica no bloco à direita quando selecionado. */}
               <div style={{ ...styles.card, padding: 0, overflow: "hidden",
                 borderLeft: `4px solid ${perfilSelecionado === "conferente" ? C.laranja : C.supVerde}` }}>
                 <button onClick={() => setPerfilSelecionado(s => s === "conferente" ? null : "conferente")}
@@ -3557,8 +3558,8 @@ function GestaoAcessos({ params, persistParams, sub, telasRestritas = TELAS_REST
                         {subOn("usuarios") && (
                           <div style={{ ...styles.infoBox, marginTop: 12 }}>
                             {nUsuarios > 0
-                              ? <>Os {nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""} deste perfil aparecem no bloco à esquerda.</>
-                              : "Ainda sem usuário — inclua um no bloco à esquerda."}
+                              ? <>Os {nUsuarios} usuário{nUsuarios !== 1 ? "s" : ""} deste perfil aparecem no bloco à direita.</>
+                              : "Ainda sem usuário — inclua um no bloco à direita."}
                           </div>
                         )}
                       </div>
