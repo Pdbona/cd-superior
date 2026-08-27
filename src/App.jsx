@@ -670,6 +670,18 @@ const minPorUnidade = (prod) => prod ? 60 / prod : null;
 /* meta em horas para uma operação concreta */
 function metaDaOperacao(op, tipo, params) {
   const fixa = tipo ? tipo.metaHoras : 0;
+  /* Tipo sem padrão de meta ainda (28/08/2026): em vez de forçar uma linha
+     de base chutada (volume/pessoas/horas que ninguém tem confiança pra
+     preencher ainda), a meta vem do tempo que o próprio planejamento
+     pretende gastar nesta operação (op.metaHorasPretendida). Sem isso
+     informado, cai pro fixo do tipo (mesmo fallback de sempre) só pra não
+     zerar a meta. Depois de 5 registros reais, a Calibragem de Metas passa
+     a sugerir estabelecer tipo.metaHoras — ver analisarProdutividade. */
+  if (tipo && tipo.semPadraoMeta) {
+    const pretendida = parseFloat(op.metaHorasPretendida) || 0;
+    return { horas: pretendida || fixa, dinamica: false, semPadrao: true,
+      motivo: pretendida ? "tempo pretendido informado pelo planejamento" : "sem tempo pretendido — usando meta fixa do tipo" };
+  }
   if (!params.metaDinamica) return { horas: fixa, dinamica: false, motivo: "meta fixa do tipo" };
   const prod = produtividadeBase(tipo);
   const pessoas = pessoasDaOperacao(op, tipo);
@@ -880,6 +892,36 @@ const TOLERANCIA_PCT = 10;    // abaixo disso a base é considerada boa
 
 function analisarProdutividade(ops, params) {
   return params.tipos.map(tipo => {
+    /* Tipo sem padrão de meta ainda (28/08/2026, ver metaDaOperacao): não
+       tem linha de base/produtividade — a amostra vem do TEMPO REAL das
+       operações concluídas (sem exigir volume), comparado com a meta atual
+       do tipo (o valor que cai como fallback quando ninguém informa tempo
+       pretendido numa operação nova). Aceitar a sugestão aqui estabelece
+       tipo.metaHoras e desliga semPadraoMeta — o tipo "se forma". */
+    if (tipo.semPadraoMeta) {
+      const validas = ops
+        .filter(o => o.tipoId === tipo.id && o.status === "concluida" && o.inicio && o.fim
+          && (!tipo.calibradoEm || o.fim > tipo.calibradoEm))
+        .map(o => ({ op: o, c: calcOp(o, params) }))
+        .filter(x => x.c.tempoReal && isFinite(x.c.tempoReal) && x.c.tempoReal > 0);
+
+      const n = validas.length;
+      const baseAtual = tipo.metaHoras || null;
+      if (n === 0) {
+        return { tipo, base: baseAtual, n: 0, suficiente: false, amostraMinima: MIN_AMOSTRA, modoTempo: true };
+      }
+      const tempos = validas.map(x => x.c.tempoReal).sort((a, b) => a - b);
+      const media = tempos.reduce((s, v) => s + v, 0) / n;
+      const mediana = n % 2 ? tempos[(n - 1) / 2] : (tempos[n / 2 - 1] + tempos[n / 2]) / 2;
+      const desvio = Math.sqrt(tempos.reduce((s, v) => s + (v - media) ** 2, 0) / n);
+      const cv = media ? (desvio / media) * 100 : 0;
+      const difPct = baseAtual ? ((mediana - baseAtual) / baseAtual) * 100 : null;
+      const suficiente = n >= MIN_AMOSTRA;
+      const precisaAjuste = suficiente && difPct != null && Math.abs(difPct) > TOLERANCIA_PCT;
+      return { tipo, base: baseAtual, n, validas, media, mediana, desvio, cv, difPct,
+        horasSugeridas: mediana, suficiente, precisaAjuste, amostraMinima: MIN_AMOSTRA, modoTempo: true };
+    }
+
     const base = produtividadeBase(tipo);
     const validas = ops
       .filter(o => o.tipoId === tipo.id && o.status === "concluida" && o.inicio && o.fim && o.volume > 0
@@ -3615,7 +3657,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
   const subOn = (id) => subLiberado(sub, id);
   /* Nenhum campo de seleção vem pré-preenchido: um cliente ou tipo herdado
      por descuido gera registro errado que só aparece no fechamento. */
-  const empty = { ref: "", idCliente: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "" };
+  const empty = { ref: "", idCliente: "", cliente: "", tipoId: "", direcao: "", dataPlanejada: "", volume: "", skus: "", qtdTerceirizada: "", qtdPessoasSuperior: "", qtdSuperior: "", qtdPessoasRateio: "", metaHorasPretendida: "" };
   const [form, setForm] = useState(empty);
   const [erro, setErro] = useState("");
   const [ajusteAberto, setAjusteAberto] = useState(false);
@@ -3639,6 +3681,12 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
        entram na conta de meta. */
     const qpr = form.qtdPessoasRateio === "" ? null : parseInt(form.qtdPessoasRateio || 0, 10);
     if (!ehPaletizado && qt + qps <= 0) return setErro("Informe quantas pessoas vão executar a operação.");
+    /* Tipo sem padrão de meta ainda (28/08/2026): sem linha de base, a meta
+       só existe se alguém informar quanto tempo pretende gastar — ver
+       metaDaOperacao. */
+    if (tipoEscolhido?.semPadraoMeta && !(parseFloat(form.metaHorasPretendida) > 0)) {
+      return setErro("Este tipo ainda não tem padrão de meta — informe o tempo pretendido para esta operação.");
+    }
     const dp = inputParaData(form.dataPlanejada);
     if (!dp) return setErro("Informe a data planejada da operação.");
     setErro("");
@@ -3647,6 +3695,7 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
       volume: parseInt(form.volume || 0, 10),
       skus: parseInt(form.skus || 0, 10),
       qtdTerceirizada: qt, qtdPessoasSuperior: qps, qtdSuperior: qs, qtdPessoasRateio: qpr,
+      metaHorasPretendida: tipoEscolhido?.semPadraoMeta ? (parseFloat(form.metaHorasPretendida) || null) : null,
       status: "pendente", inicio: null, fim: null, observacao: "", colaboradores: [], ajustes: [], createdAt: Date.now() }, ...ops]);
     setForm(empty);
   };
@@ -3795,6 +3844,16 @@ function Operacoes({ ops, params, persistOps, diasTerc, persistDiasTerc, sub }) 
               {params.tipos.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
           </Field>
+          {tipoSel?.semPadraoMeta && (
+            <Field label="Tempo pretendido (horas)" required>
+              <input style={styles.input} type="number" min="0.1" step="0.25" value={form.metaHorasPretendida}
+                onChange={e => set("metaHorasPretendida", e.target.value)} placeholder="Ex.: 4" />
+              <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
+                {tipoSel.label} ainda não tem padrão de meta — o tempo informado aqui vira a meta desta operação.
+                Depois de 5 registros reais, a Calibragem de Metas passa a sugerir uma meta fixa.
+              </div>
+            </Field>
+          )}
           <Field label="Direção" required>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {(params.direcoes || DEFAULT_PARAMS.direcoes).map(d => (
@@ -4736,6 +4795,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
       qtdPessoasSuperior: op.qtdPessoasSuperior ?? "",
       qtdSuperior: op.qtdSuperior ?? "",
       qtdPessoasRateio: op.qtdPessoasRateio ?? "",
+      metaHorasPretendida: op.metaHorasPretendida ?? "",
       dataPlanejada: dataParaInput(diaPlanejado(op)),
       inicio: paraInput(op.inicio),
       fim: paraInput(op.fim),
@@ -4808,6 +4868,7 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
       qtdPessoasSuperior: draft.qtdPessoasSuperior !== "" ? parseInt(draft.qtdPessoasSuperior, 10) : o.qtdPessoasSuperior,
       qtdSuperior: draft.qtdSuperior !== "" ? parseInt(draft.qtdSuperior, 10) : o.qtdSuperior,
       qtdPessoasRateio: draft.qtdPessoasRateio !== "" ? parseInt(draft.qtdPessoasRateio, 10) : o.qtdPessoasRateio,
+      metaHorasPretendida: draft.metaHorasPretendida !== "" ? parseFloat(draft.metaHorasPretendida) : o.metaHorasPretendida,
       status: draft.status,
       dataPlanejada: novaData,
       inicio: (draft.status === "pendente" || draft.status === "cancelada") ? null : ini,
@@ -5093,6 +5154,15 @@ function AjusteRegistros({ ops, params, persistOps, diasTerc, persistDiasTerc, s
                           );
                         })()}
                       </Field>
+                      {params.tipos.find(tp => tp.id === draft.tipoId)?.semPadraoMeta && (
+                        <Field label="Tempo pretendido (horas)">
+                          <input type="number" min="0.1" step="0.25" style={styles.input} value={draft.metaHorasPretendida}
+                            onChange={e => setDraft(d => ({ ...d, metaHorasPretendida: e.target.value }))} />
+                          <div style={{ fontSize: 11, color: C.prata, marginTop: 4, lineHeight: 1.4 }}>
+                            Tipo sem padrão de meta ainda — este valor é a meta desta operação.
+                          </div>
+                        </Field>
+                      )}
                       {params.tipos.find(tp => tp.id === draft.tipoId)?.modalidade !== "paletizado" && (
                         <>
                           <Field label="Qtd de Terceiros nesta Operação">
@@ -10190,7 +10260,11 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
   /* devolve o id para o chamador abrir o modal já no tipo recém-criado */
   const addTipo = () => {
     const id = uid();
-    setDraft(d => ({ ...d, tipos: [...d.tipos, { id, label: "Nova operação", pessoas: 4, metaHoras: 3, icon: "box", modalidade: "manual" }] }));
+    /* semPadraoMeta nasce true (28/08/2026): tipo novo dificilmente já tem
+       um padrão de meta conhecido — o Gestor confirma "Sim" no modal se
+       realmente tiver os números pra linha de base, em vez de o app supor
+       isso por padrão e empurrar um chute de volume/pessoas/tempo. */
+    setDraft(d => ({ ...d, tipos: [...d.tipos, { id, label: "Nova operação", pessoas: 4, metaHoras: 3, icon: "box", modalidade: "manual", semPadraoMeta: true }] }));
     setSalvo(false);
     return id;
   };
@@ -10305,12 +10379,27 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13,
                     color: C.navy, lineHeight: 1.25 }}>{t.label}</div>
-                  <span style={{ ...styles.pill, marginTop: 4,
-                    background: pal ? "#EEF2F8" : "#EAF6EE", color: pal ? C.navy2 : C.supVerde }}>
-                    {pal ? "Paletizado" : "Manual"}
+                  <span style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
+                    <span style={{ ...styles.pill, background: pal ? "#EEF2F8" : "#EAF6EE", color: pal ? C.navy2 : C.supVerde }}>
+                      {pal ? "Paletizado" : "Manual"}
+                    </span>
+                    {t.semPadraoMeta && (
+                      <span style={{ ...styles.pill, background: "#FFF4EB", color: C.laranjaEsc }}>Sem padrão de meta</span>
+                    )}
                   </span>
                 </div>
               </div>
+              {t.semPadraoMeta ? (
+                <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 8, display: "grid", gap: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                    <span style={{ color: C.prata }}>Meta atual</span>
+                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.texto }}>{hhmm(parseFloat(t.metaHoras))}</strong>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.prata, lineHeight: 1.4 }}>
+                    Cada operação informa o tempo pretendido — a meta vira fixa depois de 5 registros reais.
+                  </div>
+                </div>
+              ) : (
               <div style={{ borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 8, display: "grid", gap: 4 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                   <span style={{ color: C.prata }}>Produtividade</span>
@@ -10340,7 +10429,8 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                   </div>
                 )}
               </div>
-              {!prod && (
+              )}
+              {!t.semPadraoMeta && !prod && (
                 <div style={{ fontSize: 10.5, color: C.laranjaEsc, fontWeight: 700 }}>
                   <AlertTriangle size={10} style={{ verticalAlign: -1 }} /> Linha de base incompleta
                 </div>
@@ -10410,12 +10500,33 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                     onChange={e => setTipo(t.id, "pessoas", e.target.value)} />
                 </Field>
               )}
-              <Field label="Meta fixa (horas)">
+              <Field label={t.semPadraoMeta ? "Meta atual (até calibrar)" : "Meta fixa (horas)"}>
                 <input style={styles.input} type="number" min="0.1" step="0.5" value={t.metaHoras}
                   onChange={e => setTipo(t.id, "metaHoras", e.target.value)} />
               </Field>
             </div>
 
+            {/* Padrão de meta (28/08/2026): pra tipo novo (ex.: uma tarefa
+               esporádica tipo "Limpeza do Galpão") ninguém tem confiança pra
+               chutar uma linha de base ainda — melhor deixar cada operação
+               informar o tempo pretendido e só formar a meta depois de
+               registros reais (ver metaDaOperacao/analisarProdutividade). */}
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
+              <label style={styles.fieldLabel}>Já tem um padrão de meta (linha de base) pra este tipo?</label>
+              <div style={{ display: "flex", gap: 8, maxWidth: 260 }}>
+                <button type="button" onClick={() => setTipo(t.id, "semPadraoMeta", false)}
+                  style={{ ...styles.toggle, ...(!t.semPadraoMeta ? styles.toggleOn : {}) }}>Sim</button>
+                <button type="button" onClick={() => setTipo(t.id, "semPadraoMeta", true)}
+                  style={{ ...styles.toggle, ...(t.semPadraoMeta ? styles.toggleOn : {}) }}>Ainda não</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: C.prata, marginTop: 6, lineHeight: 1.45 }}>
+                {!t.semPadraoMeta
+                  ? "Cadastre a operação de referência abaixo (volume × pessoas × tempo) — o app calcula a produtividade e a meta de cada operação."
+                  : "Sem chutar linha de base: no cadastro da operação, quem planeja informa o tempo pretendido direto. Depois de 5 registros reais, a Calibragem de Metas (abaixo) sugere estabelecer uma meta."}
+              </div>
+            </div>
+
+            {!t.semPadraoMeta && (
             <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.prataClaro}` }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.prata, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>
                 Linha de base — operação de referência
@@ -10448,6 +10559,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                 </div>
               )}
             </div>
+            )}
 
             {!pal && (
               <div style={{ fontSize: 11.5, color: C.prata, marginTop: 12 }}>
@@ -10509,7 +10621,17 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                 </div>
               </div>
 
-              {a.base && (
+              {a.modoTempo ? (
+                <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7, marginBottom: 10 }}>
+                  <div>
+                    <span style={{ color: C.prata }}>Meta atual:</span>{" "}
+                    <strong>{hhmm(a.base || a.tipo.metaHoras)}</strong>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.prata }}>
+                    Sem padrão de meta ainda — cada operação informa o tempo pretendido.
+                  </div>
+                </div>
+              ) : a.base && (
                 <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7, marginBottom: 10 }}>
                   <div>
                     <span style={{ color: C.prata }}>Base atual:</span>{" "}
@@ -10524,17 +10646,20 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
               {semDados ? (
                 <div style={{ ...styles.infoBox, fontSize: 12 }}>
-                  Sem operações concluídas com volume informado. Assim que houver registros,
-                  a análise aparece aqui.
+                  {a.modoTempo
+                    ? "Sem operações concluídas ainda. Assim que houver registros, a análise aparece aqui."
+                    : "Sem operações concluídas com volume informado. Assim que houver registros, a análise aparece aqui."}
                 </div>
               ) : (
                 <>
                   <div style={{ fontSize: 12.5, color: C.texto, lineHeight: 1.7 }}>
                     <div>
                       <span style={{ color: C.prata }}>Realizado (mediana):</span>{" "}
-                      <strong style={{ color: cor }}>{a.mediana.toFixed(1)} {a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}</strong>
+                      <strong style={{ color: cor }}>
+                        {a.modoTempo ? hhmm(a.mediana) : `${a.mediana.toFixed(1)} ${a.tipo.modalidade === "paletizado" ? "un/h" : "un/pessoa/h"}`}
+                      </strong>
                       {a.difPct != null && (
-                        <span style={{ color: a.difPct >= 0 ? C.verde : C.vermelho, fontWeight: 700, marginLeft: 6 }}>
+                        <span style={{ color: a.difPct >= 0 ? (a.modoTempo ? C.vermelho : C.verde) : (a.modoTempo ? C.verde : C.vermelho), fontWeight: 700, marginLeft: 6 }}>
                           {a.difPct >= 0 ? "▲" : "▼"} {Math.abs(a.difPct).toFixed(0)}%
                         </span>
                       )}
@@ -10547,15 +10672,26 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
 
                   {a.suficiente && a.precisaAjuste && a.horasSugeridas && (
                     <div style={{ marginTop: 10, padding: "10px 12px", background: "#FFF4EB", border: `1px solid ${C.laranja}`, borderRadius: 8, fontSize: 12.5, color: C.laranjaEsc, lineHeight: 1.6 }}>
-                      <strong>Sugestão de recalibragem</strong><br />
-                      A equipe vem entregando {a.difPct > 0 ? "acima" : "abaixo"} da base.
-                      Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
-                      o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
-                      <strong>{hhmm(a.horasSugeridas)}</strong>.
+                      <strong>{a.modoTempo ? "Sugestão de meta" : "Sugestão de recalibragem"}</strong><br />
+                      {a.modoTempo ? (
+                        <>Com {a.n} registro{a.n !== 1 ? "s" : ""} real{a.n !== 1 ? "is" : ""}, dá pra estabelecer uma meta:
+                          de <strong>{hhmm(a.base || a.tipo.metaHoras)}</strong> pretendida para{" "}
+                          <strong>{hhmm(a.horasSugeridas)}</strong> (mediana do realizado).</>
+                      ) : (
+                        <>A equipe vem entregando {a.difPct > 0 ? "acima" : "abaixo"} da base.
+                          Para {a.tipo.baseVolume?.toLocaleString("pt-BR")} un{a.tipo.modalidade !== "paletizado" ? <> com {a.tipo.basePessoas} pessoas</> : null},
+                          o tempo de referência passaria de <strong>{hhmm(a.tipo.baseHoras)}</strong> para{" "}
+                          <strong>{hhmm(a.horasSugeridas)}</strong>.</>
+                      )}
                       <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                         <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
                           onClick={() => {
-                            setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2));
+                            if (a.modoTempo) {
+                              setTipo(a.tipo.id, "metaHoras", a.horasSugeridas.toFixed(2));
+                              setTipo(a.tipo.id, "semPadraoMeta", false);
+                            } else {
+                              setTipo(a.tipo.id, "baseHoras", a.horasSugeridas.toFixed(2));
+                            }
                             setTipo(a.tipo.id, "calibradoEm", Date.now());
                           }}>
                           <CheckCircle2 size={14} /> Aplicar sugestão do app
@@ -10572,7 +10708,12 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                           <button style={{ ...styles.btnGhost, fontSize: 12, padding: "6px 12px" }}
                             disabled={!(parseFloat(horasCustom[a.tipo.id]) > 0)}
                             onClick={() => {
-                              setTipo(a.tipo.id, "baseHoras", horasCustom[a.tipo.id]);
+                              if (a.modoTempo) {
+                                setTipo(a.tipo.id, "metaHoras", horasCustom[a.tipo.id]);
+                                setTipo(a.tipo.id, "semPadraoMeta", false);
+                              } else {
+                                setTipo(a.tipo.id, "baseHoras", horasCustom[a.tipo.id]);
+                              }
                               setTipo(a.tipo.id, "calibradoEm", Date.now());
                               setHorasCustom(h => ({ ...h, [a.tipo.id]: "" }));
                             }}>
@@ -10582,6 +10723,7 @@ function Parametros({ params, persistParams, persistOps, ops, sub }) {
                       </div>
                       <div style={{ marginTop: 8, fontSize: 11.5 }}>
                         Qualquer um dos botões só preenche o campo acima — o valor passa a valer depois de <strong>Salvar parâmetros</strong>.
+                        {a.modoTempo && " Aplicar também estabelece a meta do tipo — novas operações deixam de pedir o tempo pretendido."}
                       </div>
                     </div>
                   )}
