@@ -93,36 +93,51 @@ const MENU_LATERAL = [
 const TELA_COLETOR = { id: "coletor", label: "Tela do Coletor (Conferente)", icon: HardHat };
 
 /* URL do App de Gestão Comercial — projeto separado, publicado à parte
-   (GitHub Pages, repo próprio). Usado tanto pelo botão COMERCIAL do Hub
-   (HubEntrada — pede usuário + senha antes de abrir, ver validarComercial)
-   quanto pelo acesso "Comercial" abaixo (dentro do painel do Gestor, só
-   pra quem tiver a tela liberada no perfil). */
+   (GitHub Pages, repo próprio). Usado pelo acesso "Comercial" abaixo
+   (dentro do painel do Gestor, só pra quem tiver a tela liberada no
+   perfil) — o antigo botão COMERCIAL solto do Hub (com usuário+senha
+   próprios) saiu de lá em 20/ago/2026, não existe mais nenhuma porta de
+   entrada direta por fora deste atalho. */
 const URL_APP_COMERCIAL = "https://Pdbona.github.io/gestao-comercial-superior/";
 
-/* Monta o link do Comercial já levando os subitens que essa pessoa NÃO tem
-   (combinado com Pablo em 17/ago/2026 — "forma rápida"): o Comercial não
-   tem login próprio nem enxerga o Firestore deste app (é outro projeto
-   Firebase), então em vez de portar RBAC de verdade pra lá, mandamos só o
-   que falta esconder na própria URL (?ocultar=id1,id2). Sem parâmetro =
-   acesso total, igual sempre foi — mantém compatível com quem abre o link
-   direto, sem passar por aqui. subComercial é o `sub.comercial` do perfil
-   ou pessoa (ou params.permissoesGestorSub.comercial pro Gestor); mesma
-   regra opt-out do resto do app: só esconde o que estiver `false`. */
-const urlComercial = (subComercial) => {
+/* Monta o link do Comercial já levando os subitens que essa pessoa NÃO tem,
+   se ela pode editar e (perfil Cliente) qual cliente ela pode ver — combinado
+   com Pablo em 17/ago/2026 ("forma rápida") e reforçado em 27/ago/2026: o
+   Comercial não tem login próprio nem enxerga o Firestore deste app (é outro
+   projeto Firebase), então em vez de portar RBAC de verdade pra lá, mandamos
+   só o que a URL precisa saber. `ocultar=id1,id2` esconde os subitens
+   marcados `false` (regra opt-out de sempre — subComercial é o `sub.comercial`
+   do perfil ou pessoa, ou params.permissoesGestorSub.comercial pro Gestor).
+   `cliente=<nome>` só vai preenchido quando quem abriu é um perfil Cliente
+   (linkProprio) — o Comercial usa isso pra mostrar só a linha desse cliente
+   e travar toda edição, não importa o resto. `editor=1|0` sempre vai
+   explícito nesse atalho (ver podeEditarComercial em AppGestor) — só quem o
+   Administrador marcou como perfil "Comercial" ou "Gestor Geral" (ou o
+   próprio Administrador, que abre por um link salvo à parte, sem passar por
+   aqui) chega com `editor=1`; todo o resto (Gestor fixo incluído — não é
+   mais o mesmo que "Gestor Geral") abre em modo só leitura. `editor` sai
+   sempre preenchido por quem passa por este atalho — é o que faz o
+   Comercial parar de cair no acesso total por padrão; só uma URL crua,
+   aberta por fora deste painel (sem vir daqui), continua com acesso total
+   lá do outro lado (ver comentário em GestaoComercialSuperior.jsx). */
+const urlComercial = (subComercial, clienteRestrito, podeEditar) => {
   const ocultos = (SUBITENS_POR_ABA.comercial || [])
     .filter(s => subComercial?.[s.id] === false).map(s => s.id);
-  return ocultos.length ? `${URL_APP_COMERCIAL}?ocultar=${encodeURIComponent(ocultos.join(","))}` : URL_APP_COMERCIAL;
+  const params = new URLSearchParams();
+  if (ocultos.length) params.set("ocultar", ocultos.join(","));
+  if (clienteRestrito) params.set("cliente", clienteRestrito);
+  params.set("editor", podeEditar ? "1" : "0");
+  const qs = params.toString();
+  return qs ? `${URL_APP_COMERCIAL}?${qs}` : URL_APP_COMERCIAL;
 };
 
 /* Acesso ao App de Gestão Comercial — igual à Tela do Coletor, não é uma
    aba de TABS_GESTOR (é outro app, outro repo, outro deploy). Combinado
    com Pablo em 17/ago/2026: em vez de portar o RBAC inteiro pro Comercial
-   (que hoje só tem 2 senhas fixas, sem cadastro de usuário), o acesso
-   entra como mais uma opção de tela no perfil daqui — quem tiver marcado
-   ganha um atalho no painel do Gestor que abre o Comercial numa aba nova.
-   Não mexe na autenticação própria do Comercial (continua com as 2 portas
-   fixas dela) nem no botão livre do Hub (HubEntrada), que continua sem
-   checar perfil nenhum. */
+   (que não tem cadastro de usuário próprio), o acesso entra como mais uma
+   opção de tela no perfil daqui — quem tiver marcado ganha um atalho no
+   painel do Gestor que abre o Comercial numa aba nova, já levando o que
+   essa pessoa pode ver/editar lá (ver urlComercial/podeEditarComercial). */
 const TELA_COMERCIAL = { id: "comercial", label: "App Gestão Comercial (link externo)", icon: DollarSign };
 
 /* Acesso ao App Gestão ADM — mesmo modelo do Comercial: outro app, outro
@@ -2524,6 +2539,20 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
      do Comercial com os subitens que essa pessoa não tem, já que o Comercial
      não enxerga o RBAC daqui (outro projeto Firebase — ver urlComercial). */
   const subComercial = (permissoes ? sub : params.permissoesGestorSub)?.comercial;
+  /* Quem pode EDITAR a Tabela Comercial pelo atalho acima, não só abrir pra
+     ver — combinado com Pablo em 27/ago/2026: antes, abrir o link já dava
+     edição total pra qualquer perfil com a tela marcada (inclusive
+     perfil Cliente, ver clienteRestrito abaixo). Agora só os dois perfis
+     próprios "Comercial" e "Gestor Geral" (cadastrados em Perfis e
+     Usuários) chegam como editor lá do outro lado — todo o resto,
+     INCLUSIVE o Gestor fixo (login "Gestor" — não é o mesmo perfil que
+     "Gestor Geral"), abre em modo só leitura. O Administrador edita, mas
+     não passa por aqui: ele não tem este atalho no painel (AppAdmin é
+     outra tela), então segue abrindo o Comercial por um link salvo à
+     parte — cai no acesso total de urlComercial() sem parâmetro nenhum. */
+  const podeEditarComercial = tituloPainel
+    ? ["comercial", "gestor geral"].includes(tituloPainel.trim().toLowerCase())
+    : false;
   /* Acesso ao App Gestão ADM — mesma regra opt-out/opt-in do Comercial,
      mesmo link externo sem RBAC próprio (ver TELA_ADMINISTRATIVO). */
   const podeAdministrativo = permissoes ? permissoesEfetivas?.administrativo === true : permissoesEfetivas?.administrativo !== false;
@@ -2558,7 +2587,7 @@ function AppGestor({ ops, opsForecast, anonimizarCliente, params, persistOps, pe
   };
   const clicarItemMenu = (item) => {
     if (item.especial === "coletor") setModoColetor(true);
-    else if (item.especial === "comercial") window.open(urlComercial(subComercial), "_blank", "noopener,noreferrer");
+    else if (item.especial === "comercial") window.open(urlComercial(subComercial, clienteRestrito, podeEditarComercial), "_blank", "noopener,noreferrer");
     else if (item.especial === "administrativo") window.open(urlAdministrativo(usuario, subAdministrativo), "_blank", "noopener,noreferrer");
     else setTab(item.id);
     setMenuMobileAberto(false);
