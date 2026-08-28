@@ -7726,32 +7726,27 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
           : "Nenhum cliente encontrado nesta importação."} />
       ) : (
         <>
-          {/* Resumo geral — pedido por Pablo em 18/ago/2026. Na tela do
-             Cliente, letra um pouco maior e mais 4 números (combinado com
-             Pablo em 27/ago/2026): Total de SKU (códigos distintos, não
-             soma de qtd.) e os 3 totais por tipo de veículo (ver
-             resumoCategorias) — não faz sentido pra visão do Gestor com
-             vários clientes juntos, então só entra quando clienteRestrito. */}
-          <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16,
-            fontSize: clienteRestrito ? 13.5 : styles.infoBox.fontSize }}>
-            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: clienteRestrito ? 13.5 : 12.5, color: C.navy, textTransform: "uppercase", letterSpacing: .3 }}>
-              Total geral{clienteRestrito ? "" : ` (${clientesVisiveis.length} ${clientesVisiveis.length === 1 ? "cliente" : "clientes"})`}
-            </span>
-            <span>Qtd.: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{totalGeral.qtd.toLocaleString("pt-BR")}</strong></span>
-            <span>Valor: <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.verde }}>{brl(totalGeral.valor)}</strong></span>
-            {resumoCategorias && (
-              <>
-                <span>SKUs: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.totalSku.toLocaleString("pt-BR")}</strong></span>
-                <span>Carga (Aro ≥ 21): <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.carga.toLocaleString("pt-BR")}</strong></span>
-                <span>Moto (CEAT): <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.moto.toLocaleString("pt-BR")}</strong></span>
-                <span>Passeio: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.passeio.toLocaleString("pt-BR")}</strong></span>
-              </>
-            )}
-          </div>
+          {/* Resumo geral — pedido por Pablo em 18/ago/2026. Só entra na
+             visão do Gestor (vários clientes juntos): na tela do Cliente
+             virava número repetido em cima do próprio card do cliente (que
+             já tem Qtd./Valor Disponível) — combinado com Pablo em
+             27/ago/2026, essa barra sai e os números (inclusive os 4 novos
+             de SKU/Carga/Moto/Passeio, ver resumoCategorias) entram dentro
+             do card mesmo, não mais numa barra solta acima. */}
+          {!clienteRestrito && (
+            <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16 }}>
+              <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, textTransform: "uppercase", letterSpacing: .3 }}>
+                Total geral ({clientesVisiveis.length} {clientesVisiveis.length === 1 ? "cliente" : "clientes"})
+              </span>
+              <span>Qtd.: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{totalGeral.qtd.toLocaleString("pt-BR")}</strong></span>
+              <span>Valor: <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.verde }}>{brl(totalGeral.valor)}</strong></span>
+            </div>
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 14 }}>
             {clientesVisiveis.map(c => (
-              <div key={c.cliente} style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column" }}>
+              <div key={c.cliente} style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column",
+                fontSize: clienteRestrito ? 13.5 : undefined }}>
                 <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.verde, marginBottom: 14, lineHeight: 1.3 }}>
                   {c.cliente}
                 </div>
@@ -7759,19 +7754,38 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                   <div style={styles.kpiLabel}>Qtd. Disponível</div>
                   <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>{c.qtdTotal.toLocaleString("pt-BR")}</div>
                 </div>
-                <div style={{ marginBottom: 16 }}>
+                <div style={{ marginBottom: clienteRestrito ? 10 : 16 }}>
                   <div style={styles.kpiLabel}>Valor Disponível</div>
                   <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, color: C.verde, whiteSpace: "nowrap" }}>{brl(c.valorTotal)}</div>
                 </div>
                 {/* Qtd. de SKU — só nos demais perfis, não no perfil Cliente
-                   (combinado com Pablo em 27/ago/2026): a tela do Cliente já
-                   mostra isso na barra "Total geral" acima (ver
-                   resumoCategorias.totalSku), não precisa repetir aqui. */}
+                   (que ganha os 4 números — SKUs/Carga/Moto/Passeio — logo
+                   abaixo, dentro deste mesmo card). */}
                 {!clienteRestrito && (
                   <div style={{ marginBottom: 16 }}>
                     <div style={styles.kpiLabel}>Qtd. de SKU</div>
                     <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>
                       {new Set(c.itens.map(it => it.sku)).size.toLocaleString("pt-BR")}
+                    </div>
+                  </div>
+                )}
+                {clienteRestrito && resumoCategorias && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 14px", marginBottom: 16 }}>
+                    <div>
+                      <div style={styles.kpiLabel}>SKUs</div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.totalSku.toLocaleString("pt-BR")}</div>
+                    </div>
+                    <div>
+                      <div style={styles.kpiLabel}>Carga (Aro ≥ 21)</div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.carga.toLocaleString("pt-BR")}</div>
+                    </div>
+                    <div>
+                      <div style={styles.kpiLabel}>Moto (CEAT)</div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.moto.toLocaleString("pt-BR")}</div>
+                    </div>
+                    <div>
+                      <div style={styles.kpiLabel}>Passeio</div>
+                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.passeio.toLocaleString("pt-BR")}</div>
                     </div>
                   </div>
                 )}
