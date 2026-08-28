@@ -7538,6 +7538,11 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
 
   const [clienteAberto, setClienteAberto] = useState(null);
   const [filtroAberto, setFiltroAberto] = useState(false);
+  /* Select dentro dos cards "Quantidade por SKU"/"Quantidade por Aro", na
+     tela do Cliente — combinado com Pablo em 27/ago/2026, pra achar um
+     código sem rolar a lista toda. "" = mostra todos (padrão). */
+  const [skuCardFiltro, setSkuCardFiltro] = useState("");
+  const [aroCardFiltro, setAroCardFiltro] = useState("");
 
   const recarregar = useCallback(async () => {
     setCarregando(true);
@@ -7642,6 +7647,25 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
     });
     return Array.from(porAro.entries()).map(([aro, qtd]) => ({ aro, qtd })).sort((a, b) => b.qtd - a.qtd);
   }, [clienteRestrito, clientesVisiveis]);
+  /* Total de SKU (contagem de códigos distintos) + pneus por tipo de
+     veículo — só na tela do Cliente (combinado com Pablo em 27/ago/2026).
+     Classificação por prioridade, igual o Pablo descreveu: Carga primeiro
+     (aro reconhecido ≥ 21 — R21/R22/R22.5, únicos aros de carga na frota),
+     senão Moto (modelo CEAT em algum lugar da descrição — só marca CEAT em
+     item de moto, na frota atual), senão Passeio (os demais, igual pedido —
+     inclusive item sem aro reconhecido, ex.: carga não identificada). */
+  const resumoCategorias = useMemo(() => {
+    if (!clienteRestrito || !clientesVisiveis[0]) return null;
+    const itens = clientesVisiveis[0].itens;
+    let carga = 0, moto = 0, passeio = 0;
+    itens.forEach(it => {
+      const aroNum = it.aro ? parseFloat(it.aro.replace("R", "")) : null;
+      if (aroNum !== null && aroNum >= 21) carga += it.qtd;
+      else if (/ceat/i.test(it.descricao)) moto += it.qtd;
+      else passeio += it.qtd;
+    });
+    return { totalSku: new Set(itens.map(it => it.sku)).size, carga, moto, passeio };
+  }, [clienteRestrito, clientesVisiveis]);
 
   if (carregando) {
     return (
@@ -7702,13 +7726,27 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
           : "Nenhum cliente encontrado nesta importação."} />
       ) : (
         <>
-          {/* Resumo geral — pedido por Pablo em 18/ago/2026 */}
-          <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16 }}>
-            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, textTransform: "uppercase", letterSpacing: .3 }}>
+          {/* Resumo geral — pedido por Pablo em 18/ago/2026. Na tela do
+             Cliente, letra um pouco maior e mais 4 números (combinado com
+             Pablo em 27/ago/2026): Total de SKU (códigos distintos, não
+             soma de qtd.) e os 3 totais por tipo de veículo (ver
+             resumoCategorias) — não faz sentido pra visão do Gestor com
+             vários clientes juntos, então só entra quando clienteRestrito. */}
+          <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16,
+            fontSize: clienteRestrito ? 13.5 : styles.infoBox.fontSize }}>
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: clienteRestrito ? 13.5 : 12.5, color: C.navy, textTransform: "uppercase", letterSpacing: .3 }}>
               Total geral{clienteRestrito ? "" : ` (${clientesVisiveis.length} ${clientesVisiveis.length === 1 ? "cliente" : "clientes"})`}
             </span>
             <span>Qtd.: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{totalGeral.qtd.toLocaleString("pt-BR")}</strong></span>
             <span>Valor: <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.verde }}>{brl(totalGeral.valor)}</strong></span>
+            {resumoCategorias && (
+              <>
+                <span>SKUs: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.totalSku.toLocaleString("pt-BR")}</strong></span>
+                <span>Carga (Aro ≥ 21): <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.carga.toLocaleString("pt-BR")}</strong></span>
+                <span>Moto (CEAT): <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.moto.toLocaleString("pt-BR")}</strong></span>
+                <span>Passeio: <strong style={{ fontFamily: "'Roboto Mono',monospace" }}>{resumoCategorias.passeio.toLocaleString("pt-BR")}</strong></span>
+              </>
+            )}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 14 }}>
@@ -7725,6 +7763,18 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                   <div style={styles.kpiLabel}>Valor Disponível</div>
                   <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, color: C.verde, whiteSpace: "nowrap" }}>{brl(c.valorTotal)}</div>
                 </div>
+                {/* Qtd. de SKU — só nos demais perfis, não no perfil Cliente
+                   (combinado com Pablo em 27/ago/2026): a tela do Cliente já
+                   mostra isso na barra "Total geral" acima (ver
+                   resumoCategorias.totalSku), não precisa repetir aqui. */}
+                {!clienteRestrito && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={styles.kpiLabel}>Qtd. de SKU</div>
+                    <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>
+                      {new Set(c.itens.map(it => it.sku)).size.toLocaleString("pt-BR")}
+                    </div>
+                  </div>
+                )}
                 <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center", marginTop: "auto" }} onClick={() => setClienteAberto(c.cliente)}>
                   <Search size={15} /> Detalhes
                 </button>
@@ -7733,11 +7783,19 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
 
             {resumoPorSku.length > 0 && (
               <div style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, marginBottom: 10 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy, marginBottom: 10 }}>
                   Quantidade por SKU
                 </div>
+                {/* Select em vez de digitar (combinado com Pablo em
+                   27/ago/2026) — escolhe um SKU pra ver só ele, sem rolar a
+                   lista toda. "" = todos, é o padrão. */}
+                <select value={skuCardFiltro} onChange={e => setSkuCardFiltro(e.target.value)}
+                  style={{ ...styles.input, fontSize: 13, padding: "7px 10px", marginBottom: 10 }}>
+                  <option value="">Todos os SKUs</option>
+                  {resumoPorSku.map(r => <option key={r.sku} value={r.sku}>{r.sku}</option>)}
+                </select>
                 <div style={{ overflowY: "auto", maxHeight: 280 }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead>
                       <tr>
                         <th style={{ ...styles.th, position: "sticky", top: 0 }}>SKU</th>
@@ -7745,7 +7803,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {resumoPorSku.map(r => (
+                      {(skuCardFiltro ? resumoPorSku.filter(r => r.sku === skuCardFiltro) : resumoPorSku).map(r => (
                         <tr key={r.sku}>
                           <td style={styles.tdMono} title={r.descricao}>{r.sku}</td>
                           <td style={{ ...styles.tdMono, textAlign: "right" }}>{r.qtd.toLocaleString("pt-BR")}</td>
@@ -7759,11 +7817,16 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
 
             {resumoPorAro.length > 0 && (
               <div style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, marginBottom: 10 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: C.navy, marginBottom: 10 }}>
                   Quantidade por Aro
                 </div>
+                <select value={aroCardFiltro} onChange={e => setAroCardFiltro(e.target.value)}
+                  style={{ ...styles.input, fontSize: 13, padding: "7px 10px", marginBottom: 10 }}>
+                  <option value="">Todos os aros</option>
+                  {resumoPorAro.map(r => <option key={r.aro} value={r.aro}>{r.aro}</option>)}
+                </select>
                 <div style={{ overflowY: "auto", maxHeight: 280 }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead>
                       <tr>
                         <th style={{ ...styles.th, position: "sticky", top: 0 }}>Aro</th>
@@ -7771,7 +7834,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {resumoPorAro.map(r => (
+                      {(aroCardFiltro ? resumoPorAro.filter(r => r.aro === aroCardFiltro) : resumoPorAro).map(r => (
                         <tr key={r.aro}>
                           <td style={styles.td}>{r.aro}</td>
                           <td style={{ ...styles.tdMono, textAlign: "right" }}>{r.qtd.toLocaleString("pt-BR")}</td>
@@ -7850,6 +7913,17 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
     ...d, aros: d.aros.includes(aro) ? d.aros.filter(a => a !== aro) : [...d.aros, aro]
   }));
 
+  /* SKU passou de campo livre pra select (combinado com Pablo em
+     27/ago/2026, vale pra todo perfil — é o mesmo componente pro Gestor e
+     pro Cliente). Lista de opções acompanha o Cliente já escolhido no
+     filtro (evita mostrar SKU de outro cliente antes de aplicar); sem
+     cliente selecionado, mostra os SKUs de tudo que está visível pra quem
+     abriu esta tela (todosItens já vem restrito, ver MonitorEstoque). */
+  const skusDisponiveis = useMemo(() => {
+    const base = draft.cliente ? todosItens.filter(it => it.cliente === draft.cliente) : todosItens;
+    return Array.from(new Set(base.map(it => it.sku))).sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
+  }, [todosItens, draft.cliente]);
+
   const resultado = useMemo(() => {
     if (!aplicado) return null;
     const f = aplicado;
@@ -7858,11 +7932,10 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
     const qMax = toNum(f.qtdMax) ?? Infinity;
     const vMin = toNum(f.valorMin) ?? -Infinity;
     const vMax = toNum(f.valorMax) ?? Infinity;
-    const skuQ = f.sku.trim().toLowerCase();
     const descQ = f.descricao.trim().toLowerCase();
     return ordenarItensEstoque(todosItens.filter(it =>
       (!f.cliente || it.cliente === f.cliente) &&
-      (!skuQ || it.sku.toLowerCase().includes(skuQ)) &&
+      (!f.sku || it.sku === f.sku) &&
       (!descQ || it.descricao.toLowerCase().includes(descQ)) &&
       (f.aros.length === 0 || f.aros.includes(it.aro)) &&
       it.qtd >= qMin && it.qtd <= qMax &&
@@ -7884,8 +7957,11 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
             {clientes.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
-        <Field label="SKU (busca parcial)">
-          <input value={draft.sku} onChange={e => setDraft(d => ({ ...d, sku: e.target.value }))} style={styles.input} placeholder="Ex.: 12345" />
+        <Field label="SKU">
+          <select value={draft.sku} onChange={e => setDraft(d => ({ ...d, sku: e.target.value }))} style={styles.input}>
+            <option value="">Todos os SKUs</option>
+            {skusDisponiveis.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
         </Field>
         <Field label="Descrição (busca parcial)">
           <input value={draft.descricao} onChange={e => setDraft(d => ({ ...d, descricao: e.target.value }))} style={styles.input} placeholder="Ex.: pneu radial" />
