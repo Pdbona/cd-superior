@@ -7616,6 +7616,33 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
     (acc, c) => ({ qtd: acc.qtd + c.qtdTotal, valor: acc.valor + c.valorTotal }),
     { qtd: 0, valor: 0 }), [clientesVisiveis]);
 
+  /* Quantidade por SKU e por Aro — só na tela do Cliente (clienteRestrito),
+     ao lado do card do próprio estoque (combinado com Pablo em 27/ago/2026).
+     Por SKU: soma qtd de todo item com aquele código, ordenado crescente
+     (numeric:true trata "123" < "45" como número, não como texto). Por
+     Aro: só entra quem tem aro reconhecido (ver extrairAro) — cliente sem
+     nenhum item com aro identificável (ex.: carga geral, não pneu) fica sem
+     esse segundo card; ordenado decrescente de quantidade, não de aro. */
+  const resumoPorSku = useMemo(() => {
+    if (!clienteRestrito || !clientesVisiveis[0]) return [];
+    const porSku = new Map();
+    clientesVisiveis[0].itens.forEach(it => {
+      const atual = porSku.get(it.sku) || { sku: it.sku, descricao: it.descricao, qtd: 0 };
+      atual.qtd += it.qtd;
+      porSku.set(it.sku, atual);
+    });
+    return Array.from(porSku.values()).sort((a, b) => a.sku.localeCompare(b.sku, "pt-BR", { numeric: true }));
+  }, [clienteRestrito, clientesVisiveis]);
+  const resumoPorAro = useMemo(() => {
+    if (!clienteRestrito || !clientesVisiveis[0]) return [];
+    const porAro = new Map();
+    clientesVisiveis[0].itens.forEach(it => {
+      if (!it.aro) return;
+      porAro.set(it.aro, (porAro.get(it.aro) || 0) + it.qtd);
+    });
+    return Array.from(porAro.entries()).map(([aro, qtd]) => ({ aro, qtd })).sort((a, b) => b.qtd - a.qtd);
+  }, [clienteRestrito, clientesVisiveis]);
+
   if (carregando) {
     return (
       <div>
@@ -7703,6 +7730,58 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                 </button>
               </div>
             ))}
+
+            {resumoPorSku.length > 0 && (
+              <div style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, marginBottom: 10 }}>
+                  Quantidade por SKU
+                </div>
+                <div style={{ overflowY: "auto", maxHeight: 280 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...styles.th, position: "sticky", top: 0 }}>SKU</th>
+                        <th style={{ ...styles.th, position: "sticky", top: 0, textAlign: "right" }}>Qtd.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumoPorSku.map(r => (
+                        <tr key={r.sku}>
+                          <td style={styles.tdMono} title={r.descricao}>{r.sku}</td>
+                          <td style={{ ...styles.tdMono, textAlign: "right" }}>{r.qtd.toLocaleString("pt-BR")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {resumoPorAro.length > 0 && (
+              <div style={{ ...styles.card, background: C.bgLeve, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 13, color: C.navy, marginBottom: 10 }}>
+                  Quantidade por Aro
+                </div>
+                <div style={{ overflowY: "auto", maxHeight: 280 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...styles.th, position: "sticky", top: 0 }}>Aro</th>
+                        <th style={{ ...styles.th, position: "sticky", top: 0, textAlign: "right" }}>Qtd.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumoPorAro.map(r => (
+                        <tr key={r.aro}>
+                          <td style={styles.td}>{r.aro}</td>
+                          <td style={{ ...styles.tdMono, textAlign: "right" }}>{r.qtd.toLocaleString("pt-BR")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -9121,13 +9200,34 @@ function RelatorioPausas({ ops, params }) {
         <EmptyState text="Nenhum motivo de pausa cadastrado em Parâmetros ainda." />
       ) : (
         <>
-          {/* Relatório de Pausas (tabela + total do mês) e Timeline lado a
-             lado — dois blocos, em vez de um empilhado sob o outro. */}
+          {/* Relatório de Pausas (total do mês + tabela) e Timeline lado a
+             lado — dois blocos, em vez de um empilhado sob o outro.
+             Total do mês foi pro topo, acima da tabela (combinado com
+             Pablo em 27/ago/2026) — antes ficava ao lado, espremendo a
+             tabela; os itens viraram uma linha horizontal (em vez de uma
+             coluna estreita) pra aproveitar a largura toda que sobrou. */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: 18, alignItems: "start" }}>
           <div>
-          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <div className="scroll-x" onWheel={rolarNaHorizontal}
-              style={{ overflowX: "auto", flex: "3 1 300px", minWidth: 0 }}>
+            <div style={{ ...styles.card, marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, marginBottom: 10 }}>
+                Total no mês — {hoje.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 24px" }}>
+                {motivos.map(m => (
+                  <div key={m} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5 }}>
+                    <span style={{ color: C.texto }}>{m}:</span>
+                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy2 }}>{msFmt(totalMes.porMotivo[m])}</strong>
+                  </div>
+                ))}
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5,
+                  borderLeft: `1px dashed ${C.prataClaro}`, paddingLeft: 24, marginLeft: "auto" }}>
+                  <strong style={{ color: C.navy }}>Total geral:</strong>
+                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy }}>{msFmt(totalMes.geral)}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="scroll-x" onWheel={rolarNaHorizontal} style={{ overflowX: "auto" }}>
               <table style={{ ...styles.table, minWidth: 460 }}>
                 <thead>
                   <tr>
@@ -9158,26 +9258,6 @@ function RelatorioPausas({ ops, params }) {
                 </tfoot>
               </table>
             </div>
-
-            <div style={{ ...styles.card, flex: "1 1 220px", minWidth: 220 }}>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 12.5, color: C.navy, marginBottom: 10 }}>
-                Total no mês — {hoje.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {motivos.map(m => (
-                  <div key={m} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
-                    <span style={{ color: C.texto }}>{m}</span>
-                    <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy2 }}>{msFmt(totalMes.porMotivo[m])}</strong>
-                  </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5,
-                  borderTop: `1px dashed ${C.prataClaro}`, paddingTop: 6, marginTop: 2 }}>
-                  <strong style={{ color: C.navy }}>Total geral</strong>
-                  <strong style={{ fontFamily: "'Roboto Mono',monospace", color: C.navy }}>{msFmt(totalMes.geral)}</strong>
-                </div>
-              </div>
-            </div>
-          </div>
           </div>
 
           {/* ===== TIMELINE DA OPERAÇÃO — início, pausa(s), retomada e fim =====
