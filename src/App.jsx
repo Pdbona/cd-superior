@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Legend, Cell, LineChart, Line, ComposedChart
+  Legend, Cell, LineChart, Line, ComposedChart, ReferenceLine
 } from "recharts";
 import {
   ClipboardList, Activity, LayoutDashboard, Settings, Plus, Play, Square,
@@ -8761,8 +8761,8 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
               Bolinha vermelha (maior) na linha de início indica que começou antes das 8h; na linha de fim, que terminou depois das 18h.
               {mediaMesAnterior > 0 && ` Média de horas do mês anterior: ${mediaMesAnterior.toFixed(1)}h`}
             </p>
-            <ResponsiveContainer width="100%" height={380}>
-              <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 40, left: 60 }}>
+            <ResponsiveContainer width="100%" height={420}>
+              <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 55, left: 60 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
                 {/* Inclinado — combinado com Pablo em 31/ago/2026 — pra caber
                    a inicial da semana + a data completa (dd/mm/aa) num rótulo só. */}
@@ -8790,7 +8790,10 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   }}
                   labelFormatter={(label) => label}
                 />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* Empurrada mais pra baixo (paddingTop) — combinado com
+                   Pablo em 31/ago/2026 — pra não tapar o rótulo inclinado
+                   do eixo X. */}
+                <Legend verticalAlign="bottom" wrapperStyle={{ fontSize: 12, paddingTop: 24 }} />
                 {/* Bar antes das Lines — combinado com Pablo em 31/ago/2026 —
                    pra as linhas de horário desenharem por cima da coluna,
                    não por baixo. */}
@@ -8837,6 +8840,11 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                     );
                   }}
                 />
+                {/* Linhas fixas de referência — 8h (verde) e 18h (vermelho),
+                   marcando o início/fim do expediente, combinado com Pablo
+                   em 31/ago/2026. */}
+                <ReferenceLine yAxisId="left" y={8} stroke={C.supVerde} strokeWidth={1} />
+                <ReferenceLine yAxisId="left" y={18} stroke={C.vermelho} strokeWidth={1} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -11754,7 +11762,14 @@ function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRo
   const romaneioGerado = !!op?.romaneioGeradoEm;
   return (
     <div style={{ background: naMeta ? "#F6FBF7" : "#FFF9F9", border: `1px solid ${C.prataClaro}`,
-      borderLeft: `4px solid ${cor}`, borderRadius: 9, padding: "11px 12px" }}>
+      borderLeft: `4px solid ${cor}`, borderRadius: 9, padding: "11px 12px",
+      /* flex column + botão com marginTop:auto (ver abaixo) — cards da
+         mesma linha do grid (opCardGrid) esticam pra mesma altura, mas
+         cada um tem quantidade diferente de linha de conteúdo (divergência,
+         conferente etc.); sem isso o botão "Abrir Romaneio" ficava em
+         alturas diferentes de card pra card. Combinado com Pablo em
+         31/ago/2026, igual já era feito no card de Estoque. */
+      display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
         <strong style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12.5, color: C.navy }}>{op.ref}</strong>
         <span style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 18, color: cor, lineHeight: 1 }}>
@@ -11801,7 +11816,7 @@ function CardOpFeita({ op, c, temFotos, onVerFotos, isClienteRestrito, onAbrirRo
           clientes (isClienteRestrito) veem apenas se o romaneio foi gerado */}
       {(!isClienteRestrito || romaneioGerado) && onAbrirRomaneio && (
         <button onClick={onAbrirRomaneio} style={{
-          width: "100%", marginTop: 8, padding: "8px 10px", borderRadius: 7,
+          width: "100%", marginTop: "auto", padding: "8px 10px", borderRadius: 7,
           border: `1.5px solid ${C.navy2}`, background: C.branco, color: C.navy2,
           fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5,
           cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
