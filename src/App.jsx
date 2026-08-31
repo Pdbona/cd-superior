@@ -9,7 +9,8 @@ import {
   Trash2, Search, Filter, Users, DollarSign, Target, Gauge, HardHat,
   Briefcase, Lock, LogOut, RefreshCw, Clock, MessageSquare, FileSpreadsheet,
   FileText, Download, Building2, Calendar, Database, Eraser, ShieldCheck,
-  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark, Pencil, ArrowLeftRight
+  Camera, X, Boxes, Timer, PauseCircle, PlayCircle, ChevronDown, Menu, Landmark, Pencil, ArrowLeftRight,
+  Car, Bike
 } from "lucide-react";
 import { storage } from "./storage";
 
@@ -7480,6 +7481,27 @@ function ordenarItensEstoque(itens) {
   });
 }
 
+/* Qtd. de SKU + pneus por tipo de veículo, por cliente — cartão de
+   resumo do Estoque (combinado com Pablo, 27/ago/2026, ajustado em
+   31/ago/2026). Classificação por prioridade: Carga primeiro (aro
+   reconhecido ≥ 22,5 — só R22.5 na frota é considerado carga; R21/R22
+   viraram Passeio), senão Moto (modelo CEAT em algum lugar da descrição —
+   só marca CEAT em item de moto, na frota atual), senão Passeio (os
+   demais, inclusive item sem aro reconhecido, ex.: carga não
+   identificada). Extraída de MonitorEstoque em 31/ago/2026 pra entrar
+   também no card de cada cliente na visão do Gestor/demais perfis, não
+   só na tela restrita do próprio Cliente. */
+function categorizarItensEstoque(itens) {
+  let carga = 0, moto = 0, passeio = 0;
+  itens.forEach(it => {
+    const aroNum = it.aro ? parseFloat(it.aro.replace("R", "")) : null;
+    if (aroNum !== null && aroNum >= 22.5) carga += it.qtd;
+    else if (/ceat/i.test(it.descricao)) moto += it.qtd;
+    else passeio += it.qtd;
+  });
+  return { totalSku: new Set(itens.map(it => it.sku)).size, carga, moto, passeio };
+}
+
 function imprimirEstoqueCliente(cliente, itens, qtdTotal, valorTotal) {
   const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const w = window.open("", "_blank");
@@ -7647,25 +7669,15 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
     });
     return Array.from(porAro.entries()).map(([aro, qtd]) => ({ aro, qtd })).sort((a, b) => b.qtd - a.qtd);
   }, [clienteRestrito, clientesVisiveis]);
-  /* Total de SKU (contagem de códigos distintos) + pneus por tipo de
-     veículo — só na tela do Cliente (combinado com Pablo em 27/ago/2026).
-     Classificação por prioridade, igual o Pablo descreveu: Carga primeiro
-     (aro reconhecido ≥ 21 — R21/R22/R22.5, únicos aros de carga na frota),
-     senão Moto (modelo CEAT em algum lugar da descrição — só marca CEAT em
-     item de moto, na frota atual), senão Passeio (os demais, igual pedido —
-     inclusive item sem aro reconhecido, ex.: carga não identificada). */
-  const resumoCategorias = useMemo(() => {
-    if (!clienteRestrito || !clientesVisiveis[0]) return null;
-    const itens = clientesVisiveis[0].itens;
-    let carga = 0, moto = 0, passeio = 0;
-    itens.forEach(it => {
-      const aroNum = it.aro ? parseFloat(it.aro.replace("R", "")) : null;
-      if (aroNum !== null && aroNum >= 21) carga += it.qtd;
-      else if (/ceat/i.test(it.descricao)) moto += it.qtd;
-      else passeio += it.qtd;
-    });
-    return { totalSku: new Set(itens.map(it => it.sku)).size, carga, moto, passeio };
-  }, [clienteRestrito, clientesVisiveis]);
+  /* Qtd. de SKU + Carga/Moto/Passeio, por cliente — agora em todos os
+     perfis, um card por cliente (ver categorizarItensEstoque; combinado
+     com Pablo em 31/ago/2026, antes só aparecia na tela restrita do
+     próprio Cliente). */
+  const categoriasPorCliente = useMemo(() => {
+    const mapa = new Map();
+    clientesVisiveis.forEach(c => mapa.set(c.cliente, categorizarItensEstoque(c.itens)));
+    return mapa;
+  }, [clientesVisiveis]);
 
   if (carregando) {
     return (
@@ -7731,7 +7743,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
              virava número repetido em cima do próprio card do cliente (que
              já tem Qtd./Valor Disponível) — combinado com Pablo em
              27/ago/2026, essa barra sai e os números (inclusive os 4 novos
-             de SKU/Carga/Moto/Passeio, ver resumoCategorias) entram dentro
+             de SKU/Carga/Moto/Passeio, ver categoriasPorCliente) entram dentro
              do card mesmo, não mais numa barra solta acima. */}
           {!clienteRestrito && (
             <div style={{ ...styles.infoBox, display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline", marginBottom: 16 }}>
@@ -7758,37 +7770,43 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                   <div style={styles.kpiLabel}>Valor Disponível</div>
                   <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, color: C.verde, whiteSpace: "nowrap" }}>{brl(c.valorTotal)}</div>
                 </div>
-                {/* Qtd. de SKU — só nos demais perfis, não no perfil Cliente
-                   (que ganha os 4 números — SKUs/Carga/Moto/Passeio — logo
-                   abaixo, dentro deste mesmo card). */}
-                {!clienteRestrito && (
-                  <div style={{ marginBottom: 16 }}>
-                    <div style={styles.kpiLabel}>Qtd. de SKU</div>
-                    <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>
-                      {new Set(c.itens.map(it => it.sku)).size.toLocaleString("pt-BR")}
+                {/* SKUs/Carga/Moto/Passeio — antes só no perfil Cliente,
+                   entrou em todos os perfis em 31/ago/2026 (um resumo por
+                   cliente, com figurinha de caminhão/moto/carro em vez da
+                   descrição em texto). */}
+                {(() => {
+                  const cat = categoriasPorCliente.get(c.cliente);
+                  if (!cat) return null;
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 14px", marginBottom: 16 }}>
+                      <div>
+                        <div style={styles.kpiLabel}>SKUs</div>
+                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.totalSku.toLocaleString("pt-BR")}</div>
+                      </div>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <Truck size={13} color={C.navy2} />
+                          <div style={styles.kpiLabel}>Carga</div>
+                        </div>
+                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.carga.toLocaleString("pt-BR")}</div>
+                      </div>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <Bike size={13} color={C.navy2} />
+                          <div style={styles.kpiLabel}>Moto</div>
+                        </div>
+                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.moto.toLocaleString("pt-BR")}</div>
+                      </div>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <Car size={13} color={C.navy2} />
+                          <div style={styles.kpiLabel}>Passeio</div>
+                        </div>
+                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.passeio.toLocaleString("pt-BR")}</div>
+                      </div>
                     </div>
-                  </div>
-                )}
-                {clienteRestrito && resumoCategorias && (
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 14px", marginBottom: 16 }}>
-                    <div>
-                      <div style={styles.kpiLabel}>SKUs</div>
-                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.totalSku.toLocaleString("pt-BR")}</div>
-                    </div>
-                    <div>
-                      <div style={styles.kpiLabel}>Carga (Aro ≥ 21)</div>
-                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.carga.toLocaleString("pt-BR")}</div>
-                    </div>
-                    <div>
-                      <div style={styles.kpiLabel}>Moto (CEAT)</div>
-                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.moto.toLocaleString("pt-BR")}</div>
-                    </div>
-                    <div>
-                      <div style={styles.kpiLabel}>Passeio</div>
-                      <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{resumoCategorias.passeio.toLocaleString("pt-BR")}</div>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
                 <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center", marginTop: "auto" }} onClick={() => setClienteAberto(c.cliente)}>
                   <Search size={15} /> Detalhes
                 </button>
@@ -7866,7 +7884,16 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
       {clienteDetalhe && (
         <Modal titulo={`Estoque — ${clienteDetalhe.cliente}`} largura={900} onFechar={() => setClienteAberto(null)}>
           <div style={{ overflowX: "auto" }}>
-            <table style={styles.table}>
+            {/* largura fixa por coluna (colgroup) — cabe tudo sem rolagem
+               lateral, combinado com Pablo em 31/ago/2026 */}
+            <table style={{ ...styles.table, minWidth: 0, tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: "15%" }} />
+                <col style={{ width: "44%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "17%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th style={styles.th}>SKU</th>
@@ -7879,11 +7906,11 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
               <tbody>
                 {itensOrdenados.map((it, i) => (
                   <tr key={`${it.sku}_${i}`}>
-                    <td style={styles.tdMono}>{it.sku}</td>
-                    <td style={styles.td}>{it.descricao}</td>
+                    <td style={{ ...styles.tdMono, whiteSpace: "normal", wordBreak: "break-word" }}>{it.sku}</td>
+                    <td style={styles.tdDescricao}>{it.descricao}</td>
                     <td style={styles.td}>{it.aro || "—"}</td>
                     <td style={{ ...styles.td, textAlign: "right" }}>{it.qtd.toLocaleString("pt-BR")}</td>
-                    <td style={{ ...styles.td, textAlign: "right" }}>{brl(it.valor)}</td>
+                    <td style={{ ...styles.td, textAlign: "right", whiteSpace: "normal", wordBreak: "break-word" }}>{brl(it.valor)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -7891,7 +7918,7 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                 <tr>
                   <td colSpan={3} style={styles.tf}>TOTAL GERAL</td>
                   <td style={{ ...styles.tfMono, textAlign: "right" }}>{clienteDetalhe.qtdTotal.toLocaleString("pt-BR")}</td>
-                  <td style={{ ...styles.tfMono, textAlign: "right" }}>{brl(clienteDetalhe.valorTotal)}</td>
+                  <td style={{ ...styles.tfMono, textAlign: "right", whiteSpace: "normal", wordBreak: "break-word" }}>{brl(clienteDetalhe.valorTotal)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -8022,7 +8049,17 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
           </div>
           {resultado.length > 0 && (
             <div style={{ overflowX: "auto" }}>
-              <table style={styles.table}>
+              {/* largura fixa por coluna (colgroup) — cabe tudo sem rolagem
+                 lateral, combinado com Pablo em 31/ago/2026 */}
+              <table style={{ ...styles.table, minWidth: 0, tableLayout: "fixed" }}>
+                <colgroup>
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "38%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "15%" }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th style={styles.th}>Cliente</th>
@@ -8036,12 +8073,12 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
                 <tbody>
                   {resultado.map((it, i) => (
                     <tr key={`${it.cliente}_${it.sku}_${i}`}>
-                      <td style={styles.td}>{it.cliente}</td>
-                      <td style={styles.tdMono}>{it.sku}</td>
-                      <td style={styles.td}>{it.descricao}</td>
+                      <td style={{ ...styles.td, whiteSpace: "normal", wordBreak: "break-word" }}>{it.cliente}</td>
+                      <td style={{ ...styles.tdMono, whiteSpace: "normal", wordBreak: "break-word" }}>{it.sku}</td>
+                      <td style={styles.tdDescricao}>{it.descricao}</td>
                       <td style={styles.td}>{it.aro || "—"}</td>
                       <td style={{ ...styles.td, textAlign: "right" }}>{it.qtd.toLocaleString("pt-BR")}</td>
-                      <td style={{ ...styles.td, textAlign: "right" }}>{brl(it.valor)}</td>
+                      <td style={{ ...styles.td, textAlign: "right", whiteSpace: "normal", wordBreak: "break-word" }}>{brl(it.valor)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -8049,7 +8086,7 @@ function FiltroEstoque({ clientes, todosItens, onFechar }) {
                   <tr>
                     <td colSpan={4} style={styles.tf}>TOTAL DO FILTRO</td>
                     <td style={{ ...styles.tfMono, textAlign: "right" }}>{totalResultado.qtd.toLocaleString("pt-BR")}</td>
-                    <td style={{ ...styles.tfMono, textAlign: "right" }}>{brl(totalResultado.valor)}</td>
+                    <td style={{ ...styles.tfMono, textAlign: "right", whiteSpace: "normal", wordBreak: "break-word" }}>{brl(totalResultado.valor)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -11876,6 +11913,11 @@ const styles = {
   table: { width: "100%", borderCollapse: "collapse", border: `1px solid ${C.prataClaro}`, borderRadius: 8, overflow: "hidden", fontSize: 12.5, minWidth: 1000 },
   th: { background: C.navy, color: C.branco, fontFamily: "'Montserrat',sans-serif", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", padding: "11px 10px", textAlign: "left", whiteSpace: "nowrap" },
   td: { padding: "10px", borderBottom: `1px solid ${C.prataClaro}`, fontFamily: "'Roboto',sans-serif", color: C.texto, whiteSpace: "nowrap" },
+  /* Descrição de item de estoque — quebra linha e fonte um pouco menor,
+     pra caber tudo na largura sem rolagem lateral (Relatórios > Estoque,
+     combinado com Pablo em 31/ago/2026). Usada com <colgroup> de largura
+     fixa nas tabelas de estoque. */
+  tdDescricao: { padding: "10px", borderBottom: `1px solid ${C.prataClaro}`, fontFamily: "'Roboto',sans-serif", color: C.texto, whiteSpace: "normal", wordBreak: "break-word", fontSize: 11.5, lineHeight: 1.35 },
   tdMono: { padding: "10px", borderBottom: `1px solid ${C.prataClaro}`, fontFamily: "'Roboto Mono',monospace", color: C.texto, whiteSpace: "nowrap", fontSize: 12 },
   tf: { padding: "11px 10px", fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 11.5, whiteSpace: "nowrap" },
   tfMono: { padding: "11px 10px", fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 12, whiteSpace: "nowrap" },
