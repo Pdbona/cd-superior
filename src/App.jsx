@@ -7490,16 +7490,21 @@ function ordenarItensEstoque(itens) {
    demais, inclusive item sem aro reconhecido, ex.: carga não
    identificada). Extraída de MonitorEstoque em 31/ago/2026 pra entrar
    também no card de cada cliente na visão do Gestor/demais perfis, não
-   só na tela restrita do próprio Cliente. */
+   só na tela restrita do próprio Cliente.
+   `temPneu` (31/ago/2026): nem todo cliente do CD é de pneu (ex.: cliente
+   de alimentos, importação/exportação genérica) — a quebra Carga/Moto/
+   Passeio só faz sentido pra quem tem "pneu" na descrição de algum item;
+   pros demais, o card mostra só SKUs (ver uso em MonitorEstoque). */
 function categorizarItensEstoque(itens) {
   let carga = 0, moto = 0, passeio = 0;
+  const temPneu = itens.some(it => /pneu/i.test(it.descricao));
   itens.forEach(it => {
     const aroNum = it.aro ? parseFloat(it.aro.replace("R", "")) : null;
     if (aroNum !== null && aroNum >= 22.5) carga += it.qtd;
     else if (/ceat/i.test(it.descricao)) moto += it.qtd;
     else passeio += it.qtd;
   });
-  return { totalSku: new Set(itens.map(it => it.sku)).size, carga, moto, passeio };
+  return { totalSku: new Set(itens.map(it => it.sku)).size, carga, moto, passeio, temPneu };
 }
 
 function imprimirEstoqueCliente(cliente, itens, qtdTotal, valorTotal) {
@@ -7770,41 +7775,49 @@ function MonitorEstoque({ sub, usuario, somenteLeitura, clienteRestrito }) {
                   <div style={styles.kpiLabel}>Valor Disponível</div>
                   <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, color: C.verde, whiteSpace: "nowrap" }}>{brl(c.valorTotal)}</div>
                 </div>
-                {/* SKUs/Carga/Moto/Passeio — antes só no perfil Cliente,
-                   entrou em todos os perfis em 31/ago/2026 (um resumo por
-                   cliente, com figurinha de caminhão/moto/carro em vez da
-                   descrição em texto). */}
+                {/* SKUs — sempre; Carga/Moto/Passeio só pra cliente com
+                   produto pneu (ver categorizarItensEstoque/temPneu),
+                   combinado com Pablo em 31/ago/2026 — cliente de outro
+                   ramo (alimentos, importação genérica etc.) não tem essa
+                   quebra por não fazer sentido pra ele. Entrou em todos os
+                   perfis em 31/ago/2026 (antes só no perfil Cliente), com
+                   figurinha de caminhão/moto/carro em vez da descrição em
+                   texto. */}
                 {(() => {
                   const cat = categoriasPorCliente.get(c.cliente);
                   if (!cat) return null;
                   return (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 14px", marginBottom: 16 }}>
-                      <div>
+                    <>
+                      <div style={{ marginBottom: cat.temPneu ? 10 : 16 }}>
                         <div style={styles.kpiLabel}>SKUs</div>
-                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.totalSku.toLocaleString("pt-BR")}</div>
+                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>{cat.totalSku.toLocaleString("pt-BR")}</div>
                       </div>
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <Truck size={13} color={C.navy2} />
-                          <div style={styles.kpiLabel}>Carga</div>
+                      {cat.temPneu && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "10px 8px", marginBottom: 16 }}>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <Truck size={13} color={C.navy2} />
+                              <div style={styles.kpiLabel}>Carga</div>
+                            </div>
+                            <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.carga.toLocaleString("pt-BR")}</div>
+                          </div>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <Bike size={13} color={C.navy2} />
+                              <div style={styles.kpiLabel}>Moto</div>
+                            </div>
+                            <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.moto.toLocaleString("pt-BR")}</div>
+                          </div>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <Car size={13} color={C.navy2} />
+                              <div style={styles.kpiLabel}>Passeio</div>
+                            </div>
+                            <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.passeio.toLocaleString("pt-BR")}</div>
+                          </div>
                         </div>
-                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.carga.toLocaleString("pt-BR")}</div>
-                      </div>
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <Bike size={13} color={C.navy2} />
-                          <div style={styles.kpiLabel}>Moto</div>
-                        </div>
-                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.moto.toLocaleString("pt-BR")}</div>
-                      </div>
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <Car size={13} color={C.navy2} />
-                          <div style={styles.kpiLabel}>Passeio</div>
-                        </div>
-                        <div style={{ fontFamily: "'Roboto Mono',monospace", fontWeight: 700, fontSize: 15 }}>{cat.passeio.toLocaleString("pt-BR")}</div>
-                      </div>
-                    </div>
+                      )}
+                    </>
                   );
                 })()}
                 <button style={{ ...styles.btnGhost, width: "100%", justifyContent: "center", marginTop: "auto" }} onClick={() => setClienteAberto(c.cliente)}>
