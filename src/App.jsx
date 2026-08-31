@@ -8223,7 +8223,15 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
         primeiroHora: r.primeiro ? new Date(r.primeiro).getHours() + new Date(r.primeiro).getMinutes() / 60 : null,
         ultimoHora: r.ultimo ? new Date(r.ultimo).getHours() + new Date(r.ultimo).getMinutes() / 60 : null,
         duracao: (r.primeiro && r.ultimo) ? (r.ultimo - r.primeiro) / (1000 * 3600) : 0,
-        diaSemana: new Date(r.dia + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit" })
+        /* Combinado com Pablo em 31/ago/2026: rótulo do eixo leva a inicial
+           da semana + a data completa (dd/mm/aa) — o eixo fica inclinado
+           (ver XAxis abaixo) pra caber os dois numa linha só. */
+        diaSemana: (() => {
+          const d = new Date(r.dia + "T12:00:00");
+          const pad = (n) => String(n).padStart(2, "0");
+          const semana = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
+          return `${semana} ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)}`;
+        })()
       }));
 
     // Calcular domínio do eixo Y dinamicamente
@@ -8750,13 +8758,15 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
             <div style={styles.chartTitle}>Operações por Dia — Horários e Duração</div>
             <p style={{ fontSize: 11.5, color: C.prata, margin: "0 0 12px", paddingLeft: 4, lineHeight: 1.4 }}>
               Linhas: hora de início (primeira) e hora de término (última) das operações do dia. Coluna: duração total da jornada.
-              Bolinha vermelha indica jornada que começou antes de 8h e terminou depois de 18h.
+              Bolinha vermelha (maior) na linha de início indica que começou antes das 8h; na linha de fim, que terminou depois das 18h.
               {mediaMesAnterior > 0 && ` Média de horas do mês anterior: ${mediaMesAnterior.toFixed(1)}h`}
             </p>
-            <ResponsiveContainer width="100%" height={350}>
-              <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 20, left: 60 }}>
+            <ResponsiveContainer width="100%" height={380}>
+              <ComposedChart data={porDia.dados} margin={{ top: 20, right: 80, bottom: 40, left: 60 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C.prataClaro} />
-                <XAxis dataKey="diaSemana" tick={{ fontSize: 11 }} />
+                {/* Inclinado — combinado com Pablo em 31/ago/2026 — pra caber
+                   a inicial da semana + a data completa (dd/mm/aa) num rótulo só. */}
+                <XAxis dataKey="diaSemana" tick={{ fontSize: 11 }} angle={-40} textAnchor="end" height={55} />
                 <YAxis
                   yAxisId="left"
                   label={{ value: "Hora do Dia", angle: -90, position: "insideLeft", offset: -10 }}
@@ -8781,21 +8791,29 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   labelFormatter={(label) => label}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
+                {/* Bar antes das Lines — combinado com Pablo em 31/ago/2026 —
+                   pra as linhas de horário desenharem por cima da coluna,
+                   não por baixo. */}
+                <Bar yAxisId="right" dataKey="duracao" name="Duração Jornada" fill={C.laranja} opacity={0.7} />
                 <Line
                   yAxisId="left"
                   type="monotone"
                   dataKey="primeiroHora"
                   stroke={C.supVerde}
                   name="Hora Início"
-                  strokeWidth={2.5}
+                  strokeWidth={3.5}
                   isAnimationActive={false}
                   fill={C.supVerde}
                   fillOpacity={0.2}
                   dot={(props) => {
                     const { cx, cy, payload } = props;
-                    const ehCritica = payload?.primeiroHora < 8 || payload?.ultimoHora > 18;
+                    /* Só o próprio critério da linha (início < 8h) — antes
+                       também acendia quando o FIM passava de 18h, pintando
+                       de vermelho um início que nem era cedo (combinado com
+                       Pablo em 31/ago/2026). */
+                    const ehCritica = payload?.primeiroHora < 8;
                     return (
-                      <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.supVerde} stroke={ehCritica ? C.vermelho : C.supVerde} strokeWidth={1} />
+                      <circle cx={cx} cy={cy} r={ehCritica ? 6 : 3} fill={ehCritica ? C.vermelho : C.supVerde} stroke={ehCritica ? C.vermelho : C.supVerde} strokeWidth={1} />
                     );
                   }}
                 />
@@ -8805,19 +8823,20 @@ function Relatorios({ ops, params, diasTerc, sub, clienteRestrito }) {
                   dataKey="ultimoHora"
                   stroke={C.navy}
                   name="Hora Fim"
-                  strokeWidth={2.5}
+                  strokeWidth={3.5}
                   isAnimationActive={false}
                   fill={C.navy}
                   fillOpacity={0.15}
                   dot={(props) => {
                     const { cx, cy, payload } = props;
-                    const ehCritica = payload?.primeiroHora < 8 || payload?.ultimoHora > 18;
+                    /* Só o próprio critério da linha (fim > 18h) — ver
+                       comentário na linha de Hora Início. */
+                    const ehCritica = payload?.ultimoHora > 18;
                     return (
-                      <circle cx={cx} cy={cy} r={3} fill={ehCritica ? C.vermelho : C.navy} stroke={ehCritica ? C.vermelho : C.navy} strokeWidth={1} />
+                      <circle cx={cx} cy={cy} r={ehCritica ? 6 : 3} fill={ehCritica ? C.vermelho : C.navy} stroke={ehCritica ? C.vermelho : C.navy} strokeWidth={1} />
                     );
                   }}
                 />
-                <Bar yAxisId="right" dataKey="duracao" name="Duração Jornada" fill={C.laranja} opacity={0.7} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
